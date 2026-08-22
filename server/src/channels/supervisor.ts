@@ -110,8 +110,10 @@ class ChannelSupervisor {
   /** Open dialogs, by session. The next message in that chat answers one. */
   private pendingUi = new Map<string, PendingUi>();
 
-  private rows(): ChannelRow[] {
-    return getDb().prepare("SELECT * FROM channels").all() as ChannelRow[];
+  private async rows(): Promise<ChannelRow[]> {
+    const conn = await getDb();
+    const reader = await conn.runAndReadAll("SELECT * FROM channels");
+    return reader.getRowObjectsJson() as unknown as ChannelRow[];
   }
 
   status(id: string): { state: ChannelState; error?: string; since?: string; log: Running["log"] } {
@@ -130,7 +132,7 @@ class ChannelSupervisor {
   private async syncNow(): Promise<void> {
     const { channels: kinds } = await loadChannels();
     const byKind = new Map(kinds.map((k) => [k.id, k]));
-    const rows = this.rows();
+    const rows = await this.rows();
     const wanted = new Map(rows.filter((r) => r.enabled).map((r) => [r.id, r]));
 
     // Anything running that should not be, or whose configuration moved.
@@ -221,7 +223,7 @@ class ChannelSupervisor {
   ): Promise<"sent" | "queued"> {
     if (!text.trim()) return "sent";
     const live = this.liveBySlug(slug);
-    const session = findChannelSession(scopeKey(slug, target));
+    const session = await findChannelSession(scopeKey(slug, target));
 
     // A transport that cannot be spoken to is not a dead end, only a slower
     // one: the message waits and goes out with the reply to whatever they say
@@ -235,7 +237,7 @@ class ChannelSupervisor {
             : `Channel "${slug}" is not running`
         );
       }
-      addNote(session.id, text, true);
+      await addNote(session.id, text, true);
       return "queued";
     }
 
@@ -243,7 +245,7 @@ class ChannelSupervisor {
     // The agent said this, so its conversation has to know it said it. Without
     // this, a routine reports into a chat and the follow-up question — "what did
     // you mean by that?" — reaches an agent with no idea what "that" is.
-    if (session) addNote(session.id, text);
+    if (session) await addNote(session.id, text);
     return "sent";
   }
 
@@ -261,7 +263,7 @@ class ChannelSupervisor {
     answer: string,
     approves: boolean
   ): Promise<void> {
-    const who = primaryName();
+    const who = await primaryName();
     const prompt = [
       "<answer-from-primary>",
       `${who} has answered the question you put to them: ${answer}`,
@@ -278,7 +280,7 @@ class ChannelSupervisor {
 
     // Wrapped, not appended. Loose in the prompt they read as the other person
     // speaking, and the agent answered its own last message back to them.
-    const pending = takeNotes(sessionId);
+    const pending = await takeNotes(sessionId);
     const full = pending.length
       ? `${prompt}\n\n<sent-since-you-last-spoke>\n${pending.join("\n\n---\n\n")}\n</sent-since-you-last-spoke>`
       : prompt;
@@ -294,8 +296,8 @@ class ChannelSupervisor {
   /** Tell the primary user that somebody new turned up — once per person. */
   private async announce(person: PersonRow, slug: string): Promise<void> {
     if (person.announced_at) return;
-    markAnnounced(person.key);
-    const to = getDefaultReportTo();
+    await markAnnounced(person.key);
+    const to = await getDefaultReportTo();
     if (!to) return;
     try {
       await this.send(
@@ -340,9 +342,9 @@ class ChannelSupervisor {
     text: string,
     meta: Record<string, unknown>
   ): Promise<string> {
-    const row = getDb().prepare("SELECT * FROM channels WHERE id = ?").get(channelId) as
-      | ChannelRow
-      | undefined;
+    const conn = await getDb();
+    const rowReader = await conn.runAndReadAll("SELECT * FROM channels WHERE id = $id", { id: channelId });
+    const row = rowReader.getRowObjectsJson()[0] as unknown as ChannelRow | undefined;
     if (!row) throw new Error("This channel has been removed");
 
     // Who is speaking, as opposed to which conversation this is. A package that
@@ -350,11 +352,11 @@ class ChannelSupervisor {
     const from = (meta.from ?? null) as { id?: unknown; name?: unknown } | null;
     const senderId = from && typeof from.id === "string" && from.id ? from.id : null;
     const person = senderId
-      ? seen(personKey(row.slug, senderId), typeof from?.name === "string" ? from.name : "")
+      ? await seen(personKey(row.slug, senderId), typeof from?.name === "string" ? from.name : "")
       : null;
 
-    if (person && person.role === "unknown" && hasPrimary()) {
-      recordAudit({
+    if (person && person.role === "unknown" && (await hasPrimary())) {
+      await recordAudit({
         kind: "stranger",
         reason: `Turned away on ${row.slug}`,
         subject: text.slice(0, 200),
@@ -374,24 +376,25 @@ class ChannelSupervisor {
     // destined for a different one, and routing it through the agent would have
     // it answering itself.
     if (person?.role === "primary") {
-      const pending = readAnswer(text);
+      const pending = await readAnswer(text);
       if (pending) {
         const { question, answer, approves, always } = pending;
 
         // An approval is a permission, not a sentence. Bound to the exact action
         // that was shown, the conversation that asked, one use, fifteen minutes
         // — so "yes" cannot be stretched into a standing role change.
-        const asking = findChannelSession(scopeKey(question.channel_slug, question.channel_key));
+        const asking = await findChannelSession(scopeKey(question.channel_slug, question.channel_key));
         if (approves && question.action && asking) {
-          addGrant(nanoid(10), asking.id, question.action_tool || "bash", question.action);
+          await addGrant(nanoid(10), asking.id, question.action_tool || "bash", question.action);
         }
         // Standing permission, narrowed to the person who asked. Recorded as an
         // ordinary rule so it shows up in Settings → People beside the ones
         // written by hand, and is revoked the same way.
         if (always && question.action) {
-          addToolRule({
+          const asker = await getPerson(question.person_key);
+          await addToolRule({
             id: nanoid(10),
-            role: getPerson(question.person_key)?.role || "colleague",
+            role: asker?.role || "colleague",
             tool: question.action_tool || "bash",
             pattern: question.action,
             person_key: question.person_key,
@@ -403,7 +406,7 @@ class ChannelSupervisor {
           how = await this.send(
             question.channel_slug,
             question.channel_key,
-            `${primaryName()} says: ${answer}` +
+            `${await primaryName()} says: ${answer}` +
               (approves && question.action
                 ? `\n\n(Approved: you may now run \`${question.action}\` once.)`
                 : "")
@@ -411,7 +414,7 @@ class ChannelSupervisor {
         } catch (e) {
           return `Could not get that back to ${question.person_name}: ${(e as Error).message}`;
         }
-        recordAudit({
+        await recordAudit({
           kind: "answered",
           tool: question.action_tool || "",
           subject: question.action || question.question.slice(0, 200),
@@ -423,7 +426,7 @@ class ChannelSupervisor {
           personKey: question.person_key,
           sessionId: asking?.id ?? null,
         });
-        recordAnswer(question.id, answer);
+        await recordAnswer(question.id, answer);
 
         // Carry on where it left off. Without this the answer lands in a
         // conversation nobody is looking at and the work waits for the person
@@ -454,7 +457,7 @@ class ChannelSupervisor {
       );
     }
 
-    const { session } = resolveChannelSession({
+    const { session } = await resolveChannelSession({
       channelSlug: row.slug,
       key,
       title: typeof meta.title === "string" ? meta.title : undefined,
@@ -467,10 +470,10 @@ class ChannelSupervisor {
     // Before a primary is named nobody is a stranger, so nothing is downgraded
     // either — otherwise the upgrade itself would quietly strip context from
     // every existing conversation.
-    if (person && hasPrimary()) {
+    if (person && (await hasPrimary())) {
       const settled = lower(session.role, person.role);
       if (settled !== session.role) {
-        getDb().prepare("UPDATE sessions SET role = ? WHERE id = ?").run(settled, session.id);
+        await conn.run("UPDATE sessions SET role = $role WHERE id = $id", { role: settled, id: session.id });
         // The running pi process loaded context for the old role, so it has to
         // go before the next turn rather than after.
         await sessions.shutdownSession(session.id);
@@ -478,9 +481,10 @@ class ChannelSupervisor {
       sessions.setSpeaker(session.id, person);
       // Persisted as well as held in memory: the in-memory speaker is empty
       // after a restart, and a question raised then was attributed to "Someone".
-      getDb()
-        .prepare("UPDATE sessions SET last_person_key = ? WHERE id = ?")
-        .run(person.key, session.id);
+      await conn.run(
+        "UPDATE sessions SET last_person_key = $key WHERE id = $id",
+        { key: person.key, id: session.id },
+      );
     }
 
     // Everything below jumps the queue on purpose. ask() serialises per
@@ -528,10 +532,11 @@ class ChannelSupervisor {
 
     // Anything that could not be delivered when it was written goes out now,
     // ahead of the answer to whatever they have just said.
-    const owed = takeDeliveries(session.id);
+    const owed = await takeDeliveries(session.id);
     if (owed.length && packageReply) void packageReply(owed.join("\n\n"));
 
-    const reply = await sessions.ask(session.id, withInstructions(text, row.instructions, person, takeNotes(session.id)), {
+    const notes = await takeNotes(session.id);
+    const reply = await sessions.ask(session.id, await withInstructions(text, row.instructions, person, notes), {
       onReply:
         relaying && packageReply
           ? (chunk: string) => packageReply(stripThinkingMarkers(chunk))
@@ -701,12 +706,12 @@ function interpretAnswer(
  * session start, because in a group the sender changes between turns and an
  * agent working from the first one answers the wrong person.
  */
-function withInstructions(
+async function withInstructions(
   text: string,
   instructions: string,
   person?: PersonRow | null,
   notes: string[] = []
-): string {
+): Promise<string> {
   const parts = [text];
   if (notes.length) {
     parts.push(
@@ -720,9 +725,9 @@ function withInstructions(
   const who = person
     ? senderFraming(
         person,
-        primaryName(),
-        Boolean(getDefaultReportTo()),
-        listToolRules()
+        await primaryName(),
+        Boolean(await getDefaultReportTo()),
+        (await listToolRules())
           .filter((r) => r.role === person.role || r.role === "all")
           .map((r) => `${r.tool}: ${r.pattern}`)
       )

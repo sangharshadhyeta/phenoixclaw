@@ -49,23 +49,21 @@ export function askPrimaryTool(sessionId: string) {
       }),
       async execute(_id: string, p: any) {
         const question = String(p.question ?? "").trim();
-        if (!question) return { output: "Nothing to ask.", isError: true };
+        if (!question) throw new Error("Nothing to ask.");
 
-        const to = getDefaultReportTo();
+        const to = await getDefaultReportTo();
         if (!to) {
-          return {
-            output:
-              "There is no way to reach the primary user — no report destination is configured. " +
+          throw new Error(
+            "There is no way to reach the primary user — no report destination is configured. " +
               "Tell the person you cannot get hold of them.",
-            isError: true,
-          };
+          );
         }
 
-        const session = getDb()
-          .prepare("SELECT * FROM sessions WHERE id = ?")
-          .get(sessionId) as SessionRow | undefined;
+        const conn = await getDb();
+        const reader = await conn.runAndReadAll("SELECT * FROM sessions WHERE id = $id", { id: sessionId });
+        const session = reader.getRowObjectsJson()[0] as unknown as SessionRow | undefined;
         if (!session?.channel_slug || !session.channel_key) {
-          return { output: "This conversation has nowhere to send an answer back to.", isError: true };
+          throw new Error("This conversation has nowhere to send an answer back to.");
         }
         // Whether an answer can be routed back, which is not whether the
         // question is worth asking. Refusing to ask at all because the return
@@ -77,9 +75,9 @@ export function askPrimaryTool(sessionId: string) {
         const immediate = channelSupervisor.canSend(session.channel_slug);
 
         const who =
-          sessions.currentSpeaker(sessionId) ??
-          (session.last_person_key ? getPerson(session.last_person_key) : undefined);
-        const row = askQuestion({
+          (await sessions.currentSpeaker(sessionId)) ??
+          (session.last_person_key ? await getPerson(session.last_person_key) : undefined);
+        const row = await askQuestion({
           sessionId,
           personKey: who?.key ?? "unknown",
           personName: who?.name ?? "Someone",
@@ -115,14 +113,19 @@ export function askPrimaryTool(sessionId: string) {
               : undefined
           );
         } catch (e) {
-          return { output: `Could not reach them: ${(e as Error).message}`, isError: true };
+          throw new Error(`Could not reach them: ${(e as Error).message}`);
         }
 
         return {
-          output:
-            `Asked. Tell ${row.person_name} you have passed it on and that you will come back ` +
-            `to them — do not guess at the answer in the meantime.`,
-          isError: false,
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Asked. Tell ${row.person_name} you have passed it on and that you will come back ` +
+                `to them — do not guess at the answer in the meantime.`,
+            },
+          ],
+          details: {},
         };
       },
     });

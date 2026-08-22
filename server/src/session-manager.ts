@@ -11,6 +11,7 @@ import {
   getSettings,
   markOrphanedSessionsInterrupted,
   routineGuards,
+  runningIdleRoutineSessions,
   updateSession,
 } from "./db.js";
 
@@ -80,15 +81,30 @@ class SessionManager extends EventEmitter {
    * is actually speaking, not whoever spoke first.
    */
   private speaker = new Map<string, PersonRow>();
+  /**
+   * The session's settled role/last-known-speaker, cached at load time.
+   *
+   * whoNow() (passed to the pi client, and read by guard.ts on every tool
+   * call) has to stay synchronous — it's a plain callback, not awaited — but
+   * the DB is DuckDB now, so it can't be read fresh per call the way
+   * better-sqlite3 allowed. Populated once in ensureClient() from the
+   * session row, which is the "surviving a restart" fallback for a session
+   * with no live in-memory speaker yet.
+   */
+  private settled = new Map<string, { role: Role; key?: string }>();
 
   constructor() {
     super();
     this.setMaxListeners(0);
     mkdirSync(SESSION_ROOT, { recursive: true });
-    const orphaned = markOrphanedSessionsInterrupted();
-    if (orphaned > 0) {
-      console.log(`[portal] marked ${orphaned} session(s) interrupted (server restarted mid-run)`);
-    }
+    // Constructors can't be async; the DB is DuckDB (async) so this fires and
+    // forgets, same as any other startup side effect that isn't on the
+    // request path.
+    void markOrphanedSessionsInterrupted().then((orphaned) => {
+      if (orphaned > 0) {
+        console.log(`[portal] marked ${orphaned} session(s) interrupted (server restarted mid-run)`);
+      }
+    });
   }
 
   isRunning(sessionId: string): boolean {
@@ -96,7 +112,7 @@ class SessionManager extends EventEmitter {
   }
 
   /** Record an event: persist it, then fan out to any attached SSE clients. */
-  private record(sessionId: string, type: string, payload: unknown): void {
+  private async record(sessionId: string, type: string, payload: unknown): Promise<void> {
     if (EPHEMERAL_EVENTS.has(type)) {
       // Still deliver it to anyone attached right now, with a negative seq so
       // it can never be confused with a stored event during replay.
@@ -108,7 +124,7 @@ class SessionManager extends EventEmitter {
       });
       return;
     }
-    const row = appendEvent(sessionId, type, payload);
+    const row = await appendEvent(sessionId, type, payload);
     this.emit(`session:${sessionId}`, row);
   }
 
@@ -116,15 +132,16 @@ class SessionManager extends EventEmitter {
     const existing = this.live.get(sessionId);
     if (existing?.client.running) return existing.client;
 
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
     if (!session) throw new Error(`Unknown session ${sessionId}`);
+    this.settled.set(sessionId, { role: session.role as Role, key: session.last_person_key ?? undefined });
 
     const executor = buildExecutor(EXECUTOR_KIND, SESSION_ROOT);
     mkdirSync(path.join(SESSION_ROOT, sessionId), { recursive: true });
 
     // The session's own choices win over the portal defaults. Without this a
     // restart relaunched pi on the default model, quietly undoing the pick.
-    const settings = getSettings();
+    const settings = await getSettings();
     const client = await executor.launch({
       sessionId,
       workspacePath: session.workspace,
@@ -140,7 +157,7 @@ class SessionManager extends EventEmitter {
       // session with nobody on the other end to read what it found.
       routineSlug: session.kind === "routine" ? session.routine_slug : undefined,
       // A routine may be exempted from the taint rules; nothing else can be.
-      enforceTaint: session.kind === "routine" ? routineGuards(session.routine_slug) : true,
+      enforceTaint: session.kind === "routine" ? await routineGuards(session.routine_slug) : true,
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,
@@ -156,37 +173,39 @@ class SessionManager extends EventEmitter {
       const file = client.sessionFile;
       if (!file) return;
       recordedFile = file;
-      updateSession(sessionId, { pi_session_file: file });
+      void updateSession(sessionId, { pi_session_file: file });
     };
     rememberSessionFile();
 
     client.on("event", (msg) => {
       rememberSessionFile();
-      this.record(sessionId, msg.type, msg);
+      void this.record(sessionId, msg.type, msg);
       // agent_end marks the end of a run — the task is done whether or not
       // anyone was watching.
       if (msg.type === "agent_end") {
-        updateSession(sessionId, { status: "idle" });
-        this.record(sessionId, "portal_status", { status: "idle" });
+        void updateSession(sessionId, { status: "idle" });
+        void this.record(sessionId, "portal_status", { status: "idle" });
       }
     });
 
     client.on("stderr", (chunk: string) => {
       const text = chunk.trim();
-      if (text) this.record(sessionId, "stderr", { text });
+      if (text) void this.record(sessionId, "stderr", { text });
     });
 
     client.on("exit", ({ code, signal }: { code: number | null; signal: string | null }) => {
       this.live.delete(sessionId);
-      const current = getSession(sessionId);
-      // A clean exit after a finished run is normal; anything else is a failure
-      // worth surfacing in the UI rather than leaving as a silent stall.
-      if (current?.status === "running") {
-        const message = `pi exited unexpectedly (code=${code} signal=${signal})`;
-        updateSession(sessionId, { status: "error", last_error: message });
-        this.record(sessionId, "portal_status", { status: "error", error: message });
-      }
-      executor.cleanup?.(sessionId).catch(() => {});
+      void (async () => {
+        const current = await getSession(sessionId);
+        // A clean exit after a finished run is normal; anything else is a failure
+        // worth surfacing in the UI rather than leaving as a silent stall.
+        if (current?.status === "running") {
+          const message = `pi exited unexpectedly (code=${code} signal=${signal})`;
+          await updateSession(sessionId, { status: "error", last_error: message });
+          await this.record(sessionId, "portal_status", { status: "error", error: message });
+        }
+        executor.cleanup?.(sessionId).catch(() => {});
+      })();
     });
 
     this.live.set(sessionId, { client, executor });
@@ -200,6 +219,12 @@ class SessionManager extends EventEmitter {
    * continues in the background.
    */
   async prompt(sessionId: string, message: string): Promise<void> {
+    // Real activity wakes it up: an @idle dream only exists because nothing
+    // else was going on, so it yields the moment something real arrives — the
+    // routine's own scheduler kicking itself off is not "real activity".
+    const kind = (await getSession(sessionId))?.kind;
+    if (kind && kind !== "routine") this.pauseIdleDreaming(sessionId);
+
     const client = await this.ensureClient(sessionId);
 
     // A slash command is an instruction to the agent, not something said in the
@@ -215,25 +240,25 @@ class SessionManager extends EventEmitter {
     if (serverBuiltin) {
       // Not awaited: /compact is a model call and would hold the request open.
       // Same contract as a prompt — accept it, report through the event stream.
-      updateSession(sessionId, { status: "running", last_error: null });
-      this.record(sessionId, "portal_status", { status: "running" });
+      await updateSession(sessionId, { status: "running", last_error: null });
+      await this.record(sessionId, "portal_status", { status: "running" });
       void (async () => {
         try {
           const text = await runBuiltin(serverBuiltin.name, builtin![2], client);
-          this.record(sessionId, "portal_notice", { text });
+          await this.record(sessionId, "portal_notice", { text });
         } catch (e) {
-          this.record(sessionId, "portal_notice", { text: (e as Error).message, error: true });
+          await this.record(sessionId, "portal_notice", { text: (e as Error).message, error: true });
         } finally {
-          updateSession(sessionId, { status: "idle" });
-          this.record(sessionId, "portal_status", { status: "idle" });
+          await updateSession(sessionId, { status: "idle" });
+          await this.record(sessionId, "portal_status", { status: "idle" });
         }
       })();
       return;
     }
 
-    updateSession(sessionId, { status: "running", last_error: null });
-    if (!isCommand) this.record(sessionId, "portal_prompt", { message });
-    this.record(sessionId, "portal_status", { status: "running" });
+    await updateSession(sessionId, { status: "running", last_error: null });
+    if (!isCommand) await this.record(sessionId, "portal_prompt", { message });
+    await this.record(sessionId, "portal_status", { status: "running" });
     try {
       await client.prompt(message);
       // A slash command completes inside prompt() without starting an agent
@@ -241,13 +266,13 @@ class SessionManager extends EventEmitter {
       // rather than leaving "working" on screen forever.
       const idle = (client as { isIdle?: () => boolean }).isIdle?.();
       if (idle) {
-        updateSession(sessionId, { status: "idle" });
-        this.record(sessionId, "portal_status", { status: "idle" });
+        await updateSession(sessionId, { status: "idle" });
+        await this.record(sessionId, "portal_status", { status: "idle" });
       }
     } catch (e) {
       const message = (e as Error).message;
-      updateSession(sessionId, { status: "error", last_error: message });
-      this.record(sessionId, "portal_status", { status: "error", error: message });
+      await updateSession(sessionId, { status: "error", last_error: message });
+      await this.record(sessionId, "portal_status", { status: "error", error: message });
       throw e;
     }
   }
@@ -453,26 +478,30 @@ class SessionManager extends EventEmitter {
    * endpoint identifies nobody, and defaulting to primary there handed a
    * colleague's conversation full privileges — the conversation is still theirs,
    * and they still read whatever comes back.
+   *
+   * Synchronous by contract (the guard's whoNow() callback is sync), so this
+   * cannot do a fresh DB read — DuckDB is async. Falls back to the settled
+   * role cached at session launch (see ensureClient), which is itself a
+   * snapshot of the session row as of the last (re)launch.
    */
   speakerRole(sessionId: string): Role {
     const live = this.speaker.get(sessionId);
     if (live) return live.role;
-    const row = getSession(sessionId);
-    return (row?.role as Role) ?? "guest";
+    return this.settled.get(sessionId)?.role ?? "guest";
   }
 
-  /** Who is speaking, surviving a restart via the session's own record. */
+  /** Who is speaking, surviving a restart via the settled snapshot — see speakerRole. */
   speakerKey(sessionId: string): string | undefined {
-    return this.speaker.get(sessionId)?.key ?? getSession(sessionId)?.last_person_key ?? undefined;
+    return this.speaker.get(sessionId)?.key ?? this.settled.get(sessionId)?.key;
   }
 
   currentSpeaker(sessionId: string): PersonRow | undefined {
     return this.speaker.get(sessionId);
   }
 
-  isBusy(sessionId: string): boolean {
+  async isBusy(sessionId: string): Promise<boolean> {
     if (this.asking.has(sessionId)) return true;
-    return getSession(sessionId)?.status === "running";
+    return (await getSession(sessionId))?.status === "running";
   }
 
   /** Access the live client for config reads and writes, starting pi if needed. */
@@ -501,8 +530,18 @@ class SessionManager extends EventEmitter {
     const live = this.live.get(sessionId);
     if (!live?.client.running) return;
     await live.client.abort().catch(() => {});
-    updateSession(sessionId, { status: "idle" });
-    this.record(sessionId, "portal_status", { status: "idle", aborted: true });
+    await updateSession(sessionId, { status: "idle" });
+    await this.record(sessionId, "portal_status", { status: "idle", aborted: true });
+  }
+
+  /** Interrupt any in-progress @idle dream — see the comment in prompt(). */
+  private pauseIdleDreaming(exceptSessionId: string): void {
+    void (async () => {
+      for (const row of await runningIdleRoutineSessions()) {
+        if (row.id === exceptSessionId) continue;
+        void this.abort(row.id).catch(() => {});
+      }
+    })();
   }
 
   async stop(sessionId: string): Promise<void> {

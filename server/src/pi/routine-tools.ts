@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { nanoid } from "nanoid";
+import { pruneOldRecords } from "../db.js";
 import { getDb, type SessionRow } from "../db.js";
 import { unscopeKey } from "../agent.js";
 import { channelSupervisor } from "../channels/supervisor.js";
@@ -32,23 +33,29 @@ import {
  * stays a deliberate act in the UI.
  */
 
-const ok = (text: string) => ({ output: text, isError: false });
-const bad = (text: string) => ({ output: text, isError: true });
+// AgentTool.execute() returns { content, details } — pi has no isError field
+// on a successful return; a failure is signalled by throwing instead (pi
+// converts the thrown message into the same content shape with isError set).
+const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+const bad = (text: string): never => {
+  throw new Error(text);
+};
 
-const rows = () =>
-  getDb()
-    .prepare("SELECT * FROM routines ORDER BY created_at ASC")
-    .all() as RoutineRow[];
+async function rows(): Promise<RoutineRow[]> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM routines ORDER BY created_at ASC");
+  return reader.getRowObjectsJson() as unknown as RoutineRow[];
+}
 
-const byName = (needle: string): RoutineRow | undefined => {
+async function byName(needle: string): Promise<RoutineRow | undefined> {
   const key = needle.trim().toLowerCase();
-  const all = rows();
+  const all = await rows();
   return (
     all.find((r) => r.slug === key) ??
     all.find((r) => r.name.toLowerCase() === key) ??
     all.find((r) => r.id === needle.trim())
   );
-};
+}
 
 const describe = (r: RoutineRow) => ({
   name: r.name,
@@ -70,6 +77,9 @@ function timing(schedule?: string, runAt?: string) {
   if (!cron && !at)
     return { error: "Needs either a cron schedule or a time to run once" };
   if (cron) {
+    // "@idle" fires when the system has gone quiet rather than on a cron
+    // schedule (see routines/supervisor.ts) — not a real cron expression.
+    if (cron === "@idle") return { schedule: cron, runAt: null as string | null };
     const problem = isValidCron(cron);
     return problem
       ? { error: problem }
@@ -81,10 +91,10 @@ function timing(schedule?: string, runAt?: string) {
   return { schedule: "", runAt: when.toISOString() };
 }
 
-function freeSlug(desired: string, exceptId?: string): string {
+async function freeSlug(desired: string, exceptId?: string): Promise<string> {
   const base = slugify(desired) || "routine";
   const taken = new Set(
-    rows()
+    (await rows())
       .filter((r) => r.id !== exceptId)
       .map((r) => r.slug),
   );
@@ -107,14 +117,14 @@ function freeSlug(desired: string, exceptId?: string): string {
  * report can be delivered, and pointing a routine there would be worse than
  * leaving it on the default.
  */
-export function reportBackTo(sessionId?: string): {
+export async function reportBackTo(sessionId?: string): Promise<{
   channel: string | null;
   target: string | null;
-} {
+}> {
   if (!sessionId) return { channel: null, target: null };
-  const session = getDb()
-    .prepare("SELECT * FROM sessions WHERE id = ?")
-    .get(sessionId) as SessionRow | undefined;
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM sessions WHERE id = $id", { id: sessionId });
+  const session = reader.getRowObjectsJson()[0] as unknown as SessionRow | undefined;
   if (!session?.channel_slug || !session.channel_key)
     return { channel: null, target: null };
   if (!channelSupervisor.canSend(session.channel_slug))
@@ -137,7 +147,7 @@ export function routineTools(sessionId?: string) {
         "routines_list — see the scheduled work that already exists",
       parameters: Type.Object({}),
       async execute() {
-        const all = rows();
+        const all = await rows();
         if (!all.length) return ok("No routines are set up.");
         return ok(JSON.stringify(all.map(describe), null, 2));
       },
@@ -182,32 +192,30 @@ export function routineTools(sessionId?: string) {
         if ("error" in t) return bad(t.error!);
 
         const id = nanoid(10);
-        const slug = freeSlug(p.name);
-        const back = reportBackTo(sessionId);
-        getDb()
-          .prepare(
-            `INSERT INTO routines
+        const slug = await freeSlug(p.name);
+        const back = await reportBackTo(sessionId);
+        const conn = await getDb();
+        await conn.run(
+          `INSERT INTO routines
            (id, slug, name, schedule, run_at, instructions, fresh_session, next_run,
             report_channel, report_target)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
+         VALUES ($id, $slug, $name, $schedule, $runAt, $instructions, $freshSession, $nextRun, $reportChannel, $reportTarget)`,
+          {
             id,
             slug,
-            p.name.trim(),
-            t.schedule,
-            t.runAt,
-            (p.instructions ?? "").trim(),
-            p.freshSession ? 1 : 0,
-            t.schedule
-              ? (nextRun(parseCron(t.schedule))?.toISOString() ?? null)
-              : t.runAt,
-            back.channel,
-            back.target,
-          );
-        routineSupervisor.refreshSchedules();
+            name: p.name.trim(),
+            schedule: t.schedule,
+            runAt: t.runAt,
+            instructions: (p.instructions ?? "").trim(),
+            freshSession: p.freshSession ? 1 : 0,
+            nextRun: t.schedule ? (nextRun(parseCron(t.schedule))?.toISOString() ?? null) : t.runAt,
+            reportChannel: back.channel,
+            reportTarget: back.target,
+          },
+        );
+        await routineSupervisor.refreshSchedules();
 
-        const created = byName(slug)!;
+        const created = (await byName(slug))!;
         return ok(
           `Created "${created.name}". Next run: ${whenNext(created) ?? "not scheduled"}.` +
             (back.channel
@@ -245,48 +253,44 @@ export function routineTools(sessionId?: string) {
         ),
       }),
       async execute(_id: string, p: any) {
-        const row = byName(p.routine ?? "");
+        const row = await byName(p.routine ?? "");
         if (!row) return bad(`No routine called "${p.routine}"`);
 
         const sets: string[] = [];
-        const values: unknown[] = [];
+        const params: Record<string, any> = { id: row.id };
 
         if (typeof p.name === "string" && p.name.trim()) {
-          sets.push("name = ?");
-          values.push(p.name.trim());
+          sets.push("name = $name");
+          params.name = p.name.trim();
         }
         if (typeof p.instructions === "string") {
-          sets.push("instructions = ?");
-          values.push(p.instructions.trim());
+          sets.push("instructions = $instructions");
+          params.instructions = p.instructions.trim();
         }
         if (typeof p.enabled === "boolean") {
-          sets.push("enabled = ?");
-          values.push(p.enabled ? 1 : 0);
+          sets.push("enabled = $enabled");
+          params.enabled = p.enabled ? 1 : 0;
         }
         if (p.schedule !== undefined || p.runAt !== undefined) {
           const t = timing(p.schedule, p.runAt);
           if ("error" in t) return bad(t.error!);
-          sets.push("schedule = ?", "run_at = ?");
-          values.push(t.schedule, t.runAt);
+          sets.push("schedule = $schedule", "run_at = $runAt");
+          params.schedule = t.schedule;
+          params.runAt = t.runAt;
           // A one-off given a new time is armed again rather than looking done.
           if (t.runAt && t.runAt !== row.run_at) {
-            sets.push(
-              "last_run = NULL",
-              "last_status = NULL",
-              "last_output = NULL",
-            );
+            sets.push("last_run = NULL", "last_status = NULL", "last_output = NULL");
           }
         }
         if (!sets.length)
           return bad("Nothing to change — pass at least one field");
 
-        sets.push("updated_at = datetime('now')");
-        getDb()
-          .prepare(`UPDATE routines SET ${sets.join(", ")} WHERE id = ?`)
-          .run(...values, row.id);
-        routineSupervisor.refreshSchedules();
+        sets.push("updated_at = now()");
+        const conn = await getDb();
+        await conn.run(`UPDATE routines SET ${sets.join(", ")} WHERE id = $id`, params);
+        await routineSupervisor.refreshSchedules();
 
-        const after = byName(row.slug)!;
+        const after = (await byName(row.slug))!;
         return ok(
           `Updated "${after.name}". Next run: ${whenNext(after) ?? "not scheduled"}`,
         );
@@ -305,7 +309,7 @@ export function routineTools(sessionId?: string) {
         }),
       }),
       async execute(_id: string, p: any) {
-        const row = byName(p.routine ?? "");
+        const row = await byName(p.routine ?? "");
         if (!row) return bad(`No routine called "${p.routine}"`);
         try {
           const after = await routineSupervisor.run(row, "manual");
@@ -316,6 +320,56 @@ export function routineTools(sessionId?: string) {
         } catch (e) {
           return bad((e as Error).message);
         }
+      },
+    });
+
+    pi.registerTool({
+      name: "dream_progress",
+      label: "Advance Dream Cycle",
+      description:
+        "Update the self-reflection routine to the next phase of the Dream Cycle. " +
+        "This ensures that if the cycle is interrupted, it resumes from the correct phase.",
+      parameters: Type.Object({
+        phase: Type.String({
+          description: "The name of the phase to advance to (e.g., 'PHASE 2: GRAPH ENRICHMENT'). This must match a phase header in the current instructions.",
+        }),
+      }),
+      async execute(_id: string, p: any) {
+        const slug = "self-reflection";
+        const row = await byName(slug);
+        if (!row) return bad(`No routine called "${slug}"`);
+
+        const instructions = row.instructions;
+        const index = instructions.indexOf(p.phase);
+        if (index === -1) return bad(`Phase "${p.phase}" not found in current instructions. Please use an exact header from the instructions.`);
+
+        const newInstructions = instructions.slice(index);
+        const prefix = "You are continuing a Dream Cycle. The next phase is: ";
+
+        const conn = await getDb();
+        await conn.run(
+          "UPDATE routines SET instructions = $instructions, updated_at = now() WHERE id = $id",
+          { instructions: prefix + newInstructions, id: row.id },
+        );
+
+        await routineSupervisor.refreshSchedules();
+
+        return ok(`Dream Cycle advanced to "${p.phase}".`);
+      },
+    });
+
+    pi.registerTool({
+      name: "routine_cleanup",
+      label: "Cleanup",
+      description:
+        "Prune stale sessions, old tasks, and expired pages to keep the system efficient.",
+      parameters: Type.Object({
+        days: Type.Optional(Type.Number({ description: "How many days of history to keep. Defaults to 30." })),
+      }),
+      async execute(_id: string, p: any) {
+        const days = typeof p.days === "number" ? p.days : 30;
+        const { sessions, routines } = await pruneOldRecords(days);
+        return ok(`Cleanup complete. Pruned ${sessions} sessions and ${routines} routines.`);
       },
     });
   };

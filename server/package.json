@@ -7,15 +7,14 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.82.1",
-    "better-sqlite3": "^11.7.0",
+    "@duckdb/node-api": "1.4.4-r.4",
+    "@earendil-works/pi-coding-agent": "file:../../pi-source/packages/coding-agent",
     "cookie-parser": "^1.4.7",
     "express": "^5.0.1",
     "nanoid": "^5.0.9",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",

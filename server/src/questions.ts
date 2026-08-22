@@ -33,14 +33,10 @@ export interface QuestionRow {
 const ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 
 /** Unique among unanswered questions; an answered id is free to be reused. */
-function freeId(): string {
-  const taken = new Set(
-    (
-      getDb().prepare("SELECT id FROM questions WHERE answered_at IS NULL").all() as {
-        id: string;
-      }[]
-    ).map((r) => r.id)
-  );
+async function freeId(): Promise<string> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT id FROM questions WHERE answered_at IS NULL");
+  const taken = new Set((reader.getRowObjectsJson() as unknown as { id: string }[]).map((r) => r.id));
   for (let attempt = 0; attempt < 500; attempt++) {
     let id = "";
     for (let i = 0; i < 4; i++) id += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
@@ -49,7 +45,7 @@ function freeId(): string {
   throw new Error("No free question id");
 }
 
-export function askQuestion(input: {
+export async function askQuestion(input: {
   sessionId: string;
   personKey: string;
   personName: string;
@@ -58,41 +54,47 @@ export function askQuestion(input: {
   question: string;
   actionTool?: string | null;
   action?: string | null;
-}): QuestionRow {
-  const id = freeId();
-  getDb()
-    .prepare(
-      `INSERT INTO questions
-         (id, session_id, person_key, person_name, channel_slug, channel_key, question,
-          action_tool, action)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+}): Promise<QuestionRow> {
+  const id = await freeId();
+  const conn = await getDb();
+  await conn.run(
+    `INSERT INTO questions
+       (id, session_id, person_key, person_name, channel_slug, channel_key, question,
+        action_tool, action)
+     VALUES ($id, $sessionId, $personKey, $personName, $channelSlug, $channelKey, $question, $actionTool, $action)`,
+    {
       id,
-      input.sessionId,
-      input.personKey,
-      input.personName,
-      input.channelSlug,
-      input.channelKey,
-      input.question,
-      input.action ? (input.actionTool || "bash") : null,
-      input.action || null
-    );
-  return getQuestion(id)!;
+      sessionId: input.sessionId,
+      personKey: input.personKey,
+      personName: input.personName,
+      channelSlug: input.channelSlug,
+      channelKey: input.channelKey,
+      question: input.question,
+      actionTool: input.action ? (input.actionTool || "bash") : null,
+      action: input.action || null,
+    },
+  );
+  return (await getQuestion(id))!;
 }
 
-export const getQuestion = (id: string): QuestionRow | undefined =>
-  getDb().prepare("SELECT * FROM questions WHERE id = ?").get(id) as QuestionRow | undefined;
+export async function getQuestion(id: string): Promise<QuestionRow | undefined> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM questions WHERE id = $id", { id });
+  return reader.getRowObjectsJson()[0] as unknown as QuestionRow | undefined;
+}
 
-export const pendingQuestions = (): QuestionRow[] =>
-  getDb()
-    .prepare("SELECT * FROM questions WHERE answered_at IS NULL ORDER BY asked_at ASC")
-    .all() as QuestionRow[];
+export async function pendingQuestions(): Promise<QuestionRow[]> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM questions WHERE answered_at IS NULL ORDER BY asked_at ASC");
+  return reader.getRowObjectsJson() as unknown as QuestionRow[];
+}
 
-export function recordAnswer(id: string, answer: string): void {
-  getDb()
-    .prepare("UPDATE questions SET answered_at = ?, answer = ? WHERE id = ?")
-    .run(new Date().toISOString(), answer, id);
+export async function recordAnswer(id: string, answer: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
+    "UPDATE questions SET answered_at = $now, answer = $answer WHERE id = $id",
+    { now: new Date().toISOString(), answer, id },
+  );
 }
 
 /**
@@ -119,12 +121,12 @@ const APPROVES = /^(approve|approved|allow|allowed|yes|ok|okay|go ahead|do it|al
  */
 const ALWAYS = /^(always)\b/i;
 
-export function readAnswer(
+export async function readAnswer(
   text: string
-): { question: QuestionRow; answer: string; approves: boolean; always: boolean } | null {
+): Promise<{ question: QuestionRow; answer: string; approves: boolean; always: boolean } | null> {
   const m = /^#([a-z2-9]{4})\b[\s:,-]*([\s\S]*)$/i.exec(text.trim());
   if (!m) return null;
-  const question = getQuestion(m[1].toLowerCase());
+  const question = await getQuestion(m[1].toLowerCase());
   if (!question || question.answered_at) return null;
   const answer = m[2].trim();
   if (!answer) return null;

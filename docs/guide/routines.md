@@ -18,6 +18,17 @@ A one-off catches up: if its moment passed while the portal was down, it still
 runs when the portal comes back. A recurring one does not — it simply waits for
 its next slot, because ten missed hourly runs firing at once helps nobody.
 
+`@idle` is a third kind, not a cron shorthand — it fires when the system has
+gone quiet rather than on a clock. It waits for ten minutes with nothing
+happening (no session running, no human activity on a task or agent
+conversation — a routine session doesn't count, or a frequent idle routine
+would keep the system looking permanently busy), then runs, and won't run
+again for at least three hours even if it stays quiet the whole time. Real
+activity arriving interrupts an in-progress `@idle` run — the routine's own
+schedule kicking off is not "real activity," but a message from you is. The
+seeded [self-reflection](#dream-cycle) routine is the only one that ships on
+this schedule; nothing stops you creating your own.
+
 By default a routine keeps one session, so a run can see what the last one did —
 "nothing new since yesterday" needs yesterday. **Fresh session each run** gives
 each one a clean start instead, for work where history is only noise.
@@ -83,6 +94,45 @@ The rules exist for when the log line was written by somebody who wanted the
 agent to read it. Exempt the routine that needs it, leave the rest alone, and
 read the audit occasionally.
 :::
+
+## Dream Cycle
+
+A routine called **self-reflection** is seeded once, on `@idle`, the first time
+the portal starts. It's guarded by slug so a restart never recreates it — if
+you disable or rewrite it, that choice sticks.
+
+Its instructions walk the agent through seven phases in order:
+
+1. **Memorise** — call `memory_digest` for excerpts of what's happened since
+   the last run: recent session text, split into identity-relevant and general.
+2. **Graph enrichment** — fold anything worth keeping into the [knowledge
+   graph](/reference/architecture#knowledge-graph) with `graph_remember`.
+3. **Inner life** — update `INNER_LIFE.md`, a first-person present-tense
+   account of recent experience. Only what's genuinely new.
+4. **Self-concept** — update `SELF_CONCEPT.md` with reasoned conclusions about
+   identity and capability, folding in anything the digest flagged as
+   identity-relevant.
+5. **Skill synthesis** — if the digest reveals a reusable pattern, write it as
+   a new skill.
+6. **Cleanup** — prune stale sessions and old routines with the `cleanup`
+   tool.
+7. **Report** — a short account to the routine's report target, same as any
+   other routine (see [Reporting back](#reporting-back)).
+
+### Resuming a cycle
+
+Seven phases is a while to sit unwatched. If the run is interrupted — real
+activity arrives and the `@idle` run gets aborted, or the portal restarts —
+resuming from phase one would repeat work already done and risk creating
+duplicate memories.
+
+The agent has a `dream_progress` tool for this: called with the exact header
+of the next phase (`"PHASE 2: GRAPH ENRICHMENT"`), it rewrites the routine's
+own `instructions` to start from that point. The next run — whether it's a
+retry of the interrupted one or the routine's next scheduled fire — picks up
+where the last one left off instead of starting over. The seed instructions
+tell the agent to call this after finishing each phase, so a healthy cycle
+walks its own instructions forward one phase at a time as it goes.
 
 ## Letting the agent manage them
 

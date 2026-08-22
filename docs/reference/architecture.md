@@ -1,11 +1,11 @@
 # Architecture
 
-Express server, React front end, SQLite for state, pi driven through its SDK.
+Express server, React front end, DuckDB for state, pi driven through its SDK.
 
 ```
 browser ──HTTP──▶ express ──▶ session manager ──▶ pi (SDK, in process)
    ▲                              │
-   └──────── SSE ─────────────────┴──▶ event log (SQLite)
+   └──────── SSE ─────────────────┴──▶ event log (DuckDB)
 ```
 
 ## Fire and forget
@@ -74,15 +74,78 @@ stray file would attach the wrong conversation.
 
 ## Data
 
+The portal's own state lives in `portal.duckdb`, one file, one connection —
+DuckDB rather than SQLite. Same reasoning as the [knowledge
+graph](#knowledge-graph) below: a real embedded database with indexing and a
+schema, instead of hand-rolled files, and one engine for the whole app instead
+of two.
+
 | Table | Holds |
 | --- | --- |
-| `sessions` | Title, workspace, status, per-session model and effort, pinned, pi session file |
+| `sessions` | Title, workspace, status, per-session model and effort, pinned, pi session file, role, last speaker |
 | `events` | Append-only log, one row per event, indexed by `(session_id, seq)` |
 | `channels` | Configured channels and their credentials |
+| `routines` | Standing instructions, schedule, and the outcome of the last run — see [Routines](/guide/routines) |
+| `people` | Everyone who's ever spoken to the agent, including strangers it turned away |
+| `questions` | A colleague's question waiting on the primary user's answer |
+| `grants` | A one-off tool approval, spent once and expiring in 15 minutes |
+| `notes` | Something the portal said into a conversation while nobody was listening, held for its next turn |
+| `tool_rules` | Standing exceptions to what a non-primary role may run |
+| `audit` | What the [guard](/guide/security) decided, and why — kept to the last 2,000 entries |
 | `settings` | Portal-wide overrides |
 
-Migrations run in place with `ALTER TABLE` rather than recreating anything, so
-upgrades keep existing sessions and their history.
+Migrations run in place — `ALTER TABLE` plus a check against
+`information_schema.columns` (DuckDB has no `PRAGMA table_info`) — rather than
+recreating anything, so upgrades keep existing sessions and their history.
+
+## Knowledge graph
+
+A second DuckDB file, `graph.duckdb` — deliberately separate from
+`portal.duckdb` rather than another table in it, since a fact's lifecycle
+(confidence, corroboration, no decay) is nothing like a session's. Two tables:
+
+| Table | Holds |
+| --- | --- |
+| `nodes` | Typed facts (`user`, `project`, `concept`, `fact`, `skill`, plus a protected `anchor` type) — name, summary, a confidence score, and an embedding |
+| `edges` | Directed, labelled relations between nodes, with a weight that strengthens on repetition |
+
+**Corroboration, not overwrite.** Re-observing something the graph already
+knows nudges its confidence toward `min(max(existing, incoming) + 0.08,
+0.95)` rather than replacing it outright — the same rule Sisyphean's
+`GraphRAG.upsert_node` used. `anchor` nodes are frozen: only an explicit
+confidence of `1.0` updates one, everything else is a no-op on content. There
+is no decay or forgetting yet — a node's confidence only ever goes up.
+
+**Search is hybrid.** Keyword search uses DuckDB's own FTS extension
+(`PRAGMA create_fts_index`), ranked by BM25 score × confidence. Semantic
+search embeds the query — a CPU-only server running `nomic-embed-text-v1.5`
+(768 dimensions), configured via `EMBEDDING_BASE_URL` — and ranks by
+`array_cosine_similarity(embedding, query) × confidence`. Falls back to
+keyword search whenever the embedding server is unreachable or nothing is
+embedded yet, so a caller never has to branch on availability.
+
+**Traversal uses DuckPGQ**, a community property-graph extension
+(`GRAPH_TABLE`/`MATCH` queries), rather than hand-written joins.
+
+::: warning DuckPGQ pins the DuckDB version
+DuckPGQ has no build published for DuckDB 1.5.x yet, so `@duckdb/node-api` is
+pinned to `1.4.4` — the last version DuckPGQ is confirmed to work against.
+This pin may need to move again once DuckPGQ catches up; don't bump
+`@duckdb/node-api` without checking.
+:::
+
+Two tools put this in the agent's hands: `graph_remember(name, type, summary,
+relations?)` writes a node and optionally links it, and `graph_recall(query,
+limit?)` runs the hybrid search and expands each hit's neighbors one hop. Both
+are registered unconditionally — every session, not just routines — because
+remembering a durable fact is an ordinary-conversation thing.
+
+`memory_digest` is a third tool, registered only for the self-reflection
+routine's session (see [Dream Cycle](/guide/routines#dream-cycle)): it reads
+raw conversation text from `portal.duckdb`'s `events` table since a stored
+watermark, splits it into identity-relevant and general chunks by keyword
+match, and hands it back as the raw material the Dream Cycle folds into the
+graph and into `SELF_CONCEPT.md`/`INNER_LIFE.md`.
 
 ## Front end
 

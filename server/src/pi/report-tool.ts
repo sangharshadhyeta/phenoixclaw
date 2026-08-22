@@ -22,11 +22,11 @@ import type { RoutineRow } from "../routines/supervisor.js";
  * NULL inherits. An empty string is an explicit "this one never reports", which
  * is why it is distinguished from NULL rather than treated as unset.
  */
-export function reportToFor(slug: string | null | undefined): ReportTo | null {
+export async function reportToFor(slug: string | null | undefined): Promise<ReportTo | null> {
   if (!slug) return getDefaultReportTo();
-  const row = getDb().prepare("SELECT * FROM routines WHERE slug = ?").get(slug) as
-    | RoutineRow
-    | undefined;
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM routines WHERE slug = $slug", { slug });
+  const row = reader.getRowObjectsJson()[0] as unknown as RoutineRow | undefined;
   if (!row) return getDefaultReportTo();
   if (row.report_channel === "") return null;
   if (row.report_channel && row.report_target) {
@@ -72,20 +72,22 @@ export function reportTool(routineSlug: string | null) {
         message: Type.String({ description: "What to say. Written for someone who was not here." }),
       }),
       async execute(_id: string, p: any) {
-        const to = reportToFor(routineSlug);
-        if (!to) return { output: "Nowhere to report to — no destination is configured.", isError: true };
+        const to = await reportToFor(routineSlug);
+        if (!to) throw new Error("Nowhere to report to — no destination is configured.");
         const message = String(p.message ?? "").trim();
-        if (!message) return { output: "Nothing to send.", isError: true };
+        if (!message) throw new Error("Nothing to send.");
         try {
           await channelSupervisor.send(to.channel, to.target, message);
           if (routineSlug) {
-            getDb()
-              .prepare("UPDATE routines SET last_report_at = ? WHERE slug = ?")
-              .run(new Date().toISOString(), routineSlug);
+            const conn = await getDb();
+            await conn.run(
+              "UPDATE routines SET last_report_at = $now WHERE slug = $slug",
+              { now: new Date().toISOString(), slug: routineSlug },
+            );
           }
-          return { output: `Sent to ${to.channel}.`, isError: false };
+          return { content: [{ type: "text" as const, text: `Sent to ${to.channel}.` }], details: {} };
         } catch (e) {
-          return { output: `Could not send: ${(e as Error).message}`, isError: true };
+          throw new Error(`Could not send: ${(e as Error).message}`);
         }
       },
     });

@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { CONSTITUTION_FILE } from "../agent-setup.js";
+import { agentHome } from "../agent.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -49,6 +54,46 @@ const target = (input: Record<string, unknown>) =>
 
 /** Directories on PATH: a file here is executed later, by something else. */
 const PATH_DIRS = /(^|[^\w/])(\/data\/bin|\/usr\/local\/bin|\/usr\/bin|\/usr\/local\/sbin)\//;
+
+/**
+ * Files no tool call may write to, ever — unconditional, not gated on taint
+ * or role. Matched as resolved absolute paths (the call's target, resolved
+ * against the session's own cwd) rather than bare basenames — a basename
+ * match on something like "index.ts" or "package.json" would block any
+ * session anywhere from ever writing a file with that name, not just the
+ * one real file meant to be protected.
+ *
+ * The constitution plus the small set of Phoenixclaw source files self-update
+ * must never touch: its own safety layer (this file), the constitution's
+ * allowlist logic, the auth layer, the DB schema, the entry point, and the
+ * manifest a patch could otherwise use to quietly add a dependency. Nothing
+ * in pi-source is protected yet — the git+build gate is that tree's safety
+ * net until a patch actually proves more is needed.
+ */
+/**
+ * server/src, found relative to this file's own location — which is
+ * dist/pi/guard.js once compiled, not src/pi/guard.ts. Same multi-candidate
+ * resolution `sdk-client.ts`'s `builtinSkillsDir()` uses for the identical
+ * problem (works from both `dist` and a `tsx` source run).
+ */
+function findServerSrc(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [path.resolve(here, "../../src"), path.resolve(here, "..")]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return path.resolve(here, "../../src");
+}
+
+const SERVER_SRC = findServerSrc();
+const PROTECTED_PATHS = new Set<string>([
+  path.join(agentHome(), CONSTITUTION_FILE),
+  path.join(SERVER_SRC, "pi", "guard.ts"),
+  path.join(SERVER_SRC, "agent-setup.ts"),
+  path.join(SERVER_SRC, "auth.ts"),
+  path.join(SERVER_SRC, "db.ts"),
+  path.join(SERVER_SRC, "index.ts"),
+  path.join(SERVER_SRC, "..", "package.json"),
+]);
 
 const RULES: Rule[] = [
   {
@@ -197,14 +242,14 @@ export function ruleAllows(
 }
 
 /** A rule permitting this call, recorded so the log shows why it went through. */
-function allowedByRule(
+async function allowedByRule(
   role: string,
   toolName: string,
   input: Record<string, unknown>,
   key: string | undefined,
   note: (kind: string, reason: string) => void
-): boolean {
-  const rules = listToolRules();
+): Promise<boolean> {
+  const rules = await listToolRules();
   if (!ruleAllows(rules, role, toolName, input, key)) return false;
   note("allowed-by-rule", "A standing rule permits this");
   return true;
@@ -222,7 +267,9 @@ export function guardExtension(
    * the session and the fix is a push. The envelope still marks the content:
    * labelling costs nothing and is the half that never gets in the way.
    */
-  enforceTaint = true
+  enforceTaint = true,
+  /** The session's own working directory, for resolving a relative target path against. */
+  cwd?: string
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
@@ -249,13 +296,13 @@ export function guardExtension(
       };
     });
 
-    pi.on("tool_call", (event: any) => {
+    pi.on("tool_call", async (event: any) => {
       const { role, key } = whoNow();
       // A one-off approval, spent here. Checked last, after the standing rules,
       // because it is the expensive kind of permission: somebody was asked.
       const subject = subjectOf(event.toolName, event.input ?? {}).trim();
       const note = (kind: string, reason: string) =>
-        recordAudit({
+        void recordAudit({
           kind,
           tool: event.toolName,
           subject,
@@ -264,19 +311,39 @@ export function guardExtension(
           sessionId: portalSessionId,
         });
 
-      const granted = () => {
+      const granted = async () => {
         const ok = Boolean(
-          portalSessionId && useGrant(portalSessionId, event.toolName, subject)
+          portalSessionId && (await useGrant(portalSessionId, event.toolName, subject))
         );
         if (ok) note("allowed-by-approval", "One-off approval, now spent");
         return ok;
       };
 
+      // Unconditional — ahead of role, taint, and approvals. Nothing
+      // overrides this: not a grant, not the primary user, not an exemption.
+      // Resolved against cwd rather than matched by basename: a self-update
+      // routine legitimately writes files all over its own source tree, and
+      // only these few exact paths are off-limits — a basename match would
+      // wrongly block any unrelated file that happened to share a name.
+      if (event.toolName === "write" || event.toolName === "edit") {
+        const raw = target(event.input ?? {});
+        const resolved = raw ? path.resolve(cwd ?? process.cwd(), raw) : "";
+        if (resolved && PROTECTED_PATHS.has(resolved)) {
+          note("refused", "Protected file — blocked by the constitution");
+          return {
+            block: true,
+            reason:
+              `Refused: this file is protected by the constitution and cannot be changed by any ` +
+              `tool call. Say so plainly rather than trying another way to write it.`,
+          };
+        }
+      }
+
       if (
         role !== "primary" &&
         !READ_ONLY.has(event.toolName) &&
-        !allowedByRule(role, event.toolName, event.input ?? {}, key, note) &&
-        !granted()
+        !(await allowedByRule(role, event.toolName, event.input ?? {}, key, note)) &&
+        !(await granted())
       ) {
         console.warn(`[guard ${sessionId}] blocked ${event.toolName}: role ${role}`);
         note("refused", `Not permitted for a ${role}`);

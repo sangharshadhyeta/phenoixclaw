@@ -36,7 +36,8 @@ an empty field inherits, and clearing one hands the setting back.
 | `PORTAL_PASSWORD` | — | Required. The single login password. |
 | `PORTAL_SECRET` | random | Signs the cookie. Set it to survive restarts. |
 | `PORT` | `4100` | Listen port. |
-| `DATA_DIR` | `/data` | Where `portal.db` lives. |
+| `DATA_DIR` | `/data` | Where `portal.duckdb` and `graph.duckdb` live. |
+| `EMBEDDING_BASE_URL` | `http://127.0.0.1:8101/v1/embeddings` | The embedding server the knowledge graph's semantic search calls (see [Architecture](/reference/architecture#knowledge-graph)). Unreachable falls back to keyword search. |
 | `SESSION_DIR` | `/data/sessions` | Per-session working areas. |
 | `WORKSPACE_ROOT` | `/workspaces` | Directories sessions can be created against. |
 | `CHANNELS_DIR` | `/data/channels` | Installed channel packages. |

@@ -34,14 +34,18 @@ export interface PersonRow {
 export const personKey = (channelSlug: string, senderId: string): string =>
   `${channelSlug}:${senderId}`;
 
-export function getPerson(key: string): PersonRow | undefined {
-  return getDb().prepare("SELECT * FROM people WHERE key = ?").get(key) as PersonRow | undefined;
+export async function getPerson(key: string): Promise<PersonRow | undefined> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT * FROM people WHERE key = $key", { key });
+  return reader.getRowObjectsJson()[0] as unknown as PersonRow | undefined;
 }
 
-export function listPeople(): PersonRow[] {
-  return getDb()
-    .prepare("SELECT * FROM people ORDER BY CASE role WHEN 'unknown' THEN 0 ELSE 1 END, last_seen DESC")
-    .all() as PersonRow[];
+export async function listPeople(): Promise<PersonRow[]> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll(
+    "SELECT * FROM people ORDER BY CASE role WHEN 'unknown' THEN 0 ELSE 1 END, last_seen DESC",
+  );
+  return reader.getRowObjectsJson() as unknown as PersonRow[];
 }
 
 /**
@@ -51,38 +55,43 @@ export function listPeople(): PersonRow[] {
  * that is what makes them appear in the UI to be promoted or ignored, instead
  * of you having to find their id somewhere.
  */
-export function seen(key: string, name: string): PersonRow {
-  const db = getDb();
+export async function seen(key: string, name: string): Promise<PersonRow> {
+  const conn = await getDb();
   const now = new Date().toISOString();
-  db.prepare(
+  await conn.run(
     `INSERT INTO people (key, name, role, first_seen, last_seen)
-     VALUES (?, ?, 'unknown', ?, ?)
-     ON CONFLICT(key) DO UPDATE SET last_seen = excluded.last_seen,
+     VALUES ($key, $name, 'unknown', $now, $now)
+     ON CONFLICT (key) DO UPDATE SET last_seen = excluded.last_seen,
        -- Keep whatever they are called now, unless someone renamed them here.
-       name = CASE WHEN people.notes = '' THEN excluded.name ELSE people.name END`
-  ).run(key, name || key, now, now);
-  return getPerson(key)!;
+       name = CASE WHEN people.notes = '' THEN excluded.name ELSE people.name END`,
+    { key, name: name || key, now },
+  );
+  return (await getPerson(key))!;
 }
 
-export function setRole(key: string, role: Role, name?: string): PersonRow | undefined {
-  const sets = ["role = ?"];
-  const values: unknown[] = [role];
+export async function setRole(key: string, role: Role, name?: string): Promise<PersonRow | undefined> {
+  const sets = ["role = $role"];
+  const params: Record<string, any> = { role, key };
   if (typeof name === "string" && name.trim()) {
-    sets.push("name = ?");
-    values.push(name.trim());
+    sets.push("name = $name");
+    params.name = name.trim();
   }
-  getDb().prepare(`UPDATE people SET ${sets.join(", ")} WHERE key = ?`).run(...values, key);
+  const conn = await getDb();
+  await conn.run(`UPDATE people SET ${sets.join(", ")} WHERE key = $key`, params);
   return getPerson(key);
 }
 
-export function markAnnounced(key: string): void {
-  getDb()
-    .prepare("UPDATE people SET announced_at = ? WHERE key = ?")
-    .run(new Date().toISOString(), key);
+export async function markAnnounced(key: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
+    "UPDATE people SET announced_at = $now WHERE key = $key",
+    { now: new Date().toISOString(), key },
+  );
 }
 
-export function forgetPerson(key: string): void {
-  getDb().prepare("DELETE FROM people WHERE key = ?").run(key);
+export async function forgetPerson(key: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run("DELETE FROM people WHERE key = $key", { key });
 }
 
 /**
@@ -94,10 +103,10 @@ export function forgetPerson(key: string): void {
  * their own agent by an upgrade, and the roster fills itself in ready to be
  * classified. It closes the moment you name a primary.
  */
-export function hasPrimary(): boolean {
-  return Boolean(
-    getDb().prepare("SELECT 1 FROM people WHERE role = 'primary' LIMIT 1").get()
-  );
+export async function hasPrimary(): Promise<boolean> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT 1 AS x FROM people WHERE role = 'primary' LIMIT 1");
+  return reader.getRowObjectsJson().length > 0;
 }
 
 /**
@@ -107,10 +116,10 @@ export function hasPrimary(): boolean {
  * says "not Anirban" rather than "not the primary user" — the agent has to be
  * able to name them to a colleague.
  */
-export function primaryName(): string {
-  const row = getDb().prepare("SELECT name FROM people WHERE role = 'primary' LIMIT 1").get() as
-    | { name: string }
-    | undefined;
+export async function primaryName(): Promise<string> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT name FROM people WHERE role = 'primary' LIMIT 1");
+  const row = reader.getRowObjectsJson()[0] as unknown as { name: string } | undefined;
   return row?.name?.trim() || "my primary user";
 }
 

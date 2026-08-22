@@ -8,6 +8,9 @@ import { routineTools } from "./routine-tools.js";
 import { reportTool, reportToFor } from "./report-tool.js";
 import { guardExtension } from "./guard.js";
 import { askPrimaryTool } from "./ask-primary.js";
+import { memoryDigestTool } from "./memory-digest.js";
+import { graphTools } from "./graph-tools.js";
+import { readAgentFile } from "../agent-setup.js";
 
 function asArray(v: any): any[] {
   const resolved = typeof v === "function" ? v() : v;
@@ -31,8 +34,11 @@ function asArray(v: any): any[] {
  *
  * TEAM.md is the shared half: what everyone may be told.
  */
-const CONTEXT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md"];
-const SHARED_FILES = ["SOUL.md", "TEAM.md"];
+const CONTEXT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md", "SELF_CONCEPT.md", "INNER_LIFE.md", "CONSTITUTION.md"];
+// SELF_CONCEPT.md, INNER_LIFE.md and CONSTITUTION.md describe the agent
+// itself, not the primary user, so — like SOUL.md — they travel to every
+// conversation, not just theirs.
+const SHARED_FILES = ["SOUL.md", "TEAM.md", "SELF_CONCEPT.md", "INNER_LIFE.md", "CONSTITUTION.md"];
 
 const filesFor = (role?: string) => (!role || role === "primary" ? CONTEXT_FILES : SHARED_FILES);
 
@@ -57,7 +63,7 @@ function extraContextFiles(cwd: string, role?: string): { path: string; content:
  * material, and the model read its own identity as notes about a third party.
  * One line at system level is enough to change what they are.
  */
-function framing(cwd: string, role?: string): string[] {
+function framing(cwd: string, role?: string): string {
   const present = filesFor(role).filter((name) => {
     try {
       return existsSync(path.join(cwd, name));
@@ -65,10 +71,21 @@ function framing(cwd: string, role?: string): string[] {
       return false;
     }
   });
-  if (!present.length) return [];
-  return [
-    `${present.join(", ")} in your working directory are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`,
-  ];
+  if (!present.length) return "";
+
+  const lines = [`${present.join(", ")} in your working directory are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`];
+
+  // Deep identity injection for core files
+  if (present.includes("SOUL.md")) {
+    const soul = readAgentFile("SOUL.md");
+    if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
+  }
+  if (present.includes("SELF_CONCEPT.md")) {
+    const selfConcept = readAgentFile("SELF_CONCEPT.md");
+    if (selfConcept) lines.push(`\n# YOUR SELF-CONCEPT\n${selfConcept}`);
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -171,7 +188,11 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.whoNow ?? (() => ({ role: "primary" })),
             opts.sessionId,
             opts.enforceTaint !== false,
+            opts.cwd,
           ) },
+        // Every session, unconditionally: remembering/recalling durable facts
+        // is a normal-conversation thing, not limited to a routine or role.
+        { name: "graph", factory: graphTools() },
       ];
       if (opts.routineTools)
         factories.push({ name: "routines", factory: routineTools(opts.sessionId) });
@@ -182,8 +203,13 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       }
       // Only when there is somewhere for it to go — a tool that always fails is
       // worse than no tool, and the model will keep trying it.
-      if (opts.routineSlug !== undefined && reportToFor(opts.routineSlug)) {
+      if (opts.routineSlug !== undefined && (await reportToFor(opts.routineSlug))) {
         factories.push({ name: "report", factory: reportTool(opts.routineSlug ?? null) });
+      }
+      // Only the self-reflection routine gets this — it is the raw material
+      // for SELF_CONCEPT.md / INNER_LIFE.md and means nothing to any other run.
+      if (opts.routineSlug === "self-reflection") {
+        factories.push({ name: "memory-digest", factory: memoryDigestTool() });
       }
       resourceLoader = new pi.DefaultResourceLoader({
         cwd: opts.cwd,

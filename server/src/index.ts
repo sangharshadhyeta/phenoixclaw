@@ -78,13 +78,13 @@ app.use("/api", requireAuth);
 
 // --- global settings (defaults for every new session) ---
 
-app.get("/api/settings", (_req, res) => {
+app.get("/api/settings", async (_req, res) => {
   // `stored` and `defaults` are separated so the UI can show an empty field
   // with the inherited value as a placeholder, instead of pre-filling it and
   // turning the next Save into a permanent pin.
   res.json({
-    settings: getSettings(),
-    stored: getStoredSettings(),
+    settings: await getSettings(),
+    stored: await getStoredSettings(),
     defaults: getSettingDefaults(),
     piSettingsPath: piSettingsPath(),
     executor: EXECUTOR_KIND,
@@ -92,13 +92,13 @@ app.get("/api/settings", (_req, res) => {
   });
 });
 
-app.put("/api/settings", (req, res) => {
+app.put("/api/settings", async (req, res) => {
   const { provider, model, thinkingLevel } = req.body ?? {};
   const patch: Record<string, string> = {};
   if (typeof provider === "string") patch.provider = provider.trim();
   if (typeof model === "string") patch.model = model.trim();
   if (typeof thinkingLevel === "string") patch.thinkingLevel = thinkingLevel.trim();
-  const settings = setSettings(patch);
+  const settings = await setSettings(patch);
   // Existing sessions keep their own settings; this applies to sessions started
   // from here on, which matches how the TUI treats a changed default.
   res.json({ settings, note: "Applies to newly started sessions" });
@@ -155,15 +155,15 @@ app.post("/api/workspaces", (req, res) => {
 
 // --- sessions ---
 
-/** SQLite stores pinned as 0/1; the API speaks booleans. */
-const toApi = (s: ReturnType<typeof getSession> & {}) => ({
+/** Pinned is stored as 0/1; the API speaks booleans. */
+const toApi = (s: Awaited<ReturnType<typeof getSession>> & {}) => ({
   ...s,
   pinned: Boolean(s.pinned),
   live: sessions.isRunning(s.id),
 });
 
-app.get("/api/sessions", (_req, res) => {
-  res.json({ sessions: listSessions().map(toApi), executor: EXECUTOR_KIND });
+app.get("/api/sessions", async (_req, res) => {
+  res.json({ sessions: (await listSessions()).map(toApi), executor: EXECUTOR_KIND });
 });
 
 /**
@@ -171,15 +171,15 @@ app.get("/api/sessions", (_req, res) => {
  * transcript, same replay, same model handling — so the Agent tab opens them
  * with the ordinary chat view rather than a parallel implementation.
  */
-app.get("/api/agent/sessions", (_req, res) => {
-  const channels = getDb()
-    .prepare("SELECT id, slug, name, kind FROM channels")
-    .all() as { id: string; slug: string; name: string; kind: string }[];
+app.get("/api/agent/sessions", async (_req, res) => {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT id, slug, name, kind FROM channels");
+  const channels = reader.getRowObjectsJson() as unknown as { id: string; slug: string; name: string; kind: string }[];
   const bySlug = new Map(channels.map((c) => [c.slug, c]));
 
   res.json({
     agentHome: agentHome(),
-    sessions: listAgentSessions().map((s) => ({
+    sessions: (await listAgentSessions()).map((s) => ({
       ...toApi(s),
       // Matched on the slug, so a channel deleted and recreated under the same
       // one still owns its conversations.
@@ -203,10 +203,10 @@ app.get("/api/agent/sessions", (_req, res) => {
  * dialogs — so it talks to the agent directly rather than relaying text.
  * "browser" is a reserved slug so these group together on the Agent tab.
  */
-app.post("/api/agent/sessions", (req, res) => {
+app.post("/api/agent/sessions", async (req, res) => {
   const title = typeof req.body?.title === "string" && req.body.title.trim() ? req.body.title.trim() : "";
   try {
-    const { session } = resolveChannelSession({
+    const { session } = await resolveChannelSession({
       channelSlug: "browser",
       key: nanoid(8),
       title: title || `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
@@ -252,7 +252,7 @@ app.put("/api/agent/files/:name", (req, res) => {
   }
 });
 
-app.post("/api/sessions", (req, res) => {
+app.post("/api/sessions", async (req, res) => {
   const { title, workspace } = req.body ?? {};
   if (typeof workspace !== "string" || !workspace) {
     return res.status(400).json({ error: "workspace required" });
@@ -265,43 +265,43 @@ app.post("/api/sessions", (req, res) => {
   if (!existsSync(resolved)) return res.status(400).json({ error: "workspace does not exist" });
 
   const id = nanoid(12);
-  createSession({
+  await createSession({
     id,
     // Default the session name to the workspace folder name.
     title: (typeof title === "string" && title.trim()) || path.basename(resolved),
     workspace: resolved,
     executor: EXECUTOR_KIND,
   });
-  res.json(toApi(getSession(id)!));
+  res.json(toApi((await getSession(id))!));
 });
 
-app.get("/api/sessions/:id", (req, res) => {
-  const session = getSession(req.params.id);
+app.get("/api/sessions/:id", async (req, res) => {
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   res.json(toApi(session));
 });
 
-app.patch("/api/sessions/:id", (req, res) => {
-  const session = getSession(req.params.id);
+app.patch("/api/sessions/:id", async (req, res) => {
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   const { title, pinned } = req.body ?? {};
-  if (typeof title === "string" && title.trim()) updateSession(session.id, { title: title.trim() });
-  if (typeof pinned === "boolean") updateSession(session.id, { pinned: pinned ? 1 : 0 });
-  res.json(toApi(getSession(session.id)!));
+  if (typeof title === "string" && title.trim()) await updateSession(session.id, { title: title.trim() });
+  if (typeof pinned === "boolean") await updateSession(session.id, { pinned: pinned ? 1 : 0 });
+  res.json(toApi((await getSession(session.id))!));
 });
 
 app.delete("/api/sessions/:id", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   await sessions.stop(session.id);
-  deleteSession(session.id);
+  await deleteSession(session.id);
   res.json({ ok: true });
 });
 
 // --- prompting ---
 
 app.post("/api/sessions/:id/prompt", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   const message = req.body?.message;
   if (typeof message !== "string" || !message.trim()) {
@@ -318,8 +318,8 @@ app.post("/api/sessions/:id/prompt", async (req, res) => {
 });
 
 /** The browser answering a dialog an extension is waiting on. */
-app.post("/api/sessions/:id/ui-response", (req, res) => {
-  const session = getSession(req.params.id);
+app.post("/api/sessions/:id/ui-response", async (req, res) => {
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   const { id, value, cancelled } = req.body ?? {};
   if (typeof id !== "string") return res.status(400).json({ error: "id required" });
@@ -328,7 +328,7 @@ app.post("/api/sessions/:id/ui-response", (req, res) => {
 });
 
 app.post("/api/sessions/:id/abort", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   await sessions.abort(session.id);
   res.json({ ok: true });
@@ -337,7 +337,7 @@ app.post("/api/sessions/:id/abort", async (req, res) => {
 // --- per-session config (the web equivalent of the TUI's slash commands) ---
 
 app.get("/api/sessions/:id/config", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
 
   // Deliberately does not start pi. Opening a session used to boot a model
@@ -346,7 +346,7 @@ app.get("/api/sessions/:id/config", async (req, res) => {
   // The stored model and effort are what those pills need, and they are right
   // here on the row.
   if (!sessions.isRunning(session.id)) {
-    const defaults = getSettings();
+    const defaults = await getSettings();
     return res.json({
       live: false,
       state: {
@@ -386,7 +386,7 @@ app.get("/api/sessions/:id/config", async (req, res) => {
  * session you glance at.
  */
 app.get("/api/sessions/:id/models", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   try {
     const client = await sessions.client(session.id);
@@ -403,14 +403,14 @@ app.get("/api/sessions/:id/models", async (req, res) => {
 });
 
 app.post("/api/sessions/:id/config", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   const { provider, modelId, thinkingLevel, autoCompaction, autoRetry } = req.body ?? {};
   const applied: string[] = [];
   try {
     const client = await sessions.client(session.id);
     if (typeof modelId === "string" && modelId) {
-      await client.setModel(provider || getSettings().provider, modelId);
+      await client.setModel(provider || (await getSettings()).provider, modelId);
       applied.push("model");
     }
     if (typeof thinkingLevel === "string" && thinkingLevel) {
@@ -440,7 +440,7 @@ app.post("/api/sessions/:id/config", async (req, res) => {
       patch.model = state.model.id;
     }
     if (applied.includes("thinkingLevel")) patch.thinking_level = state.thinkingLevel;
-    if (Object.keys(patch).length) updateSession(session.id, patch);
+    if (Object.keys(patch).length) await updateSession(session.id, patch);
 
     res.json({ ok: true, applied, state });
   } catch (e) {
@@ -449,7 +449,7 @@ app.post("/api/sessions/:id/config", async (req, res) => {
 });
 
 app.post("/api/sessions/:id/compact", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   try {
     const client = await sessions.client(session.id);
@@ -466,7 +466,7 @@ app.post("/api/sessions/:id/compact", async (req, res) => {
  * commands available immediately.
  */
 app.get("/api/sessions/:id/commands", async (req, res) => {
-  const session = getSession(req.params.id);
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
   try {
     const client = await sessions.client(session.id);
@@ -497,8 +497,8 @@ app.use("/api", peopleRouter());
  * after minutes or days delivers exactly what was missed and then continues
  * live — no gap, no duplicates.
  */
-app.get("/api/sessions/:id/events", (req, res) => {
-  const session = getSession(req.params.id);
+app.get("/api/sessions/:id/events", async (req, res) => {
+  const session = await getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
 
   const since = Number(req.query.since ?? 0) || 0;
@@ -518,28 +518,21 @@ app.get("/api/sessions/:id/events", (req, res) => {
     })}\n\n`);
   };
 
-  // A fresh load gets the end of the conversation, not the beginning. Replaying
-  // from zero and stopping at the batch limit is how a long session came back
-  // from a refresh showing its first few thousand events and nothing since —
-  // the transcript ended mid-turn, on whatever the cap happened to land on.
-  const cursor = since === 0 ? replayStart(session.id, REPLAY_EVENTS) : since;
-
-  // Paged to the end rather than one batch: a reconnect after a long run has
-  // more to catch up on than a single query returns, and stopping early loses
-  // exactly the part it was reconnecting for.
-  let lastSent = cursor;
-  for (;;) {
-    const batch = eventsSince(session.id, lastSent);
-    if (!batch.length) break;
-    for (const row of batch) {
-      write(row);
-      lastSent = row.seq;
-    }
-    if (batch.length < 5000) break;
-  }
-  res.write(`event: caught-up\ndata: ${JSON.stringify({ seq: lastSent })}\n\n`);
-
+  // Replaying is now a sequence of awaits (DuckDB is async, unlike
+  // better-sqlite3), so a live event can arrive mid-replay. Buffered here and
+  // flushed once the replay's own cursor is settled, so nothing written
+  // during the gap is silently dropped or sent out of order.
+  let replaying = true;
+  const buffered: { seq: number; type: string; payload: string }[] = [];
   const onEvent = (row: { seq: number; type: string; payload: string }) => {
+    if (replaying) {
+      buffered.push(row);
+      return;
+    }
+    deliver(row);
+  };
+  let lastSent = 0;
+  const deliver = (row: { seq: number; type: string; payload: string }) => {
     // Live-only events carry a negative seq: deliver them, but never let one
     // move the replay cursor, or a reconnect would skip stored history.
     if (row.seq < 0) {
@@ -552,6 +545,32 @@ app.get("/api/sessions/:id/events", (req, res) => {
     write(row);
   };
   sessions.on(`session:${session.id}`, onEvent);
+
+  // A fresh load gets the end of the conversation, not the beginning. Replaying
+  // from zero and stopping at the batch limit is how a long session came back
+  // from a refresh showing its first few thousand events and nothing since —
+  // the transcript ended mid-turn, on whatever the cap happened to land on.
+  const cursor = since === 0 ? await replayStart(session.id, REPLAY_EVENTS) : since;
+
+  // Paged to the end rather than one batch: a reconnect after a long run has
+  // more to catch up on than a single query returns, and stopping early loses
+  // exactly the part it was reconnecting for.
+  lastSent = cursor;
+  for (;;) {
+    const batch = await eventsSince(session.id, lastSent);
+    if (!batch.length) break;
+    for (const row of batch) {
+      write(row);
+      lastSent = row.seq;
+    }
+    if (batch.length < 5000) break;
+  }
+  res.write(`event: caught-up\ndata: ${JSON.stringify({ seq: lastSent })}\n\n`);
+
+  // Now flush whatever arrived while replaying, in order, through the same
+  // dedup/cursor logic live events get from here on.
+  replaying = false;
+  for (const row of buffered) deliver(row);
 
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
   req.on("close", () => {

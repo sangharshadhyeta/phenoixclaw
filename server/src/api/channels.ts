@@ -66,7 +66,7 @@ const parseConfig = (raw: string): Record<string, unknown> => {
  * secrets are set — enough to render "configured" without handing back a token
  * that anyone with the page open could read.
  */
-function toApi(row: ChannelRow, kind?: LoadedChannel) {
+async function toApi(row: ChannelRow, kind?: LoadedChannel) {
   const config = parseConfig(row.config);
   const visible: Record<string, unknown> = {};
   const secretsSet: string[] = [];
@@ -91,7 +91,7 @@ function toApi(row: ChannelRow, kind?: LoadedChannel) {
     relayProgress: Boolean(row.relay_progress),
     relayTools: Boolean(row.relay_tools),
     /** Conversations keyed to this slug — what a delete would strand. */
-    sessionCount: countChannelSessions(row.slug),
+    sessionCount: await countChannelSessions(row.slug),
     // What the supervisor is actually doing, not a hardcoded guess.
     ...channelSupervisor.status(row.id),
     created_at: row.created_at,
@@ -103,13 +103,12 @@ function toApi(row: ChannelRow, kind?: LoadedChannel) {
  * A slug that is free. Agent sessions are keyed on it, so it must be unique —
  * two channels sharing one would merge their conversations.
  */
-function freeSlug(desired: string, exceptId?: string): string {
+async function freeSlug(desired: string, exceptId?: string): Promise<string> {
+  const conn = await getDb();
+  const reader = await conn.runAndReadAll("SELECT id, slug FROM channels");
+  const rows = reader.getRowObjectsJson() as unknown as { id: string; slug: string }[];
   const base = slugify(desired) || "channel";
-  const taken = new Set(
-    (getDb().prepare("SELECT id, slug FROM channels").all() as { id: string; slug: string }[])
-      .filter((c) => c.id !== exceptId)
-      .map((c) => c.slug)
-  );
+  const taken = new Set(rows.filter((c) => c.id !== exceptId).map((c) => c.slug));
   if (!taken.has(base)) return base;
   for (let n = 2; n < 500; n++) {
     if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
@@ -123,19 +122,22 @@ const missingRequired = (kind: LoadedChannel, config: Record<string, unknown>) =
 export function channelsRouter(): Router {
   const router = express.Router();
 
-  const rowById = (id: string) =>
-    getDb().prepare("SELECT * FROM channels WHERE id = ?").get(id) as ChannelRow | undefined;
+  const rowById = async (id: string): Promise<ChannelRow | undefined> => {
+    const conn = await getDb();
+    const reader = await conn.runAndReadAll("SELECT * FROM channels WHERE id = $id", { id });
+    return reader.getRowObjectsJson()[0] as unknown as ChannelRow | undefined;
+  };
 
   router.get("/channels", async (_req, res) => {
     try {
       const { channels: kinds, broken } = await loadChannels();
       const byId = new Map(kinds.map((k) => [k.id, k]));
-      const rows = getDb()
-        .prepare("SELECT * FROM channels ORDER BY created_at ASC")
-        .all() as ChannelRow[];
+      const conn = await getDb();
+      const reader = await conn.runAndReadAll("SELECT * FROM channels ORDER BY created_at ASC");
+      const rows = reader.getRowObjectsJson() as unknown as ChannelRow[];
 
       res.json({
-        channels: rows.map((r) => toApi(r, byId.get(r.kind))),
+        channels: await Promise.all(rows.map((r) => toApi(r, byId.get(r.kind)))),
         kinds: kinds.map(kindToApi),
         broken,
         agentHome: agentHome(),
@@ -159,18 +161,20 @@ export function channelsRouter(): Router {
     // An explicit slug reconnects a channel to the conversations it had before
     // it was deleted; without one it is derived from the name.
     const wanted = typeof req.body?.slug === "string" && req.body.slug.trim() ? req.body.slug : label;
-    const slug = freeSlug(wanted);
+    const slug = await freeSlug(wanted);
 
     const id = nanoid(10);
-    getDb()
-      .prepare("INSERT INTO channels (id, slug, kind, name, config) VALUES (?, ?, ?, ?, ?)")
-      .run(id, slug, kind.id, label, JSON.stringify(clean));
+    const conn = await getDb();
+    await conn.run(
+      "INSERT INTO channels (id, slug, kind, name, config) VALUES ($id, $slug, $kind, $name, $config)",
+      { id, slug, kind: kind.id, name: label, config: JSON.stringify(clean) },
+    );
     void channelSupervisor.sync();
-    res.json(toApi(rowById(id)!, kind));
+    res.json(await toApi((await rowById(id))!, kind));
   });
 
   router.patch("/channels/:id", async (req, res) => {
-    const row = rowById(req.params.id);
+    const row = await rowById(req.params.id);
     if (!row) return res.status(404).json({ error: "Not found" });
     const kind = await kindById(row.kind);
     if (!kind) {
@@ -182,57 +186,61 @@ export function channelsRouter(): Router {
     const { name, enabled, config, instructions, slug, relayProgress, relayTools } =
       req.body ?? {};
     const sets: string[] = [];
-    const values: unknown[] = [];
+    const params: Record<string, any> = { id: row.id };
+    const conn = await getDb();
 
     if (typeof slug === "string" && slug.trim() && slug.trim() !== row.slug) {
       const next = slugify(slug);
       if (!isValidSlug(next)) {
         return res.status(400).json({ error: `"${slug}" is not a usable slug` });
       }
-      const clash = getDb()
-        .prepare("SELECT id FROM channels WHERE slug = ? AND id != ?")
-        .get(next, row.id);
-      if (clash) return res.status(409).json({ error: `Another channel already uses "${next}"` });
-      sets.push("slug = ?");
-      values.push(next);
+      const clashReader = await conn.runAndReadAll(
+        "SELECT id FROM channels WHERE slug = $slug AND id != $id",
+        { slug: next, id: row.id },
+      );
+      if (clashReader.getRowObjectsJson().length) {
+        return res.status(409).json({ error: `Another channel already uses "${next}"` });
+      }
+      sets.push("slug = $slug");
+      params.slug = next;
     }
     if (typeof name === "string" && name.trim()) {
-      sets.push("name = ?");
-      values.push(name.trim());
+      sets.push("name = $name");
+      params.name = name.trim();
     }
     // Not trimmed to empty-means-unchanged: clearing the box should clear the
     // instructions, which is only expressible if "" is a real value.
     if (typeof instructions === "string") {
-      sets.push("instructions = ?");
-      values.push(instructions.trim());
+      sets.push("instructions = $instructions");
+      params.instructions = instructions.trim();
     }
     if (typeof relayProgress === "boolean") {
-      sets.push("relay_progress = ?");
-      values.push(relayProgress ? 1 : 0);
+      sets.push("relay_progress = $relayProgress");
+      params.relayProgress = relayProgress ? 1 : 0;
     }
     if (typeof relayTools === "boolean") {
-      sets.push("relay_tools = ?");
-      values.push(relayTools ? 1 : 0);
+      sets.push("relay_tools = $relayTools");
+      params.relayTools = relayTools ? 1 : 0;
     }
     if (typeof enabled === "boolean") {
-      sets.push("enabled = ?");
-      values.push(enabled ? 1 : 0);
+      sets.push("enabled = $enabled");
+      params.enabled = enabled ? 1 : 0;
     }
     if (config && typeof config === "object") {
       const merged = sanitise(kind, config, parseConfig(row.config));
       const missing = missingRequired(kind, merged);
       if (missing.length) return res.status(400).json({ error: `Missing: ${missing.join(", ")}` });
-      sets.push("config = ?");
-      values.push(JSON.stringify(merged));
+      sets.push("config = $config");
+      params.config = JSON.stringify(merged);
     }
     if (sets.length) {
-      sets.push("updated_at = datetime('now')");
-      getDb().prepare(`UPDATE channels SET ${sets.join(", ")} WHERE id = ?`).run(...values, row.id);
+      sets.push("updated_at = now()");
+      await conn.run(`UPDATE channels SET ${sets.join(", ")} WHERE id = $id`, params);
     }
     // Enabling, disabling or editing a token all mean the running channel is
     // stale; the supervisor restarts or stops it.
     await channelSupervisor.sync();
-    res.json(toApi(rowById(row.id)!, kind));
+    res.json(await toApi((await rowById(row.id))!, kind));
   });
 
   /**
@@ -240,24 +248,24 @@ export function channelsRouter(): Router {
    * them — they are reconnected if it is recreated under the same slug. Pass
    * `?sessions=delete` to discard them instead.
    */
-  router.delete("/channels/:id", (req, res) => {
-    const row = rowById(req.params.id);
+  router.delete("/channels/:id", async (req, res) => {
+    const row = await rowById(req.params.id);
     if (!row) return res.json({ ok: true, stranded: 0, deleted: 0 });
 
-    const count = countChannelSessions(row.slug);
+    const conn = await getDb();
+    const count = await countChannelSessions(row.slug);
     let deleted = 0;
     if (req.query.sessions === "delete") {
-      const ids = getDb()
-        .prepare("SELECT id FROM sessions WHERE channel_slug = ?")
-        .all(row.slug) as { id: string }[];
+      const reader = await conn.runAndReadAll("SELECT id FROM sessions WHERE channel_slug = $slug", { slug: row.slug });
+      const ids = reader.getRowObjectsJson() as unknown as { id: string }[];
       for (const s of ids) {
-        getDb().prepare("DELETE FROM events WHERE session_id = ?").run(s.id);
-        getDb().prepare("DELETE FROM sessions WHERE id = ?").run(s.id);
+        await conn.run("DELETE FROM events WHERE session_id = $id", { id: s.id });
+        await conn.run("DELETE FROM sessions WHERE id = $id", { id: s.id });
       }
       deleted = ids.length;
     }
 
-    getDb().prepare("DELETE FROM channels WHERE id = ?").run(row.id);
+    await conn.run("DELETE FROM channels WHERE id = $id", { id: row.id });
     void channelSupervisor.sync();
     res.json({ ok: true, slug: row.slug, stranded: deleted ? 0 : count, deleted });
   });

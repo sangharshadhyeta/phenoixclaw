@@ -46,24 +46,24 @@ export const unscopeKey = (channelSlug: string, stored: string) =>
  * The key is prefixed with the channel's slug, so two channels using the same
  * obvious key ("general") stay separate without either knowing.
  */
-export function resolveChannelSession(opts: {
+export async function resolveChannelSession(opts: {
   /** The channel's stable slug, not its primary key. */
   channelSlug: string;
   key: string;
   /** Human label for the first time this conversation is seen. */
   title?: string;
   executor: string;
-}): { session: SessionRow; created: boolean } {
+}): Promise<{ session: SessionRow; created: boolean }> {
   const key = String(opts.key ?? "").trim().slice(0, MAX_KEY);
   if (!key) throw new Error("A channel must supply a session key for each conversation");
 
   const scoped = scopeKey(opts.channelSlug, key);
 
-  const existing = findChannelSession(scoped);
+  const existing = await findChannelSession(scoped);
   if (existing) return { session: existing, created: false };
 
   const id = nanoid(12);
-  createSession({
+  await createSession({
     id,
     title: (opts.title ?? "").trim().slice(0, 120) || key,
     workspace: agentHome(),
@@ -74,7 +74,7 @@ export function resolveChannelSession(opts: {
   });
 
   // Re-read rather than construct: the row carries defaults this does not set.
-  const session = findChannelSession(scoped);
+  const session = await findChannelSession(scoped);
   if (!session) throw new Error("Failed to create the session for this conversation");
   return { session, created: true };
 }

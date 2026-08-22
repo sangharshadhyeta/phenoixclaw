@@ -33,6 +33,9 @@ Context files split at the same boundary:
 | --- | --- |
 | `SOUL.md` | Everyone — it is who the agent is |
 | `TEAM.md` | Everyone — the shared half |
+| `SELF_CONCEPT.md` | Everyone — peer to `SOUL.md`, the agent's own reasoned account of its identity |
+| `INNER_LIFE.md` | Everyone — peer to `SOUL.md`, a first-person narrative of recent experience |
+| `CONSTITUTION.md` | Everyone — peer to `SOUL.md`, the rules nothing may write over (see [Dream Cycle](/guide/routines#dream-cycle)) |
 | `PrimaryUser.md` | You only |
 | `MEMORY.md` | You only |
 

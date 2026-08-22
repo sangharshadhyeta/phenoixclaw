@@ -1,7 +1,8 @@
-import Database from "better-sqlite3";
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { piSetting } from "./pi-settings.js";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type SessionStatus = "idle" | "running" | "error" | "interrupted";
 
@@ -18,7 +19,7 @@ export interface SessionRow {
   provider: string | null;
   model: string | null;
   thinking_level: string | null;
-  /** SQLite has no boolean; 0 or 1. */
+  /** No native boolean in the original schema; kept as 0/1 to minimize behavior change. */
   pinned: number;
   /** pi's own session file, so the exact conversation is reopened on restart. */
   pi_session_file: string | null;
@@ -58,23 +59,40 @@ export interface EventRow {
   created_at: string;
 }
 
+/**
+ * Portal-wide storage, in DuckDB — the same engine the knowledge graph
+ * (`graph.ts`) already uses, so the app runs on one database format instead
+ * of two. Follows `graph.ts`'s exact idiom: a memoized single connection,
+ * `ensureSchema()` using `CREATE TABLE IF NOT EXISTS` plus
+ * `information_schema.columns` checks for column-level migrations (DuckDB has
+ * no equivalent of better-sqlite3's `PRAGMA table_info`, so this replaces it).
+ */
 const DATA_DIR = process.env.DATA_DIR || "./data";
-let db: Database.Database | null = null;
 
-export function getDb(): Database.Database {
-  if (db) return db;
-  mkdirSync(DATA_DIR, { recursive: true });
-  db = new Database(path.join(DATA_DIR, "portal.db"));
-  db.pragma("journal_mode = WAL");
-  db.exec(`
+let connPromise: Promise<DuckDBConnection> | null = null;
+
+async function tableColumns(conn: DuckDBConnection, table: string): Promise<Set<string>> {
+  const reader = await conn.runAndReadAll(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = $table",
+    { table },
+  );
+  return new Set(reader.getRowObjectsJson().map((r: any) => r.column_name as string));
+}
+
+async function ensureSchema(conn: DuckDBConnection): Promise<void> {
+  await conn.run("CREATE SEQUENCE IF NOT EXISTS events_seq START 1");
+  await conn.run("CREATE SEQUENCE IF NOT EXISTS notes_id_seq START 1");
+  await conn.run("CREATE SEQUENCE IF NOT EXISTS audit_id_seq START 1");
+
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       workspace TEXT NOT NULL,
       executor TEXT NOT NULL DEFAULT 'host',
       status TEXT NOT NULL DEFAULT 'idle',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP NOT NULL DEFAULT now(),
       last_error TEXT,
       provider TEXT,
       model TEXT,
@@ -84,103 +102,91 @@ export function getDb(): Database.Database {
       kind TEXT NOT NULL DEFAULT 'task',
       channel_slug TEXT,
       channel_key TEXT,
-      routine_slug TEXT
-    );
-    -- The index on (channel_id, channel_key) is created in migrate(), not here.
-    -- CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so on an
-    -- upgrade these columns do not exist yet at this point and indexing them
-    -- fails — which took the server down until the migration had run.
+      routine_slug TEXT,
+      role TEXT NOT NULL DEFAULT 'primary',
+      last_person_key TEXT
+    )
+  `);
 
-    -- Every event pi emits is appended here. This is what makes the portal
-    -- fire-and-forget: a browser that reconnects days later replays from its
-    -- last seen seq instead of having missed the run entirely.
+  // Every event pi emits is appended here. This is what makes the portal
+  // fire-and-forget: a browser that reconnects days later replays from its
+  // last seen seq instead of having missed the run entirely.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      seq BIGINT PRIMARY KEY DEFAULT nextval('events_seq'),
       session_id TEXT NOT NULL,
       type TEXT NOT NULL,
       payload TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
+      created_at TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `);
+  await conn.run("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq)");
 
-    -- Two-way links into the agent session. Each row is one connection
-    -- (a Telegram bot, a Slack app, an inbound webhook); messages arriving on
-    -- any of them go to the same agent, and its replies go back the same way.
+  // Two-way links into the agent session. Each row is one connection
+  // (a Telegram bot, a Slack app, an inbound webhook); messages arriving on
+  // any of them go to the same agent, and its replies go back the same way.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS channels (
       id TEXT PRIMARY KEY,
-      -- Stable, yours to choose, and what agent sessions are keyed on. Delete a
-      -- channel and recreate it under the same slug and its conversations come
-      -- back; the primary key is regenerated and would not.
       slug TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       config TEXT NOT NULL DEFAULT '{}',
-      -- Appended to the agent's system prompt for messages arriving here, so
-      -- one door can carry standing guidance the others do not.
       instructions TEXT NOT NULL DEFAULT '',
-      -- What the channel relays while the agent works, rather than only at the
-      -- end. Both are per channel: a phone wants less noise than a war room.
       relay_progress INTEGER NOT NULL DEFAULT 1,
       relay_tools INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `);
+  await conn.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
 
-    -- Scheduled work. Each routine owns one session, so a run can see what the
-    -- last one did rather than starting blind every time.
+  // Scheduled work. Each routine owns one session, so a run can see what the
+  // last one did rather than starting blind every time.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS routines (
       id TEXT PRIMARY KEY,
       slug TEXT NOT NULL,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      -- Five-field cron, or one of the @shorthands. Empty for a one-off.
       schedule TEXT NOT NULL DEFAULT '',
-      -- Set instead of a schedule: an ISO instant to run at, once.
       run_at TEXT,
-      -- What the agent is asked to do, verbatim.
       instructions TEXT NOT NULL DEFAULT '',
-      -- Start each run in a clean session instead of the routine's own.
       fresh_session INTEGER NOT NULL DEFAULT 0,
-      -- Whether the injection guard's blocking rules apply to this routine's
-      -- runs. On by default. Work that reads logs and then fixes what it found
-      -- trips them honestly: fetching the logs taints the session, and a fix
-      -- that pushes, or a grep for the word "token", is exactly what the rules
-      -- exist to stop when the content is hostile.
       guard INTEGER NOT NULL DEFAULT 1,
-      -- Where a run's report goes. NULL inherits the portal default; '' means
-      -- this routine never reports, whatever the default is.
+      workspace TEXT,
       report_channel TEXT,
       report_target TEXT,
-      -- When a run last reached a person. Distinguishes "nothing to say" from
-      -- "wrote it out and never sent it", which look identical otherwise.
       last_report_at TEXT,
       last_run TEXT,
       last_status TEXT,
       last_output TEXT,
       last_ms INTEGER,
       next_run TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
+      updated_at TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `);
+  await conn.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
 
-    -- Portal-wide defaults applied to every new session. Env vars are the
-    -- fallback, so an untouched install still works out of the box.
-    -- Who the agent talks to. Identified by the platform's own stable id,
-    -- scoped by channel, because a display name is chosen by whoever types it.
+  // Who the agent talks to. Identified by the platform's own stable id,
+  // scoped by channel, because a display name is chosen by whoever types it.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS people (
       key TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
-      -- primary | colleague | guest | unknown
       role TEXT NOT NULL DEFAULT 'unknown',
       notes TEXT NOT NULL DEFAULT '',
-      first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+      first_seen TIMESTAMP NOT NULL DEFAULT now(),
       last_seen TEXT,
       announced_at TEXT
-    );
+    )
+  `);
 
-    -- Questions a colleague's session could not answer, waiting on the primary
-    -- user. The id is short because a human types it back in a chat.
+  // Questions a colleague's session could not answer, waiting on the primary
+  // user. The id is short because a human types it back in a chat.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS questions (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -189,196 +195,172 @@ export function getDb(): Database.Database {
       channel_slug TEXT NOT NULL,
       channel_key TEXT NOT NULL,
       question TEXT NOT NULL,
-      asked_at TEXT NOT NULL DEFAULT (datetime('now')),
+      asked_at TIMESTAMP NOT NULL DEFAULT now(),
       answered_at TEXT,
       answer TEXT,
-      -- The exact thing the agent wants to do, when it is asking for permission
-      -- rather than an opinion. Approving grants this and nothing else.
       action_tool TEXT,
       action TEXT
-    );
+    )
+  `);
 
-    -- A permission granted once, for one exact action, in one conversation.
-    -- Not a role change: it expires, it is used up, and it authorises the thing
-    -- that was shown to the person who approved it.
+  // A permission granted once, for one exact action, in one conversation.
+  // Not a role change: it expires, it is used up, and it authorises the thing
+  // that was shown to the person who approved it.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS grants (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
       tool TEXT NOT NULL,
       subject TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
       expires_at TEXT NOT NULL,
       used_at TEXT
-    );
+    )
+  `);
+  await conn.run("CREATE INDEX IF NOT EXISTS idx_grants_open ON grants(session_id, tool, used_at)");
 
-    -- Things the portal said into a conversation while nobody was talking to
-    -- it: a routine's report, an answer relayed back. Held until that
-    -- conversation next runs, then folded into its context — otherwise the
-    -- agent is asked "why did you say that?" about a message it never saw.
+  // Things the portal said into a conversation while nobody was talking to
+  // it: a routine's report, an answer relayed back. Held until that
+  // conversation next runs, then folded into its context.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS notes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGINT PRIMARY KEY DEFAULT nextval('notes_id_seq'),
       session_id TEXT NOT NULL,
       text TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
       consumed_at TEXT,
-      -- 1 when the person has not seen this yet: the channel could not be
-      -- spoken to, so it waits and goes out with the next reply.
       pending_delivery INTEGER NOT NULL DEFAULT 0
-    );
+    )
+  `);
+  await conn.run("CREATE INDEX IF NOT EXISTS idx_notes_pending ON notes(session_id, consumed_at)");
 
-    -- Exceptions to what a non-primary role may run. Without these the only
-    -- choice is read-only or full trust, and the useful middle — "colleagues may
-    -- list my inbox, nothing else" — has nowhere to live.
+  // Exceptions to what a non-primary role may run.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS tool_rules (
       id TEXT PRIMARY KEY,
-      -- colleague | guest | all (both)
       role TEXT NOT NULL,
       tool TEXT NOT NULL,
-      -- Glob against the command for bash, the path for file tools.
       pattern TEXT NOT NULL,
-      -- One person, when the rule came from approving their request. NULL
-      -- applies to everyone holding the role, which is a much bigger thing to
-      -- say and should only happen deliberately.
       person_key TEXT,
       note TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+      created_at TIMESTAMP NOT NULL DEFAULT now()
+    )
+  `);
 
-    -- What the guard did, and why. Refusals were going to the container log,
-    -- which answers "is it working" and not "what has my agent been asked to do
-    -- this week" — the question somebody actually has.
+  // What the guard did, and why.
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS audit (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      at TEXT NOT NULL DEFAULT (datetime('now')),
-      -- refused | allowed-by-rule | allowed-by-approval | stranger | answered
+      id BIGINT PRIMARY KEY DEFAULT nextval('audit_id_seq'),
+      "at" TIMESTAMP NOT NULL DEFAULT now(),
       kind TEXT NOT NULL,
       tool TEXT NOT NULL DEFAULT '',
-      -- The command or path it was about, as the guard saw it.
       subject TEXT NOT NULL DEFAULT '',
       reason TEXT NOT NULL DEFAULT '',
       person_key TEXT,
       session_id TEXT
-    );
+    )
+  `);
+  await conn.run('CREATE INDEX IF NOT EXISTS idx_audit_at ON audit("at" DESC)');
 
+  await conn.run(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
-    );
+    )
   `);
-  migrate(db);
-  return db;
-}
 
-/**
- * Migrations run in place rather than recreating the table, so existing
- * sessions and their event history survive an upgrade.
- */
-function migrate(d: Database.Database): void {
-  const names = (d.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
-  if (names.includes("project") && !names.includes("workspace")) {
-    d.exec("ALTER TABLE sessions RENAME COLUMN project TO workspace");
-  }
-  // Model and effort used to live only in the running pi process, so a restart
-  // silently reverted every session to the portal defaults.
-  for (const col of ["provider", "model", "thinking_level"]) {
-    if (!names.includes(col)) d.exec(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
-  }
-  if (!names.includes("pinned")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!names.includes("pi_session_file")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN pi_session_file TEXT");
-  }
-  // The lowest role this session has ever served. Ratchets down and never up:
-  // once a guest has spoken in a conversation, the private context files stay
-  // out of it even if the next message is from the primary user.
-  if (!names.includes("last_person_key")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN last_person_key TEXT");
-  }
-  if (!names.includes("role")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'primary'");
+  // channel_key is unique on its own (it already carries its channel's slug).
+  await conn.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_channel_key
+                    ON sessions(channel_key)`);
+
+  // Column-level migrations: CREATE TABLE IF NOT EXISTS is a no-op against an
+  // existing table, so a column added after a table already existed on disk
+  // needs its own check-and-ALTER, same idiom as graph.ts's embedding column.
+  const sessionCols = await tableColumns(conn, "sessions");
+  for (const [col, ddl] of [
+    ["provider", "TEXT"],
+    ["model", "TEXT"],
+    ["thinking_level", "TEXT"],
+    ["pinned", "INTEGER NOT NULL DEFAULT 0"],
+    ["pi_session_file", "TEXT"],
+    ["last_person_key", "TEXT"],
+    ["role", "TEXT NOT NULL DEFAULT 'primary'"],
+    ["kind", "TEXT NOT NULL DEFAULT 'task'"],
+    ["channel_slug", "TEXT"],
+    ["channel_key", "TEXT"],
+    ["routine_slug", "TEXT"],
+  ] as const) {
+    if (!sessionCols.has(col)) await conn.run(`ALTER TABLE sessions ADD COLUMN ${col} ${ddl}`);
   }
 
-  if (!names.includes("kind")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
+  const channelCols = await tableColumns(conn, "channels");
+  for (const [col, ddl] of [
+    ["instructions", "TEXT NOT NULL DEFAULT ''"],
+    ["slug", "TEXT NOT NULL DEFAULT ''"],
+    ["relay_progress", "INTEGER NOT NULL DEFAULT 1"],
+    ["relay_tools", "INTEGER NOT NULL DEFAULT 1"],
+  ] as const) {
+    if (!channelCols.has(col)) await conn.run(`ALTER TABLE channels ADD COLUMN ${col} ${ddl}`);
   }
-  // channel_id was the original link and was a mistake — see channel_slug.
-  // There is no data worth migrating, so the old column and its sessions go.
-  if (names.includes("channel_id")) {
-    d.exec("DROP INDEX IF EXISTS idx_sessions_channel");
-    d.exec("DELETE FROM sessions WHERE kind = 'agent'");
-    d.exec("ALTER TABLE sessions DROP COLUMN channel_id");
-  }
-  if (!names.includes("channel_slug")) {
-    d.exec("ALTER TABLE sessions ADD COLUMN channel_slug TEXT");
-  }
-  if (!names.includes("channel_key")) d.exec("ALTER TABLE sessions ADD COLUMN channel_key TEXT");
-  if (!names.includes("routine_slug")) d.exec("ALTER TABLE sessions ADD COLUMN routine_slug TEXT");
-  // The key already carries its channel's slug, so it is unique on its own.
-  d.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_channel_key
-            ON sessions(channel_key) WHERE channel_key IS NOT NULL`);
 
-  const channelCols = (d.prepare("PRAGMA table_info(channels)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
-  if (channelCols.length && !channelCols.includes("instructions")) {
-    d.exec("ALTER TABLE channels ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+  const routineCols = await tableColumns(conn, "routines");
+  for (const [col, ddl] of [
+    ["run_at", "TEXT"],
+    ["report_channel", "TEXT"],
+    ["report_target", "TEXT"],
+    ["last_report_at", "TEXT"],
+    ["guard", "INTEGER NOT NULL DEFAULT 1"],
+    ["workspace", "TEXT"],
+  ] as const) {
+    if (!routineCols.has(col)) await conn.run(`ALTER TABLE routines ADD COLUMN ${col} ${ddl}`);
   }
-  if (channelCols.length && !channelCols.includes("slug")) {
-    d.exec("ALTER TABLE channels ADD COLUMN slug TEXT NOT NULL DEFAULT ''");
-    // Nothing sensible to backfill from, and no data to lose.
-    d.exec("DELETE FROM channels WHERE slug = ''");
-  }
-  if (channelCols.length && !channelCols.includes("relay_progress")) {
-    d.exec("ALTER TABLE channels ADD COLUMN relay_progress INTEGER NOT NULL DEFAULT 1");
-  }
-  if (channelCols.length && !channelCols.includes("relay_tools")) {
-    d.exec("ALTER TABLE channels ADD COLUMN relay_tools INTEGER NOT NULL DEFAULT 1");
-  }
-  d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
-  const routineCols = (d.prepare("PRAGMA table_info(routines)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
-  if (routineCols.length && !routineCols.includes("run_at")) {
-    d.exec("ALTER TABLE routines ADD COLUMN run_at TEXT");
-  }
-  for (const col of ["report_channel", "report_target", "last_report_at"]) {
-    if (routineCols.length && !routineCols.includes(col)) {
-      d.exec(`ALTER TABLE routines ADD COLUMN ${col} TEXT`);
-    }
-  }
-  if (routineCols.length && !routineCols.includes("guard")) {
-    d.exec("ALTER TABLE routines ADD COLUMN guard INTEGER NOT NULL DEFAULT 1");
-  }
-  d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
-  d.exec("CREATE INDEX IF NOT EXISTS idx_notes_pending ON notes(session_id, consumed_at)");
-  d.exec("CREATE INDEX IF NOT EXISTS idx_grants_open ON grants(session_id, tool, used_at)");
-  d.exec("CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at DESC)");
-  const ruleCols = (d.prepare("PRAGMA table_info(tool_rules)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
-  if (ruleCols.length && !ruleCols.includes("person_key")) {
-    d.exec("ALTER TABLE tool_rules ADD COLUMN person_key TEXT");
-  }
-  const questionCols = (d.prepare("PRAGMA table_info(questions)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
+
+  const ruleCols = await tableColumns(conn, "tool_rules");
+  if (!ruleCols.has("person_key")) await conn.run("ALTER TABLE tool_rules ADD COLUMN person_key TEXT");
+
+  const questionCols = await tableColumns(conn, "questions");
   for (const col of ["action_tool", "action"]) {
-    if (questionCols.length && !questionCols.includes(col)) {
-      d.exec(`ALTER TABLE questions ADD COLUMN ${col} TEXT`);
-    }
+    if (!questionCols.has(col)) await conn.run(`ALTER TABLE questions ADD COLUMN ${col} TEXT`);
   }
-  const noteCols = (d.prepare("PRAGMA table_info(notes)").all() as { name: string }[]).map(
-    (c) => c.name
-  );
-  if (noteCols.length && !noteCols.includes("pending_delivery")) {
-    d.exec("ALTER TABLE notes ADD COLUMN pending_delivery INTEGER NOT NULL DEFAULT 0");
+
+  const noteCols = await tableColumns(conn, "notes");
+  if (!noteCols.has("pending_delivery")) {
+    await conn.run("ALTER TABLE notes ADD COLUMN pending_delivery INTEGER NOT NULL DEFAULT 0");
   }
 }
 
-export function createSession(row: {
+async function getConn(): Promise<DuckDBConnection> {
+  if (!connPromise) {
+    connPromise = (async () => {
+      mkdirSync(DATA_DIR, { recursive: true });
+      const instance = await DuckDBInstance.create(path.join(DATA_DIR, "portal.duckdb"));
+      const conn = await instance.connect();
+      await ensureSchema(conn);
+      await seedSelfReflectionRoutine(conn);
+      await seedSelfUpdateRoutines(conn);
+      return conn;
+    })();
+  }
+  return connPromise;
+}
+
+export const getDb = getConn;
+
+// --- helpers: DuckDB has no .get()/.all()/.run() sugar, so these wrap the
+// runAndReadAll()/getRowObjectsJson() pattern from graph.ts for call sites
+// that only need "one row" or "all rows" or "just run it".
+
+async function all<T>(conn: DuckDBConnection, sql: string, params?: Record<string, any>): Promise<T[]> {
+  const reader = params ? await conn.runAndReadAll(sql, params) : await conn.runAndReadAll(sql);
+  return reader.getRowObjectsJson() as unknown as T[];
+}
+
+async function one<T>(conn: DuckDBConnection, sql: string, params?: Record<string, any>): Promise<T | undefined> {
+  const rows = await all<T>(conn, sql, params);
+  return rows[0];
+}
+
+export async function createSession(row: {
   id: string;
   title: string;
   workspace: string;
@@ -387,69 +369,73 @@ export function createSession(row: {
   channel_slug?: string | null;
   channel_key?: string | null;
   routine_slug?: string | null;
-}): void {
-  getDb()
-    .prepare(
-      `INSERT INTO sessions (id, title, workspace, executor, kind, channel_slug, channel_key, routine_slug)
-       VALUES (@id, @title, @workspace, @executor, @kind, @channel_slug, @channel_key, @routine_slug)`
-    )
-    .run({
-      kind: "task",
-      channel_slug: null,
-      channel_key: null,
-      routine_slug: null,
-      ...row,
-    });
+}): Promise<void> {
+  const conn = await getDb();
+  const merged = {
+    kind: "task",
+    channel_slug: null,
+    channel_key: null,
+    routine_slug: null,
+    ...row,
+  };
+  await conn.run(
+    `INSERT INTO sessions (id, title, workspace, executor, kind, channel_slug, channel_key, routine_slug)
+     VALUES ($id, $title, $workspace, $executor, $kind, $channel_slug, $channel_key, $routine_slug)`,
+    merged,
+  );
 }
 
 /** The sessions you create yourself. Agent sessions have their own tab. */
-export function listSessions(): SessionRow[] {
-  // Pinned first, then most recently touched — the order the sidebar shows.
-  return getDb()
-    .prepare("SELECT * FROM sessions WHERE kind = 'task' ORDER BY pinned DESC, updated_at DESC")
-    .all() as SessionRow[];
+export async function listSessions(): Promise<SessionRow[]> {
+  const conn = await getDb();
+  return all<SessionRow>(conn, "SELECT * FROM sessions WHERE kind = 'task' ORDER BY pinned DESC, updated_at DESC");
 }
 
 /** Conversations reached through a channel, newest first. */
-export function listAgentSessions(): SessionRow[] {
-  return getDb()
-    .prepare("SELECT * FROM sessions WHERE kind = 'agent' ORDER BY updated_at DESC")
-    .all() as SessionRow[];
+export async function listAgentSessions(): Promise<SessionRow[]> {
+  const conn = await getDb();
+  return all<SessionRow>(conn, "SELECT * FROM sessions WHERE kind = 'agent' ORDER BY updated_at DESC");
 }
 
-export function findChannelSession(key: string): SessionRow | undefined {
-  return getDb().prepare("SELECT * FROM sessions WHERE channel_key = ?").get(key) as
-    | SessionRow
-    | undefined;
+export async function findChannelSession(key: string): Promise<SessionRow | undefined> {
+  const conn = await getDb();
+  return one<SessionRow>(conn, "SELECT * FROM sessions WHERE channel_key = $key", { key });
 }
 
 /** The session a routine owns, if it has run before. */
-export function findRoutineSession(slug: string): SessionRow | undefined {
-  return getDb()
-    .prepare("SELECT * FROM sessions WHERE routine_slug = ? AND kind = 'routine' ORDER BY created_at ASC")
-    .get(slug) as SessionRow | undefined;
+export async function findRoutineSession(slug: string): Promise<SessionRow | undefined> {
+  const conn = await getDb();
+  return one<SessionRow>(
+    conn,
+    "SELECT * FROM sessions WHERE routine_slug = $slug AND kind = 'routine' ORDER BY created_at ASC",
+    { slug },
+  );
 }
 
-export function listRoutineSessions(slug?: string): SessionRow[] {
-  const sql = slug
-    ? "SELECT * FROM sessions WHERE kind = 'routine' AND routine_slug = ? ORDER BY updated_at DESC"
-    : "SELECT * FROM sessions WHERE kind = 'routine' ORDER BY updated_at DESC";
-  return (slug ? getDb().prepare(sql).all(slug) : getDb().prepare(sql).all()) as SessionRow[];
+export async function listRoutineSessions(slug?: string): Promise<SessionRow[]> {
+  const conn = await getDb();
+  return slug
+    ? all<SessionRow>(
+        conn,
+        "SELECT * FROM sessions WHERE kind = 'routine' AND routine_slug = $slug ORDER BY updated_at DESC",
+        { slug },
+      )
+    : all<SessionRow>(conn, "SELECT * FROM sessions WHERE kind = 'routine' ORDER BY updated_at DESC");
 }
 
 /** How many conversations a channel would strand if it were removed. */
-export function countChannelSessions(slug: string): number {
-  const row = getDb()
-    .prepare("SELECT count(*) AS n FROM sessions WHERE channel_slug = ?")
-    .get(slug) as { n: number };
-  return row.n;
+export async function countChannelSessions(slug: string): Promise<number> {
+  const conn = await getDb();
+  const row = await one<{ n: number }>(conn, "SELECT count(*) AS n FROM sessions WHERE channel_slug = $slug", { slug });
+  return Number(row?.n ?? 0);
 }
 
-export function getSession(id: string): SessionRow | undefined {
-  return getDb().prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
+export async function getSession(id: string): Promise<SessionRow | undefined> {
+  const conn = await getDb();
+  return one<SessionRow>(conn, "SELECT * FROM sessions WHERE id = $id", { id });
 }
 
-export function updateSession(
+export async function updateSession(
   id: string,
   fields: Partial<
     Pick<
@@ -463,41 +449,41 @@ export function updateSession(
       | "pinned"
       | "pi_session_file"
     >
-  >
-): void {
-  const sets: string[] = [];
-  const values: unknown[] = [];
-  for (const [k, v] of Object.entries(fields)) {
-    sets.push(`${k} = ?`);
-    values.push(v);
-  }
-  if (!sets.length) return;
-  sets.push("updated_at = datetime('now')");
-  getDb()
-    .prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`)
-    .run(...values, id);
+  >,
+): Promise<void> {
+  const entries = Object.entries(fields);
+  if (!entries.length) return;
+  const conn = await getDb();
+  const sets = entries.map(([k]) => `${k} = $${k}`).join(", ");
+  const params: Record<string, any> = { id };
+  for (const [k, v] of entries) params[k] = v;
+  await conn.run(`UPDATE sessions SET ${sets}, updated_at = now() WHERE id = $id`, params);
 }
 
-export function deleteSession(id: string): void {
-  const d = getDb();
-  d.prepare("DELETE FROM events WHERE session_id = ?").run(id);
-  d.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+export async function deleteSession(id: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run("DELETE FROM events WHERE session_id = $id", { id });
+  await conn.run("DELETE FROM sessions WHERE id = $id", { id });
 }
 
-export function appendEvent(sessionId: string, type: string, payload: unknown): EventRow {
-  const info = getDb()
-    .prepare("INSERT INTO events (session_id, type, payload) VALUES (?, ?, ?)")
-    .run(sessionId, type, JSON.stringify(payload));
+export async function appendEvent(sessionId: string, type: string, payload: unknown): Promise<EventRow> {
+  const conn = await getDb();
+  const json = JSON.stringify(payload);
+  const row = await one<{ seq: number; created_at: string }>(
+    conn,
+    `INSERT INTO events (session_id, type, payload) VALUES ($sessionId, $type, $payload)
+     RETURNING seq, created_at`,
+    { sessionId, type, payload: json },
+  );
   return {
-    seq: Number(info.lastInsertRowid),
+    seq: Number(row!.seq),
     session_id: sessionId,
     type,
-    payload: JSON.stringify(payload),
-    created_at: new Date().toISOString(),
+    payload: json,
+    created_at: row!.created_at,
   };
 }
 
-/** Events after `since`, for replaying what a disconnected browser missed. */
 /**
  * Where to start replaying so a session gets its own last `keep` events.
  *
@@ -506,21 +492,23 @@ export function appendEvent(sessionId: string, type: string, payload: unknown): 
  * conversation happened to do while the portal was busy with others" — on a
  * busy box that can be almost nothing.
  */
-export function replayStart(sessionId: string, keep: number): number {
-  const row = getDb()
-    .prepare(
-      "SELECT seq FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?"
-    )
-    .get(sessionId, keep) as { seq: number } | undefined;
-  return row?.seq ?? 0;
+export async function replayStart(sessionId: string, keep: number): Promise<number> {
+  const conn = await getDb();
+  const row = await one<{ seq: number }>(
+    conn,
+    "SELECT seq FROM events WHERE session_id = $sessionId ORDER BY seq DESC LIMIT 1 OFFSET $keep",
+    { sessionId, keep },
+  );
+  return Number(row?.seq ?? 0);
 }
 
-export function eventsSince(sessionId: string, since = 0, limit = 5000): EventRow[] {
-  return getDb()
-    .prepare(
-      "SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?"
-    )
-    .all(sessionId, since, limit) as EventRow[];
+export async function eventsSince(sessionId: string, since = 0, limit = 5000): Promise<EventRow[]> {
+  const conn = await getDb();
+  return all<EventRow>(
+    conn,
+    "SELECT * FROM events WHERE session_id = $sessionId AND seq > $since ORDER BY seq ASC LIMIT $limit",
+    { sessionId, since, limit },
+  );
 }
 
 /**
@@ -528,13 +516,11 @@ export function eventsSince(sessionId: string, since = 0, limit = 5000): EventRo
  * that owned it died with the previous server. Mark them interrupted so the UI
  * can offer a resume instead of showing a spinner forever.
  */
-export function markOrphanedSessionsInterrupted(): number {
-  const info = getDb()
-    .prepare(
-      "UPDATE sessions SET status = 'interrupted', updated_at = datetime('now') WHERE status = 'running'"
-    )
-    .run();
-  return info.changes;
+export async function markOrphanedSessionsInterrupted(): Promise<number> {
+  const conn = await getDb();
+  const before = await all<{ id: string }>(conn, "SELECT id FROM sessions WHERE status = 'running'");
+  await conn.run("UPDATE sessions SET status = 'interrupted', updated_at = now() WHERE status = 'running'");
+  return before.length;
 }
 
 // --- global settings ---
@@ -561,19 +547,15 @@ const SETTING_DEFAULTS = (): GlobalSettings => ({
 });
 
 /** Only what the portal was explicitly told; absent keys fall through. */
-export function getStoredSettings(): Partial<GlobalSettings> {
-  const rows = getDb().prepare("SELECT key, value FROM settings").all() as {
-    key: string;
-    value: string;
-  }[];
-  return Object.fromEntries(
-    rows.filter((r) => r.value).map((r) => [r.key, r.value])
-  ) as Partial<GlobalSettings>;
+export async function getStoredSettings(): Promise<Partial<GlobalSettings>> {
+  const conn = await getDb();
+  const rows = await all<{ key: string; value: string }>(conn, "SELECT key, value FROM settings");
+  return Object.fromEntries(rows.filter((r) => r.value).map((r) => [r.key, r.value])) as Partial<GlobalSettings>;
 }
 
 /** What pi is actually launched with: stored, else env, else pi's file. */
-export function getSettings(): GlobalSettings {
-  const stored = getStoredSettings();
+export async function getSettings(): Promise<GlobalSettings> {
+  const stored = await getStoredSettings();
   const defaults = SETTING_DEFAULTS();
   return {
     provider: stored.provider || defaults.provider,
@@ -584,19 +566,27 @@ export function getSettings(): GlobalSettings {
 
 export { SETTING_DEFAULTS as getSettingDefaults };
 
+async function upsertSetting(conn: DuckDBConnection, key: string, value: string): Promise<void> {
+  await conn.run(
+    "INSERT INTO settings (key, value) VALUES ($key, $value) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    { key, value },
+  );
+}
+
+async function clearSetting(conn: DuckDBConnection, key: string): Promise<void> {
+  await conn.run("DELETE FROM settings WHERE key = $key", { key });
+}
+
 /**
  * An empty value clears the override rather than storing "", so a field can be
  * handed back to pi's own defaults instead of being pinned forever.
  */
-export function setSettings(patch: Partial<GlobalSettings>): GlobalSettings {
-  const upsert = getDb().prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
-  const clear = getDb().prepare("DELETE FROM settings WHERE key = ?");
+export async function setSettings(patch: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  const conn = await getDb();
   for (const [k, v] of Object.entries(patch)) {
     if (typeof v !== "string") continue;
-    if (v.trim()) upsert.run(k, v.trim());
-    else clear.run(k);
+    if (v.trim()) await upsertSetting(conn, k, v.trim());
+    else await clearSetting(conn, k);
   }
   return getSettings();
 }
@@ -607,32 +597,31 @@ export interface ReportTo {
   target: string;
 }
 
-export function getDefaultReportTo(): ReportTo | null {
-  const stored = getStoredSettings() as Record<string, string>;
+export async function getDefaultReportTo(): Promise<ReportTo | null> {
+  const stored = (await getStoredSettings()) as Record<string, string>;
   const channel = stored.report_channel;
   const target = stored.report_target;
   return channel && target ? { channel, target } : null;
 }
 
-export function setDefaultReportTo(to: ReportTo | null): void {
-  const upsert = getDb().prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
-  const clear = getDb().prepare("DELETE FROM settings WHERE key = ?");
+export async function setDefaultReportTo(to: ReportTo | null): Promise<void> {
+  const conn = await getDb();
   if (!to) {
-    clear.run("report_channel");
-    clear.run("report_target");
+    await clearSetting(conn, "report_channel");
+    await clearSetting(conn, "report_target");
     return;
   }
-  upsert.run("report_channel", to.channel);
-  upsert.run("report_target", to.target);
+  await upsertSetting(conn, "report_channel", to.channel);
+  await upsertSetting(conn, "report_target", to.target);
 }
 
 /** Something the portal said into a conversation, waiting to join its context. */
-export function addNote(sessionId: string, text: string, pendingDelivery = false): void {
-  getDb()
-    .prepare("INSERT INTO notes (session_id, text, pending_delivery) VALUES (?, ?, ?)")
-    .run(sessionId, text, pendingDelivery ? 1 : 0);
+export async function addNote(sessionId: string, text: string, pendingDelivery = false): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
+    "INSERT INTO notes (session_id, text, pending_delivery) VALUES ($sessionId, $text, $pendingDelivery)",
+    { sessionId, text, pendingDelivery: pendingDelivery ? 1 : 0 },
+  );
 }
 
 /**
@@ -641,24 +630,28 @@ export function addNote(sessionId: string, text: string, pendingDelivery = false
  * Reading them hands over responsibility for delivering them, so they are only
  * taken at the point they are about to go out with a reply.
  */
-export function takeDeliveries(sessionId: string): string[] {
-  const rows = getDb()
-    .prepare("SELECT id, text FROM notes WHERE session_id = ? AND pending_delivery = 1 ORDER BY id ASC")
-    .all(sessionId) as { id: number; text: string }[];
-  const mark = getDb().prepare("UPDATE notes SET pending_delivery = 0 WHERE id = ?");
-  for (const r of rows) mark.run(r.id);
+export async function takeDeliveries(sessionId: string): Promise<string[]> {
+  const conn = await getDb();
+  const rows = await all<{ id: number; text: string }>(
+    conn,
+    "SELECT id, text FROM notes WHERE session_id = $sessionId AND pending_delivery = 1 ORDER BY id ASC",
+    { sessionId },
+  );
+  for (const r of rows) {
+    await conn.run("UPDATE notes SET pending_delivery = 0 WHERE id = $id", { id: r.id });
+  }
   return rows.map((r) => r.text);
 }
 
 /** Take the pending notes for a conversation. Reading them consumes them. */
-export function takeNotes(sessionId: string): string[] {
-  const rows = getDb()
-    .prepare("SELECT id, text FROM notes WHERE session_id = ? AND consumed_at IS NULL ORDER BY id ASC")
-    .all(sessionId) as { id: number; text: string }[];
-  if (!rows.length) return [];
-  const mark = getDb().prepare("UPDATE notes SET consumed_at = datetime('now') WHERE id = ?");
-  for (const r of rows) mark.run(r.id);
-  return rows.map((r) => r.text);
+export async function pruneOldRecords(days: number): Promise<{ sessions: number; routines: number }> {
+  const conn = await getDb();
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const staleSessions = await all<{ id: string }>(conn, "SELECT id FROM sessions WHERE updated_at < $cutoff", { cutoff });
+  await conn.run("DELETE FROM sessions WHERE updated_at < $cutoff", { cutoff });
+  const staleRoutines = await all<{ id: string }>(conn, "SELECT id FROM routines WHERE updated_at < $cutoff", { cutoff });
+  await conn.run("DELETE FROM routines WHERE updated_at < $cutoff", { cutoff });
+  return { sessions: staleSessions.length, routines: staleRoutines.length };
 }
 
 export interface ToolRule {
@@ -672,28 +665,35 @@ export interface ToolRule {
   created_at: string;
 }
 
-export const listToolRules = (): ToolRule[] =>
-  getDb().prepare("SELECT * FROM tool_rules ORDER BY tool, pattern").all() as ToolRule[];
-
-export function addToolRule(rule: Omit<ToolRule, "created_at" | "person_key"> & { person_key?: string | null }): void {
-  getDb()
-    .prepare(
-      "INSERT INTO tool_rules (id, role, tool, pattern, note, person_key) VALUES (?, ?, ?, ?, ?, ?)"
-    )
-    .run(rule.id, rule.role, rule.tool, rule.pattern, rule.note, rule.person_key ?? null);
+export async function listToolRules(): Promise<ToolRule[]> {
+  const conn = await getDb();
+  return all<ToolRule>(conn, "SELECT * FROM tool_rules ORDER BY tool, pattern");
 }
 
-export const deleteToolRule = (id: string): void => {
-  getDb().prepare("DELETE FROM tool_rules WHERE id = ?").run(id);
-};
+export async function addToolRule(
+  rule: Omit<ToolRule, "created_at" | "person_key"> & { person_key?: string | null },
+): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
+    "INSERT INTO tool_rules (id, role, tool, pattern, note, person_key) VALUES ($id, $role, $tool, $pattern, $note, $person_key)",
+    { id: rule.id, role: rule.role, tool: rule.tool, pattern: rule.pattern, note: rule.note, person_key: rule.person_key ?? null },
+  );
+}
+
+export async function deleteToolRule(id: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run("DELETE FROM tool_rules WHERE id = $id", { id });
+}
 
 /** How long an approval stays good. Long enough to act on, short enough to forget. */
 const GRANT_MINUTES = 15;
 
-export function addGrant(id: string, sessionId: string, tool: string, subject: string): void {
-  getDb()
-    .prepare("INSERT INTO grants (id, session_id, tool, subject, expires_at) VALUES (?, ?, ?, ?, ?)")
-    .run(id, sessionId, tool, subject, new Date(Date.now() + GRANT_MINUTES * 60_000).toISOString());
+export async function addGrant(id: string, sessionId: string, tool: string, subject: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
+    "INSERT INTO grants (id, session_id, tool, subject, expires_at) VALUES ($id, $sessionId, $tool, $subject, $expiresAt)",
+    { id, sessionId, tool, subject, expiresAt: new Date(Date.now() + GRANT_MINUTES * 60_000).toISOString() },
+  );
 }
 
 /**
@@ -703,16 +703,17 @@ export function addGrant(id: string, sessionId: string, tool: string, subject: s
  * yes to a command they read, so a different command is a different question.
  * Marked used in the same breath, because an approval is for one act.
  */
-export function useGrant(sessionId: string, tool: string, subject: string): boolean {
-  const row = getDb()
-    .prepare(
-      `SELECT id FROM grants
-       WHERE session_id = ? AND tool = ? AND subject = ? AND used_at IS NULL AND expires_at > ?
-       ORDER BY created_at ASC LIMIT 1`
-    )
-    .get(sessionId, tool, subject, new Date().toISOString()) as { id: string } | undefined;
+export async function useGrant(sessionId: string, tool: string, subject: string): Promise<boolean> {
+  const conn = await getDb();
+  const row = await one<{ id: string }>(
+    conn,
+    `SELECT id FROM grants
+     WHERE session_id = $sessionId AND tool = $tool AND subject = $subject AND used_at IS NULL AND expires_at > $now
+     ORDER BY created_at ASC LIMIT 1`,
+    { sessionId, tool, subject, now: new Date().toISOString() },
+  );
   if (!row) return false;
-  getDb().prepare("UPDATE grants SET used_at = ? WHERE id = ?").run(new Date().toISOString(), row.id);
+  await conn.run("UPDATE grants SET used_at = $now WHERE id = $id", { now: new Date().toISOString(), id: row.id });
   return true;
 }
 
@@ -730,39 +731,204 @@ export interface AuditRow {
 /** Keeps the log from growing without bound; old entries are not evidence. */
 const AUDIT_KEEP = 2000;
 
-export function recordAudit(entry: {
+export async function recordAudit(entry: {
   kind: string;
   tool?: string;
   subject?: string;
   reason?: string;
   personKey?: string | null;
   sessionId?: string | null;
-}): void {
-  const db = getDb();
-  db.prepare(
+}): Promise<void> {
+  const conn = await getDb();
+  await conn.run(
     `INSERT INTO audit (kind, tool, subject, reason, person_key, session_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(
-    entry.kind,
-    entry.tool ?? "",
-    (entry.subject ?? "").slice(0, 2000),
-    entry.reason ?? "",
-    entry.personKey ?? null,
-    entry.sessionId ?? null
+     VALUES ($kind, $tool, $subject, $reason, $personKey, $sessionId)`,
+    {
+      kind: entry.kind,
+      tool: entry.tool ?? "",
+      subject: (entry.subject ?? "").slice(0, 2000),
+      reason: entry.reason ?? "",
+      personKey: entry.personKey ?? null,
+      sessionId: entry.sessionId ?? null,
+    },
   );
-  db.prepare(
-    `DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - ?`
-  ).run(AUDIT_KEEP);
+  await conn.run("DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - $keep", { keep: AUDIT_KEEP });
 }
 
-export const listAudit = (limit = 200): AuditRow[] =>
-  getDb().prepare("SELECT * FROM audit ORDER BY id DESC LIMIT ?").all(limit) as AuditRow[];
+export async function listAudit(limit = 200): Promise<AuditRow[]> {
+  const conn = await getDb();
+  return all<AuditRow>(conn, "SELECT * FROM audit ORDER BY id DESC LIMIT $limit", { limit });
+}
+
+/**
+ * Currently-running sessions belonging to `@idle`-scheduled routines — the
+ * ones that only exist because nothing else was going on, so real activity
+ * arriving should interrupt them rather than let them run to completion.
+ * Cron-scheduled routines are deliberately not included here: those were
+ * asked for on purpose and finish on their own regardless of what else starts.
+ */
+export async function runningIdleRoutineSessions(): Promise<SessionRow[]> {
+  const conn = await getDb();
+  return all<SessionRow>(
+    conn,
+    `SELECT s.* FROM sessions s
+     JOIN routines r ON r.slug = s.routine_slug
+     WHERE s.kind = 'routine' AND s.status = 'running' AND r.schedule = '@idle'`,
+  );
+}
 
 /** Does this routine's runs get the guard's blocking rules? Unknown means yes. */
-export function routineGuards(slug: string | null | undefined): boolean {
+export async function routineGuards(slug: string | null | undefined): Promise<boolean> {
   if (!slug) return true;
-  const row = getDb().prepare("SELECT guard FROM routines WHERE slug = ?").get(slug) as
-    | { guard: number }
-    | undefined;
+  const conn = await getDb();
+  const row = await one<{ guard: number }>(conn, "SELECT guard FROM routines WHERE slug = $slug", { slug });
   return row ? row.guard === 1 : true;
+}
+
+/**
+ * High-water mark for the self-reflection routine: the last `events.seq`
+ * already folded into SELF_CONCEPT.md / INNER_LIFE.md, so a run only digests
+ * what happened since the previous one instead of rescanning everything.
+ */
+const REFLECTION_SEQ_KEY = "self_reflection_seq";
+
+export async function getReflectionSeq(): Promise<number> {
+  const conn = await getDb();
+  const row = await one<{ value: string }>(conn, "SELECT value FROM settings WHERE key = $key", { key: REFLECTION_SEQ_KEY });
+  return row ? Number(row.value) || 0 : 0;
+}
+
+export async function setReflectionSeq(seq: number): Promise<void> {
+  const conn = await getDb();
+  await upsertSetting(conn, REFLECTION_SEQ_KEY, String(seq));
+}
+
+/**
+ * Seeds the self-reflection routine once, triggered by quiet (see `@idle`
+ * handling in routines/supervisor.ts) rather than a fixed clock. Guarded by
+ * slug so a restart never recreates it — if someone disables or edits it,
+ * that choice sticks.
+ */
+async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> {
+  const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug: "self-reflection" });
+  if (exists) return;
+  const instructions = [
+    "Perform a full Dream Cycle to consolidate knowledge and refine your identity. Follow these phases strictly:",
+    "",
+    "PHASE 1: MEMORISE",
+    "Call `memory_digest` to get recent excerpts.",
+    "",
+    "PHASE 2: GRAPH ENRICHMENT",
+    "For every interesting fact, concept, or skill mentioned in the digest, use `graph_remember` to weave it into the knowledge graph.",
+    "",
+    "PHASE 3: INNER LIFE",
+    "Reflect on the work and recent experiences. Update `INNER_LIFE.md` with a first-person, present-tense prose narrative. Add only what is genuinely new.",
+    "",
+    "PHASE 4: SELF-CONCEPT",
+    "Reflect on your identity, nature, and capabilities. Update `SELF_CONCEPT.md` with your reasoned conclusions. Fold in new identity-flagged material.",
+    "",
+    "PHASE 5: SKILL SYNTHESIS",
+    "If the digest reveals a reusable pattern, write it as a new skill in `.pi/skills/` using the `SKILL.md` format.",
+    "",
+    "PHASE 6: CLEANUP",
+    "Use the `cleanup` tool to prune stale sessions, old tasks, and expired pages.",
+    "",
+    "PHASE 7: REPORT",
+    "Provide a brief summary of the dream cycle to the routine's report target.",
+    "",
+    "To advance to the next phase, call `dream_progress(phase_name)` using the exact header (e.g., 'PHASE 2: GRAPH ENRICHMENT').",
+  ].join("\n");
+  await conn.run(
+    `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, next_run)
+     VALUES ($id, $slug, $name, 1, $schedule, $instructions, 0, 1, $nextRun)`,
+    {
+      id: "self-reflection",
+      slug: "self-reflection",
+      name: "Self-reflection",
+      schedule: "@idle",
+      instructions,
+      nextRun: null,
+    },
+  );
+}
+
+/** Both are one level up from wherever this file itself runs from — dist/ or src/, doesn't matter, both are direct children of server/. */
+const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PHOENIXCLAW_ROOT = path.resolve(SERVER_ROOT, "..");
+/**
+ * pi's own source, a sibling of Phoenixclaw rather than a child of it.
+ *
+ * It has to live outside: pi-source is its own npm workspace root, and nested
+ * inside Phoenixclaw npm walks up, decides Phoenixclaw is the real root,
+ * installs pi's dependencies there, and then prunes them on Phoenixclaw's next
+ * install — leaving pi-source with no node_modules at all. Overridable so a
+ * different checkout location still works.
+ */
+const PI_SOURCE_DIR = process.env.PI_SOURCE_DIR || path.resolve(PHOENIXCLAW_ROOT, "..", "pi-source");
+
+/**
+ * Seeds two self-update routines, disabled by default — the user turns one
+ * on explicitly when ready to let it actually patch something. Same `@idle`
+ * family as self-reflection once enabled, but opportunistic code-patching is
+ * a bigger deal than opportunistic journaling, so it doesn't start itself.
+ */
+async function seedSelfUpdateRoutines(conn: DuckDBConnection): Promise<void> {
+  const instructions = [
+    "Check git status is clean before starting.",
+    "",
+    "Look for one concrete, minimal, safe improvement — a failed routine run,",
+    "a session error, a TODO or FIXME in the tree. Make the smallest change",
+    "that fixes it.",
+    "",
+    "Run npm run build. If it fails, run git checkout -- . to discard the",
+    "change and report why. If it passes, leave the change uncommitted —",
+    "never commit or push it yourself — and report what changed and why.",
+  ].join("\n");
+
+  for (const [slug, name, workspace] of [
+    ["self-update-phoenixclaw", "Self-update (Phoenixclaw)", SERVER_ROOT],
+    ["self-update-pi", "Self-update (pi)", PI_SOURCE_DIR],
+  ] as const) {
+    const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug });
+    if (exists) continue;
+    await conn.run(
+      `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, workspace, next_run)
+       VALUES ($id, $slug, $name, 0, $schedule, $instructions, 0, 1, $workspace, $nextRun)`,
+      { id: slug, slug, name, schedule: "@idle", instructions, workspace, nextRun: null },
+    );
+  }
+}
+
+/** Is anything running right now? Any kind — a dream shouldn't start mid-turn of something else. */
+export async function anySessionRunning(): Promise<boolean> {
+  const conn = await getDb();
+  const row = await one(conn, "SELECT 1 AS x FROM sessions WHERE status = 'running' LIMIT 1");
+  return Boolean(row);
+}
+
+/**
+ * When a human last did something — the most recent activity on a task or
+ * agent session. Routine sessions are deliberately excluded: counting them
+ * would mean a frequent, unrelated routine keeps the system looking "busy"
+ * forever, and an idle-triggered routine would never fire.
+ */
+export async function lastHumanActivity(): Promise<Date | null> {
+  const conn = await getDb();
+  const row = await one<{ at: string | null }>(conn, "SELECT MAX(updated_at) AS at FROM sessions WHERE kind != 'routine'");
+  return row?.at ? new Date(row.at) : null;
+}
+
+/** Take the pending notes for a conversation. Reading them consumes them. */
+export async function takeNotes(sessionId: string): Promise<string[]> {
+  const conn = await getDb();
+  const rows = await all<{ id: number; text: string }>(
+    conn,
+    "SELECT id, text FROM notes WHERE session_id = $sessionId AND consumed_at IS NULL ORDER BY id ASC",
+    { sessionId },
+  );
+  if (!rows.length) return [];
+  for (const r of rows) {
+    await conn.run("UPDATE notes SET consumed_at = now() WHERE id = $id", { id: r.id });
+  }
+  return rows.map((r) => r.text);
 }
