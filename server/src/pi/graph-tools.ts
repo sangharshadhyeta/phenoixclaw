@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { keywordPrune } from "../prune.js";
 import {
   neighbors,
   recentNodes,
@@ -8,6 +9,9 @@ import {
   upsertNode,
   type NodeType,
 } from "../graph.js";
+
+/** What one recall may put into the prompt. Generous enough for several nodes, bounded enough to stay bounded. */
+const RECALL_CHAR_CAP = 2000;
 
 const NODE_TYPES = ["user", "project", "concept", "fact", "skill"] as const;
 
@@ -100,7 +104,21 @@ export function graphTools(cwd: string) {
             );
           }
         }
-        return { content: [{ type: "text" as const, text: lines.join("\n") }], details: {} };
+        /**
+         * Pruned against the query before it goes back, the same way
+         * BirdClaw's `retrieval.py` prunes rendered graph context.
+         *
+         * A recall returns whole node summaries plus five relations each, and
+         * a node's summary is written to be complete rather than to answer
+         * this particular question. In an ordinary conversation that is
+         * affordable; in the learning loop, which recalls on every iteration
+         * and never ends, it is the thing that fills the context window. The
+         * relation lines usually survive — they are short and carry the query
+         * terms — while a long summary gets cut to the part that was asked
+         * about.
+         */
+        const rendered = keywordPrune(lines.join("\n"), query, RECALL_CHAR_CAP);
+        return { content: [{ type: "text" as const, text: rendered }], details: {} };
       },
     });
 

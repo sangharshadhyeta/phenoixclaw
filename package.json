@@ -14,6 +14,8 @@
     "start": "node server/dist/index.js",
     "docs": "npm run dev -w docs",
     "docs:build": "npm run build -w docs",
-    "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs"
+    "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs",
+    "test:prune": "node server/test/prune-contract.mjs",
+    "test": "npm run test:graph && npm run test:prune"
   }
 }
