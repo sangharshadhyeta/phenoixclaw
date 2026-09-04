@@ -124,12 +124,12 @@ export function Sidebar({
     <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
       <div className="flex items-center gap-2 px-3 pb-3 pt-4">
         <img
-          src="/logo-192.png"
+          src="/phenoixclaw-192.png"
           alt=""
           className="h-6 w-6 shrink-0 object-contain"
           draggable={false}
         />
-        <h1 className="text-sm font-semibold tracking-tight text-fg">Pithagoras</h1>
+        <h1 className="text-sm font-semibold tracking-tight text-fg">Phenoixclaw</h1>
         <span
           className="ml-auto text-[10px] uppercase tracking-wider text-fg-faint"
           title="How sessions are executed"

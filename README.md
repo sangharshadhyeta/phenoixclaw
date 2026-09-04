@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/hero.png" alt="Pithagoras" width="620">
+  <img src="assets/hero.png" alt="Phenoixclaw" width="620">
 </p>
+
+<h1 align="center">🐦‍🔥 Phenoixclaw</h1>
 
 <p align="center">
   A web front end for the <a href="https://github.com/earendil-works/pi">pi coding agent</a>, built to be
@@ -9,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="https://thecodacus.github.io/pithagoras/">Documentation</a> ·
-  <a href="https://thecodacus.github.io/pithagoras/guide/deploying">Deploying</a> ·
-  <a href="https://thecodacus.github.io/pithagoras/channels/writing-a-channel">Write a channel</a>
+  <a href="./docs/index.md">Documentation</a> ·
+  <a href="./docs/guide/deploying.md">Deploying</a> ·
+  <a href="./docs/channels/writing-a-channel.md">Write a channel</a>
 </p>
 
 ---
