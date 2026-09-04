@@ -113,20 +113,57 @@ class SessionManager extends EventEmitter {
   }
 
   /** Record an event: persist it, then fan out to any attached SSE clients. */
-  private async record(sessionId: string, type: string, payload: unknown): Promise<void> {
+  /**
+   * One in-flight append per session, chained.
+   *
+   * pi emits streaming deltas faster than a database write completes, and
+   * these calls are not awaited by their callers. Without the chain each one
+   * races: `seq` comes from `nextval` *inside* the insert, so the order rows
+   * are numbered is the order the inserts happen to land, and the emit below
+   * runs after its own await, so live subscribers are served in completion
+   * order too. The result is every token present and in the wrong order —
+   * "Hello! How can I help you today?" arriving as "!Hello How help you I
+   * today can?".
+   *
+   * It was correct before the move to DuckDB, by accident: better-sqlite3's
+   * insert was synchronous, so call order was storage order and there was
+   * nothing to interleave. Making the database async made ordering something
+   * that has to be arranged rather than assumed.
+   *
+   * Per session rather than globally, because ordering only means anything
+   * within one conversation and a global chain would make every session wait
+   * behind every other.
+   */
+  private appends = new Map<string, Promise<void>>();
+
+  private record(sessionId: string, type: string, payload: unknown): Promise<void> {
     if (EPHEMERAL_EVENTS.has(type)) {
       // Still deliver it to anyone attached right now, with a negative seq so
-      // it can never be confused with a stored event during replay.
+      // it can never be confused with a stored event during replay. Not
+      // chained: it is never stored, so there is no ordering to protect.
       this.emit(`session:${sessionId}`, {
         seq: -Date.now(),
         session_id: sessionId,
         type,
         payload: JSON.stringify(payload),
       });
-      return;
+      return Promise.resolve();
     }
-    const row = await appendEvent(sessionId, type, payload);
-    this.emit(`session:${sessionId}`, row);
+
+    const next = (this.appends.get(sessionId) ?? Promise.resolve())
+      .then(async () => {
+        const row = await appendEvent(sessionId, type, payload);
+        this.emit(`session:${sessionId}`, row);
+      })
+      // A failed append must not break the chain: the next event would then
+      // never be written at all, losing the rest of the conversation rather
+      // than the one row that actually failed.
+      .catch((e) => {
+        console.error(`[portal] failed to record ${type} for ${sessionId}:`, (e as Error).message);
+      });
+
+    this.appends.set(sessionId, next);
+    return next;
   }
 
   private async ensureClient(sessionId: string): Promise<PiClient> {
@@ -560,6 +597,10 @@ class SessionManager extends EventEmitter {
   }
 
   async stop(sessionId: string): Promise<void> {
+    // Let anything still queued reach the log before the client goes away,
+    // then drop the chain so the map does not grow for the life of the process.
+    await this.appends.get(sessionId)?.catch(() => {});
+    this.appends.delete(sessionId);
     const live = this.live.get(sessionId);
     if (!live) return;
     live.client.dispose();
