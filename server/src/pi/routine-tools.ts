@@ -323,7 +323,28 @@ export function routineTools(sessionId?: string) {
         }
       },
     });
+  };
+}
 
+/**
+ * The two tools a routine run needs to look after itself, split out from the
+ * scheduling ones above.
+ *
+ * They were registered together, and `routineTools` is only ever given to
+ * channel sessions — so a routine session had neither. The Dream Cycle's
+ * instructions have been telling it to advance its own phase and prune old
+ * records the whole time, using tools it was never handed: the resume
+ * mechanism documented in docs/guide/routines.md could not have worked, and
+ * the cleanup phase failed every run.
+ *
+ * Kept apart rather than fixed by giving routines the whole set, because the
+ * reason routines were excluded is still true for the other half: a routine
+ * that can create routines can build a chain with nobody watching it. These
+ * two only reach the routine's own instructions and the portal's own stale
+ * records.
+ */
+export function selfMaintenanceTools() {
+  return (pi: any): void => {
     pi.registerTool({
       name: "dream_progress",
       label: "Advance Dream Cycle",

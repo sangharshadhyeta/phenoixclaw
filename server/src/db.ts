@@ -314,9 +314,17 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     // Off by default, and it has to be: switching an existing routine to an
     // autonomous turn would take away tools its instructions already rely on.
     ["autonomous", "INTEGER NOT NULL DEFAULT 0"],
+    // ...with one exception, applied below: self-reflection is the routine
+    // the ceiling was designed around.
     ["workspace", "TEXT"],
   ] as const) {
     if (!routineCols.has(col)) await conn.run(`ALTER TABLE routines ADD COLUMN ${col} ${ddl}`);
+  }
+  // Once, at the moment the column first appears — not on every boot. A
+  // deployment that later turns this off has made a choice, and re-asserting
+  // it here every restart would quietly overrule them.
+  if (!routineCols.has("autonomous")) {
+    await conn.run("UPDATE routines SET autonomous = 1 WHERE slug = 'self-reflection'");
   }
 
   const ruleCols = await tableColumns(conn, "tool_rules");
@@ -866,10 +874,10 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
     "Reflect on your identity, nature, and capabilities. Call `identity_read` on `SELF_CONCEPT.md` to see what's there, then `identity_update` with the complete file rewritten to fold in your reasoned conclusions and any new identity-flagged material. Keep existing conclusions unless directly contradicted.",
     "",
     "PHASE 6: SKILL SYNTHESIS",
-    "If the digest reveals a reusable pattern, write it as a new skill in `.pi/skills/` using the `SKILL.md` format.",
+    "If the digest reveals a reusable pattern — steps you would take again — record it with `skill_write`. The description is what decides whether the skill is ever used: write a trigger (\"Use when...\"), not a title. Skip this phase entirely if nothing genuinely reusable came up; a skill nobody needs is noise every future session has to read past.",
     "",
     "PHASE 7: CLEANUP",
-    "Use the `cleanup` tool to prune stale sessions, old tasks, and expired pages.",
+    "Use the `routine_cleanup` tool to prune stale sessions, old tasks, and expired or aged-out memory.",
     "",
     "PHASE 8: REPORT",
     "Provide a brief summary of the dream cycle to the routine's report target.",
@@ -877,8 +885,12 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
     "To advance to the next phase, call `dream_progress(phase_name)` using the exact header (e.g., 'PHASE 2: GRAPH ENRICHMENT').",
   ].join("\n");
   await conn.run(
-    `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, next_run)
-     VALUES ($id, $slug, $name, 1, $schedule, $instructions, 0, 1, $nextRun)`,
+    // autonomous = 1: the whole cycle is the agent thinking about itself with
+    // nobody waiting, which is exactly what that ceiling is for. Every tool
+    // its phases name is on the constitution's allowlist — that is the
+    // constraint the instructions above are written against, not an accident.
+    `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, autonomous, next_run)
+     VALUES ($id, $slug, $name, 1, $schedule, $instructions, 0, 1, 1, $nextRun)`,
     {
       id: "self-reflection",
       slug: "self-reflection",

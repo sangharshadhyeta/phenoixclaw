@@ -70,6 +70,9 @@ export const AUTONOMOUS_TOOLS = new Set([
   // Its own housekeeping.
   "dream_progress",
   "routine_cleanup",
+  // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
+  // directory, and it cannot replace a skill a person wrote.
+  "skill_write",
   // Involving a human.
   "ask_primary",
   "report",

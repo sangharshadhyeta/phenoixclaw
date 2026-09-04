@@ -4,13 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { PiClient, PiCommand, PiState, PiStats } from "./types.js";
-import { routineTools } from "./routine-tools.js";
+import { routineTools, selfMaintenanceTools } from "./routine-tools.js";
 import { reportTool, reportToFor } from "./report-tool.js";
 import { guardExtension } from "./guard.js";
 import { askPrimaryTool } from "./ask-primary.js";
 import { memoryDigestTool } from "./memory-digest.js";
 import { graphTools } from "./graph-tools.js";
 import { identityTools } from "./identity-tools.js";
+import { skillTools } from "./skill-tools.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -216,6 +217,19 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       }
       if (opts.routineTools)
         factories.push({ name: "routines", factory: routineTools(opts.sessionId) });
+      // A routine looking after itself: advancing its own phase so an
+      // interrupted cycle resumes where it stopped, and pruning what has aged
+      // out. Split from the scheduling tools above, which routines still do
+      // not get — see selfMaintenanceTools.
+      if (opts.routineSlug) {
+        factories.push({ name: "self-maintenance", factory: selfMaintenanceTools() });
+      }
+      // The autonomous substitute for `write`, which such a session does not
+      // have: one artefact, one place, frontmatter composed rather than
+      // parsed. See skill-tools.ts for why raw write cannot be granted here.
+      if (opts.autonomous) {
+        factories.push({ name: "skills", factory: skillTools(opts.sessionId) });
+      }
       // Only where it means something: a conversation with the primary user has
       // nobody to escalate to, and the tool would just be noise.
       if (opts.sessionId && opts.role && opts.role !== "primary") {
