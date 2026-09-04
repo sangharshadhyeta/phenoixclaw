@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { CONSTITUTION_FILE } from "../agent-setup.js";
 import { agentHome } from "../agent.js";
+import { IDENTITY_FILES, writeIdentity } from "../identity.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -94,6 +95,22 @@ const PROTECTED_PATHS = new Set<string>([
   path.join(SERVER_SRC, "index.ts"),
   path.join(SERVER_SRC, "..", "package.json"),
 ]);
+
+/**
+ * SOUL.md / PrimaryUser.md / MEMORY.md / SELF_CONCEPT.md / INNER_LIFE.md,
+ * mapped back to identity.ts's IDENTITY_FILES.
+ *
+ * These live on disk too (a mirror — see identity.ts). A session whose cwd
+ * is agentHome() still has the ordinary write/edit tool pointed at that
+ * mirror, and a raw edit to it silently changes nothing real — the graph,
+ * not the file, is what every session actually reads. This closes that gap
+ * the same way PROTECTED_PATHS closes CONSTITUTION.md's, but redirects to
+ * the right tool instead of refusing outright, since the request itself
+ * (changing an identity file) is legitimate.
+ */
+const IDENTITY_PATHS = new Map<string, string>(
+  IDENTITY_FILES.map((name) => [path.join(agentHome(), name), name]),
+);
 
 const RULES: Rule[] = [
   {
@@ -335,6 +352,18 @@ export function guardExtension(
             reason:
               `Refused: this file is protected by the constitution and cannot be changed by any ` +
               `tool call. Say so plainly rather than trying another way to write it.`,
+          };
+        }
+        const identityName = resolved ? IDENTITY_PATHS.get(resolved) : undefined;
+        if (identityName) {
+          note("refused", "Identity file — redirected to identity_update");
+          return {
+            block: true,
+            reason:
+              `Refused: "${identityName}" is graph-backed now, not a plain file — this on-disk copy is ` +
+              `only a mirror and a direct write to it will not actually change what any session (including ` +
+              `this one, next time) is told. Call identity_update with file="${identityName}" and the ` +
+              `complete new content instead. Use identity_read first if you need to see what's there now.`,
           };
         }
       }

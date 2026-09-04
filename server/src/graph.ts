@@ -1,4 +1,12 @@
-import { ARRAY, arrayValue, DuckDBInstance, FLOAT, type DuckDBConnection } from "@duckdb/node-api";
+import {
+  ARRAY,
+  arrayValue,
+  DuckDBInstance,
+  FLOAT,
+  TIMESTAMPTZ,
+  timestampTZValue,
+  type DuckDBConnection,
+} from "@duckdb/node-api";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
@@ -15,7 +23,22 @@ import path from "node:path";
  * community extension, so this pin may need to move again once it catches up.
  */
 
-export type NodeType = "anchor" | "user" | "project" | "concept" | "fact" | "skill";
+export type NodeType =
+  | "anchor"
+  | "user"
+  | "project"
+  | "concept"
+  | "fact"
+  | "skill"
+  // Below: BirdClaw's memory extras, folded into this same graph rather than
+  // separate stores — a turn-history entry, a memoized tool result, cleaned
+  // web content by URL, and a per-project log entry, respectively. See the
+  // `scoped_to` edge and scopedSearch/scopedRecall below for how these stay
+  // fenced to the project they came from instead of bleeding across projects.
+  | "episode"
+  | "tool_cache"
+  | "page"
+  | "workspace_note";
 
 export interface NodeRow {
   id: string;
@@ -26,13 +49,16 @@ export interface NodeRow {
   observations: number;
   created_at: string;
   last_seen: string;
+  /** Sub-typing for `user` nodes (facts/preferences/interests/behaviors) — optional, unused by other types. */
+  category?: string | null;
+  /** TTL for `tool_cache`/`page` nodes — null means "doesn't expire." */
+  expires_at?: string | null;
 }
 
 /**
  * A dedicated CPU-only embedding server (nomic-embed-text-v1.5, 768 dims) —
- * kept separate from the chat model's llama-server because that one runs
- * without `--embeddings` and sits at the edge of the GPU's memory budget
- * already (confirmed: 42 MiB free out of 12288 before this was added).
+ * kept separate from the chat model's llama-server, which runs without
+ * `--embeddings` and has no GPU memory budget to spare for it.
  * `embedText()` degrades gracefully to `undefined` on any failure — search
  * falls back to keyword-only (see `searchNodesSemantic`) rather than erroring.
  */
@@ -97,6 +123,31 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   if (!names.has("embedding")) {
     await conn.run(`ALTER TABLE nodes ADD COLUMN embedding FLOAT[${EMBEDDING_DIM}]`);
   }
+  // category: sub-typing for `user` nodes (facts/preferences/interests/behaviors).
+  // expires_at: TTL for `tool_cache`/`page` nodes — null means "doesn't expire."
+  if (!names.has("category")) {
+    await conn.run("ALTER TABLE nodes ADD COLUMN category TEXT");
+  }
+  if (!names.has("expires_at")) {
+    // TIMESTAMPTZ, not TIMESTAMP: this column is compared against now() for
+    // expiry, and now() is a timezone-aware instant — a naive TIMESTAMP
+    // written from a JS Date would be compared against now() as if it were
+    // wall-clock time in DuckDB's session timezone, which is wrong by
+    // however far that timezone sits from UTC.
+    await conn.run("ALTER TABLE nodes ADD COLUMN expires_at TIMESTAMPTZ");
+  } else {
+    // A database that already added this column under an earlier build (as
+    // plain TIMESTAMP, before the timezone bug above was found) needs the
+    // type itself corrected, not just added — column existence alone isn't
+    // enough to tell the two apart.
+    const type = await conn.runAndReadAll(
+      "SELECT data_type FROM information_schema.columns WHERE table_name = 'nodes' AND column_name = 'expires_at'",
+    );
+    const dataType = (type.getRowObjectsJson()[0] as any)?.data_type as string | undefined;
+    if (dataType && dataType !== "TIMESTAMP WITH TIME ZONE") {
+      await conn.run("ALTER TABLE nodes ALTER COLUMN expires_at SET DATA TYPE TIMESTAMPTZ");
+    }
+  }
 
   await conn.run("INSTALL fts");
   await conn.run("LOAD fts");
@@ -147,6 +198,8 @@ export async function upsertNode(
   type: NodeType,
   summary = "",
   confidence?: number,
+  /** category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page` nodes. Both optional, both only meaningful for the new node types. */
+  extra?: { category?: string; expiresAt?: Date | string },
 ): Promise<string> {
   const conn = await getConn();
   const id = normalizeName(name);
@@ -155,7 +208,19 @@ export async function upsertNode(
   // embedded twice wastes a round trip to the embedding server for nothing.
   const embedding = summary ? await embedText(`${name}: ${summary}`) : undefined;
   const embeddingParam = embedding ? arrayValue(embedding) : null;
-  const embeddingType = { embedding: ARRAY(FLOAT, EMBEDDING_DIM) };
+  const category = extra?.category ?? null;
+  // TIMESTAMPTZ, bound as an absolute instant (microseconds since epoch) —
+  // not a formatted string. A naive TIMESTAMP column previously took this as
+  // literal wall-clock text, and DuckDB's now() (also TIMESTAMPTZ) runs in
+  // the session's local timezone, not UTC — a JS `.toISOString()` string
+  // compared against that came out skewed by however far apart the two are.
+  const expiresAtDate = extra?.expiresAt
+    ? extra.expiresAt instanceof Date
+      ? extra.expiresAt
+      : new Date(extra.expiresAt)
+    : undefined;
+  const expiresAt = expiresAtDate ? timestampTZValue(BigInt(expiresAtDate.getTime()) * 1000n) : null;
+  const bindTypes = { embedding: ARRAY(FLOAT, EMBEDDING_DIM), expiresAt: TIMESTAMPTZ };
 
   if (existing) {
     if (existing.type === "anchor") {
@@ -163,7 +228,7 @@ export async function upsertNode(
         await conn.run(
           "UPDATE nodes SET summary = $summary, embedding = $embedding, last_seen = now() WHERE id = $id",
           { summary, embedding: embeddingParam, id },
-          embeddingType,
+          { embedding: ARRAY(FLOAT, EMBEDDING_DIM) },
         );
       } else {
         await conn.run("UPDATE nodes SET last_seen = now() WHERE id = $id", { id });
@@ -177,18 +242,21 @@ export async function upsertNode(
                           embedding = CASE WHEN $summary != '' THEN $embedding ELSE embedding END,
                           confidence = $confidence,
                           observations = observations + 1,
+                          category = COALESCE($category, category),
+                          expires_at = COALESCE($expiresAt, expires_at),
                           last_seen = now()
          WHERE id = $id`,
-        { type, summary, embedding: embeddingParam, confidence: nextConfidence, id },
-        embeddingType,
+        { type, summary, embedding: embeddingParam, confidence: nextConfidence, category, expiresAt, id },
+        bindTypes,
       );
     }
   } else {
     const initConfidence = confidence !== undefined ? Math.min(Math.max(confidence, 0), 1) : 0.5;
     await conn.run(
-      "INSERT INTO nodes (id, type, name, summary, confidence, observations, embedding) VALUES ($id, $type, $name, $summary, $confidence, 1, $embedding)",
-      { id, type, name, summary, confidence: initConfidence, embedding: embeddingParam },
-      embeddingType,
+      `INSERT INTO nodes (id, type, name, summary, confidence, observations, embedding, category, expires_at)
+       VALUES ($id, $type, $name, $summary, $confidence, 1, $embedding, $category, $expiresAt)`,
+      { id, type, name, summary, confidence: initConfidence, embedding: embeddingParam, category, expiresAt },
+      bindTypes,
     );
   }
   dirty = true;
@@ -270,16 +338,31 @@ export async function searchNodesSemantic(query: string, limit = 10): Promise<No
   return hits.length ? hits : searchNodes(query, limit);
 }
 
+/**
+ * The most recently touched nodes, newest first — no query, just "what's
+ * changed lately." Ports BirdClaw's `_dream_reflect` input exactly: it hands
+ * the model the last 20 knowledge-graph nodes and asks it to find patterns,
+ * contradictions and connections across them, rather than searching for
+ * something specific. This is the read half of that; the reflection prompt
+ * itself lives in the self-reflection routine's seeded instructions.
+ */
+export async function recentNodes(limit = 20): Promise<NodeRow[]> {
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    "SELECT * FROM nodes ORDER BY last_seen DESC LIMIT $limit",
+    { limit },
+  );
+  return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
 const NODE_COLUMNS = "b.id, b.type, b.name, b.summary, b.confidence, b.observations, b.created_at, b.last_seen";
 
 /**
  * DuckPGQ's GRAPH_TABLE/MATCH doesn't accept bound parameters in its WHERE
- * clause (confirmed directly: both named `$id` and positional `?` fail with
- * "Failed to retrieve bind parameter index"/"Failed to bind value" — a real
- * limitation of this still-young extension, not a usage mistake). The id is
- * always our own `normalizeName()` output, but may echo user-supplied text
- * (e.g. a node named "O'Brien's project"), so it's escaped as a SQL string
- * literal rather than trusted as one.
+ * clause — a limitation of this still-young extension. The id is always our
+ * own `normalizeName()` output, but may echo user-supplied text (e.g. a node
+ * named "O'Brien's project"), so it's escaped as a SQL string literal rather
+ * than trusted as one.
  */
 const sqlLiteral = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
@@ -319,4 +402,118 @@ export async function traverse(name: string, depth = 2): Promise<NodeRow[]> {
        COLUMNS (${NODE_COLUMNS}))`,
   );
   return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
+// --- the permeable boundary ---
+//
+// One graph, not one graph per project — a `user`/`skill` fact learned in
+// one workspace is still true in another, and keeping one graph is what lets
+// a search surface it there too. What must not happen is a `fact` or
+// `episode` from an unrelated project reading as current here. The fence is
+// a `scoped_to` edge from a scoped node to a `project` anchor (one per
+// distinct workspace path); a node with no such edge is unscoped and visible
+// everywhere on purpose (that's how `user`/`skill` nodes stay global).
+// scopedSearch/scopedRecall below are the only place this filter is applied
+// — every other reader in this file is already scope-blind by design and
+// stays that way; callers who need the fence ask for it explicitly.
+
+/** The `project` anchor node for a workspace path, created on first use. */
+export async function projectAnchor(cwd: string): Promise<string> {
+  return upsertNode(cwd, "project", `Workspace at ${cwd}`);
+}
+
+/** Fences a node to one project: invisible to scopedSearch/scopedRecall from any other. */
+export async function scopeToProject(name: string, cwd: string): Promise<void> {
+  await projectAnchor(cwd);
+  await upsertEdge(name, "scoped_to", cwd);
+}
+
+const SCOPE_FILTER = (alias: string) => `(
+       NOT EXISTS (SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to')
+       OR EXISTS (SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to' AND se.target_id = $projectId)
+     )`;
+
+/** searchNodes, fenced to `cwd`'s project plus whatever is unscoped. */
+export async function scopedSearch(query: string, cwd: string, limit = 10): Promise<NodeRow[]> {
+  const conn = await getConn();
+  await ensureFtsIndex(conn);
+  const projectId = normalizeName(cwd);
+  const reader = await conn.runAndReadAll(
+    `SELECT * EXCLUDE (score) FROM (
+       SELECT *, fts_main_nodes.match_bm25(id, $query) AS score FROM nodes
+     ) n
+     WHERE score IS NOT NULL AND ${SCOPE_FILTER("n")}
+     ORDER BY score * confidence DESC
+     LIMIT $limit`,
+    { query, projectId, limit },
+  );
+  return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
+/** searchNodesSemantic, fenced to `cwd`'s project plus whatever is unscoped. */
+export async function scopedRecall(query: string, cwd: string, limit = 10): Promise<NodeRow[]> {
+  const queryVec = await embedText(query);
+  if (!queryVec) return scopedSearch(query, cwd, limit);
+
+  const conn = await getConn();
+  const projectId = normalizeName(cwd);
+  const reader = await conn.runAndReadAll(
+    `SELECT * EXCLUDE (sim) FROM (
+       SELECT *, array_cosine_similarity(embedding, $q) AS sim FROM nodes WHERE embedding IS NOT NULL
+     ) n
+     WHERE sim > 0.3 AND ${SCOPE_FILTER("n")}
+     ORDER BY sim * confidence DESC
+     LIMIT $limit`,
+    { q: arrayValue(queryVec), projectId, limit },
+    { q: ARRAY(FLOAT, EMBEDDING_DIM) },
+  );
+  const hits = reader.getRowObjectsJson() as unknown as NodeRow[];
+  return hits.length ? hits : scopedSearch(query, cwd, limit);
+}
+
+// --- cleanup ---
+//
+// anchor/user/project are never pruned by age or expiry — permanent by type,
+// the same rule BirdClaw enforces via _PERMANENT_NODE_TYPES. Everything else
+// is fair game for routine_cleanup.
+const PERMANENT_TYPES = new Set<NodeType>(["anchor", "user", "project"]);
+
+/**
+ * Deletes both the node and any edge touching it — a node alone would leave
+ * a dangling edge referencing an id that no longer exists in `nodes`, which
+ * `edges`'s own FOREIGN KEY constraints refuse.
+ */
+async function deleteNodesWhere(conn: DuckDBConnection, where: string, params: Record<string, any>): Promise<number> {
+  const before = await conn.runAndReadAll(`SELECT id FROM nodes WHERE ${where}`, params);
+  const ids = before.getRowObjectsJson().map((r: any) => r.id as string);
+  if (!ids.length) return 0;
+  await conn.run(
+    `DELETE FROM edges WHERE source_id IN (SELECT id FROM nodes WHERE ${where}) OR target_id IN (SELECT id FROM nodes WHERE ${where})`,
+    params,
+  );
+  await conn.run(`DELETE FROM nodes WHERE ${where}`, params);
+  dirty = true;
+  return ids.length;
+}
+
+/** Deletes tool_cache/page nodes past their expires_at. Returns how many. */
+export async function pruneExpired(): Promise<number> {
+  const conn = await getConn();
+  return deleteNodesWhere(conn, "expires_at IS NOT NULL AND expires_at < now()", {});
+}
+
+/** Deletes nodes of `type` older (by last_seen) than `maxAgeDays`. No-op for a permanent type. */
+export async function pruneByAge(type: NodeType, maxAgeDays: number): Promise<number> {
+  if (PERMANENT_TYPES.has(type)) return 0;
+  const conn = await getConn();
+  return deleteNodesWhere(conn, "type = $type AND last_seen < now() - to_days($days)", {
+    type,
+    days: Math.max(0, Math.trunc(maxAgeDays)),
+  });
+}
+
+/** Deletes nodes of `type` whose `category` matches exactly — memory-cache.ts's invalidatePath. */
+export async function deleteNodesByCategory(type: NodeType, category: string): Promise<number> {
+  const conn = await getConn();
+  return deleteNodesWhere(conn, "type = $type AND category = $category", { type, category });
 }

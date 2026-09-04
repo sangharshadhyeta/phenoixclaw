@@ -1,25 +1,19 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { agentHome } from "./agent.js";
+import { IDENTITY_FILES, writeIdentity, readIdentity } from "./identity.js";
 
 /**
  * The agent's home directory.
  *
- * These three are handed to pi as context files when a session starts, through
- * the resource loader's agentsFilesOverride. Nothing is generated from them:
- * an earlier version composed an AGENTS.md because pi only discovers one
- * context file per directory, but the SDK takes an explicit list, which leaves
- * no second copy to drift and puts MEMORY.md genuinely in context rather than
- * relying on the agent to go and read it.
+ * SOUL.md / PrimaryUser.md / MEMORY.md / SELF_CONCEPT.md / INNER_LIFE.md
+ * themselves now live in identity.ts (the graph is their source of truth;
+ * this module only re-exports the file-name list and hands the wizard's
+ * generated content to identity.ts to write). CONSTITUTION.md is the one
+ * exception, handled entirely here, disk-only — see below.
  */
 
-export const AGENT_FILES = [
-  "SOUL.md",
-  "PrimaryUser.md",
-  "MEMORY.md",
-  "SELF_CONCEPT.md",
-  "INNER_LIFE.md",
-] as const;
+export const AGENT_FILES = IDENTITY_FILES;
 export type AgentFile = (typeof AGENT_FILES)[number];
 
 const filePath = (name: string) => path.join(agentHome(), name);
@@ -27,43 +21,25 @@ const filePath = (name: string) => path.join(agentHome(), name);
 /**
  * The agent's constitution — fixed principles, never user- or agent-editable.
  *
- * Deliberately not in AGENT_FILES: that array drives both isInitialised() and
- * what writeAgentFile()/the portal's PUT endpoint will accept, so leaving this
- * out means the file can't be edited through the normal agent-file API. It's
- * still injected into every session as a context file (sdk-client.ts), and
+ * Deliberately not in AGENT_FILES / identity.ts's graph migration: SOUL.md is
+ * who the agent is, and that's worth having evolve with it; the constitution
+ * is what it never becomes regardless, and stays exactly as fixed as that
+ * implies — a plain file, edited only by whoever controls this machine,
+ * directly on disk, never through the graph or any prompt. It's still
+ * injected into the self-update routines' sessions (sdk-client.ts), and
  * pi/guard.ts blocks any tool call that tries to write to it directly.
  */
 export const CONSTITUTION_FILE = "CONSTITUTION.md";
 export const constitutionPath = (): string => filePath(CONSTITUTION_FILE);
 export const isConstitutionSeeded = (): boolean => existsSync(constitutionPath());
 
-export const isInitialised = (): boolean => AGENT_FILES.every((f) => existsSync(filePath(f)));
-
+/** Disk-only reader, used for CONSTITUTION.md — the one file that never moved to the graph. */
 export function readAgentFile(name: string): string {
   try {
     return readFileSync(filePath(name), "utf8");
   } catch {
     return "";
   }
-}
-
-export function agentFileStatus() {
-  return {
-    home: agentHome(),
-    initialised: isInitialised(),
-    files: AGENT_FILES.map((name) => ({
-      name,
-      exists: existsSync(filePath(name)),
-      content: readAgentFile(name),
-    })),
-  };
-}
-
-export function writeAgentFile(name: string, content: string): void {
-  if (!(AGENT_FILES as readonly string[]).includes(name)) {
-    throw new Error(`"${name}" is not one of the agent's files`);
-  }
-  writeFileSync(filePath(name), content.endsWith("\n") ? content : `${content}\n`, "utf8");
 }
 
 export interface WizardInput {
@@ -82,7 +58,7 @@ export interface WizardInput {
  * characterless agent, and someone setting this up for the first time has no
  * reason to know what belongs in one.
  */
-export function runWizard(input: WizardInput): void {
+export async function runWizard(input: WizardInput): Promise<void> {
   const name = input.agentName.trim() || "the agent";
   const vibe = input.vibe?.trim();
   const principles = input.principles?.trim();
@@ -227,20 +203,20 @@ whoever controls this machine, directly on disk.
 ---
 `;
 
-  writeFileSync(filePath("SOUL.md"), soul, "utf8");
-  writeFileSync(filePath("PrimaryUser.md"), user, "utf8");
+  await writeIdentity("SOUL.md", soul);
+  await writeIdentity("PrimaryUser.md", user);
   // Never clobber a memory that already exists — it is the one file here that
   // cannot be reconstructed.
-  if (!existsSync(filePath("MEMORY.md"))) {
-    writeFileSync(filePath("MEMORY.md"), memory, "utf8");
+  if (!(await readIdentity("MEMORY.md"))) {
+    await writeIdentity("MEMORY.md", memory);
   }
   // Same care: these are living documents the self-reflection routine deepens
   // over time, so a rerun of the wizard must not reset what they have concluded.
-  if (!existsSync(filePath("SELF_CONCEPT.md"))) {
-    writeFileSync(filePath("SELF_CONCEPT.md"), selfConcept, "utf8");
+  if (!(await readIdentity("SELF_CONCEPT.md"))) {
+    await writeIdentity("SELF_CONCEPT.md", selfConcept);
   }
-  if (!existsSync(filePath("INNER_LIFE.md"))) {
-    writeFileSync(filePath("INNER_LIFE.md"), innerLife, "utf8");
+  if (!(await readIdentity("INNER_LIFE.md"))) {
+    await writeIdentity("INNER_LIFE.md", innerLife);
   }
   if (!isConstitutionSeeded()) {
     writeFileSync(constitutionPath(), constitution, "utf8");

@@ -1,7 +1,18 @@
 import { Type } from "typebox";
-import { neighbors, searchNodesSemantic, upsertEdge, upsertNode, type NodeType } from "../graph.js";
+import {
+  neighbors,
+  recentNodes,
+  scopedRecall,
+  scopeToProject,
+  upsertEdge,
+  upsertNode,
+  type NodeType,
+} from "../graph.js";
 
 const NODE_TYPES = ["user", "project", "concept", "fact", "skill"] as const;
+
+/** A collision-safe key for a log entry (episode/workspace_note) — these are appended, never upserted onto one another. */
+const logKey = (kind: string) => `${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 
 /**
  * Durable fact memory, backed by the knowledge graph in graph.ts.
@@ -13,7 +24,7 @@ const NODE_TYPES = ["user", "project", "concept", "fact", "skill"] as const;
  * recalling facts is a normal-conversation thing, the same role Birdclaw's
  * `save_memory` played, not something limited to a routine.
  */
-export function graphTools() {
+export function graphTools(cwd: string) {
   return (pi: any): void => {
     pi.registerTool({
       name: "graph_remember",
@@ -60,8 +71,10 @@ export function graphTools() {
       name: "graph_recall",
       label: "Recall",
       description:
-        "Search long-term memory for something previously saved with graph_remember. Returns matches and " +
-        "what they're directly connected to.",
+        "Search long-term memory for something previously saved with graph_remember, graph_episode or " +
+        "workspace_note. Returns matches and what they're directly connected to. Facts about you and your " +
+        "skills are visible everywhere; anything scoped to a specific project (episodes, workspace notes) " +
+        "only surfaces while working in that project.",
       promptSnippet: "graph_recall — search long-term memory",
       parameters: Type.Object({
         query: Type.String({ description: "What to search for." }),
@@ -71,7 +84,7 @@ export function graphTools() {
         const query = String(p.query ?? "").trim();
         if (!query) throw new Error("Nothing to search for.");
         const limit = typeof p.limit === "number" && p.limit > 0 ? p.limit : 5;
-        const hits = await searchNodesSemantic(query, limit);
+        const hits = await scopedRecall(query, cwd, limit);
         if (!hits.length) {
           return { content: [{ type: "text" as const, text: "Nothing found." }], details: {} };
         }
@@ -88,6 +101,68 @@ export function graphTools() {
           }
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }], details: {} };
+      },
+    });
+
+    pi.registerTool({
+      name: "graph_reflect",
+      label: "Reflect",
+      description:
+        "See the most recently touched things in long-term memory — not a search, just what's changed " +
+        "lately. Use it to look for patterns, contradictions or connections across recent facts, and " +
+        "capture anything worth keeping with graph_remember.",
+      promptSnippet: "graph_reflect — see what's changed lately in long-term memory",
+      parameters: Type.Object({
+        limit: Type.Optional(Type.Number({ description: "How many recent things to see. Defaults to 20." })),
+      }),
+      async execute(_id: string, p: any) {
+        const limit = typeof p.limit === "number" && p.limit > 0 ? p.limit : 20;
+        const hits = await recentNodes(limit);
+        if (!hits.length) {
+          return { content: [{ type: "text" as const, text: "Nothing in memory yet." }], details: {} };
+        }
+        const lines = hits.map((n) => `- ${n.name} (${n.type}): ${n.summary}`);
+        return { content: [{ type: "text" as const, text: lines.join("\n") }], details: {} };
+      },
+    });
+
+    pi.registerTool({
+      name: "graph_episode",
+      label: "Log episode",
+      description:
+        "Log a short note about this turn or session worth having later — what happened, what was decided, " +
+        "what came of it. Scoped to this project: it won't surface as if relevant while working somewhere else.",
+      promptSnippet: "graph_episode — log a turn-history note, scoped to this project",
+      parameters: Type.Object({
+        summary: Type.String({ description: "What happened, in a sentence or two." }),
+      }),
+      async execute(_id: string, p: any) {
+        const summary = String(p.summary ?? "").trim();
+        if (!summary) throw new Error("Nothing to log.");
+        const name = logKey("episode");
+        await upsertNode(name, "episode", summary);
+        await scopeToProject(name, cwd);
+        return { content: [{ type: "text" as const, text: "Logged." }], details: {} };
+      },
+    });
+
+    pi.registerTool({
+      name: "workspace_note",
+      label: "Note for this workspace",
+      description:
+        "Append a note to this project's own log: a completed task, a decision and why, something worth " +
+        "knowing the next time work happens here. Scoped to this project only.",
+      promptSnippet: "workspace_note — append to this project's log",
+      parameters: Type.Object({
+        summary: Type.String({ description: "What's worth knowing, in a sentence or two." }),
+      }),
+      async execute(_id: string, p: any) {
+        const summary = String(p.summary ?? "").trim();
+        if (!summary) throw new Error("Nothing to note.");
+        const name = logKey("workspace_note");
+        await upsertNode(name, "workspace_note", summary);
+        await scopeToProject(name, cwd);
+        return { content: [{ type: "text" as const, text: "Noted." }], details: {} };
       },
     });
   };

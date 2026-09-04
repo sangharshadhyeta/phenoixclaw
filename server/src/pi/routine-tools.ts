@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { nanoid } from "nanoid";
 import { pruneOldRecords } from "../db.js";
+import { pruneByAge, pruneExpired } from "../graph.js";
 import { getDb, type SessionRow } from "../db.js";
 import { unscopeKey } from "../agent.js";
 import { channelSupervisor } from "../channels/supervisor.js";
@@ -362,14 +363,25 @@ export function routineTools(sessionId?: string) {
       name: "routine_cleanup",
       label: "Cleanup",
       description:
-        "Prune stale sessions, old tasks, and expired pages to keep the system efficient.",
+        "Prune stale sessions, old tasks, and expired or aged-out memory (cached tool results, page " +
+        "captures, old episodes and workspace notes) to keep the system efficient. anchor/user/project " +
+        "nodes are never touched, regardless of age.",
       parameters: Type.Object({
         days: Type.Optional(Type.Number({ description: "How many days of history to keep. Defaults to 30." })),
       }),
       async execute(_id: string, p: any) {
         const days = typeof p.days === "number" ? p.days : 30;
         const { sessions, routines } = await pruneOldRecords(days);
-        return ok(`Cleanup complete. Pruned ${sessions} sessions and ${routines} routines.`);
+        const expired = await pruneExpired();
+        const aged = (
+          await Promise.all(
+            (["episode", "tool_cache", "page", "workspace_note"] as const).map((type) => pruneByAge(type, days)),
+          )
+        ).reduce((a, b) => a + b, 0);
+        return ok(
+          `Cleanup complete. Pruned ${sessions} sessions, ${routines} routines, ${expired} expired and ` +
+            `${aged} aged-out memory nodes.`,
+        );
       },
     });
   };

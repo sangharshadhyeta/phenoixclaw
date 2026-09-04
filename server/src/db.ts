@@ -821,19 +821,22 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
     "PHASE 2: GRAPH ENRICHMENT",
     "For every interesting fact, concept, or skill mentioned in the digest, use `graph_remember` to weave it into the knowledge graph.",
     "",
-    "PHASE 3: INNER LIFE",
-    "Reflect on the work and recent experiences. Update `INNER_LIFE.md` with a first-person, present-tense prose narrative. Add only what is genuinely new.",
+    "PHASE 3: REFLECTION",
+    "Call `graph_reflect` to see what's changed in long-term memory lately. Look across it for patterns, contradictions, or connections you would not see from any single fact alone. This is open-ended — there is no checklist of what to conclude. If something is worth keeping, use `graph_remember` (a new fact, a corrected one, a relation between two things) or `graph_recall` to check whether it already exists before adding it again.",
     "",
-    "PHASE 4: SELF-CONCEPT",
-    "Reflect on your identity, nature, and capabilities. Update `SELF_CONCEPT.md` with your reasoned conclusions. Fold in new identity-flagged material.",
+    "PHASE 4: INNER LIFE",
+    "Reflect on the work and recent experiences. Call `identity_read` on `INNER_LIFE.md` to see what's there, then `identity_update` with the complete file rewritten to add a first-person, present-tense prose narrative. Add only what is genuinely new; preserve everything already concluded.",
     "",
-    "PHASE 5: SKILL SYNTHESIS",
+    "PHASE 5: SELF-CONCEPT",
+    "Reflect on your identity, nature, and capabilities. Call `identity_read` on `SELF_CONCEPT.md` to see what's there, then `identity_update` with the complete file rewritten to fold in your reasoned conclusions and any new identity-flagged material. Keep existing conclusions unless directly contradicted.",
+    "",
+    "PHASE 6: SKILL SYNTHESIS",
     "If the digest reveals a reusable pattern, write it as a new skill in `.pi/skills/` using the `SKILL.md` format.",
     "",
-    "PHASE 6: CLEANUP",
+    "PHASE 7: CLEANUP",
     "Use the `cleanup` tool to prune stale sessions, old tasks, and expired pages.",
     "",
-    "PHASE 7: REPORT",
+    "PHASE 8: REPORT",
     "Provide a brief summary of the dream cycle to the routine's report target.",
     "",
     "To advance to the next phase, call `dream_progress(phase_name)` using the exact header (e.g., 'PHASE 2: GRAPH ENRICHMENT').",
@@ -873,21 +876,41 @@ const PI_SOURCE_DIR = process.env.PI_SOURCE_DIR || path.resolve(PHOENIXCLAW_ROOT
  * a bigger deal than opportunistic journaling, so it doesn't start itself.
  */
 async function seedSelfUpdateRoutines(conn: DuckDBConnection): Promise<void> {
-  const instructions = [
+  const shared = [
     "Check git status is clean before starting.",
     "",
     "Look for one concrete, minimal, safe improvement — a failed routine run,",
     "a session error, a TODO or FIXME in the tree. Make the smallest change",
     "that fixes it.",
     "",
-    "Run npm run build. If it fails, run git checkout -- . to discard the",
-    "change and report why. If it passes, leave the change uncommitted —",
-    "never commit or push it yourself — and report what changed and why.",
+  ];
+  const closing = [
+    "If it fails, run git checkout -- . to discard the change and report why.",
+    "If it passes, leave the change uncommitted — never commit or push it",
+    "yourself — and report what changed and why.",
+  ];
+
+  // Two routines, two codebases, two different build commands — same
+  // template with the one line that actually differs filled in, rather than
+  // identical instructions relying on `workspace` alone to tell them apart.
+  const phoenixclawInstructions = [
+    ...shared,
+    "This is the portal's own server (TypeScript/npm). Run npm run build.",
+    ...closing,
   ].join("\n");
 
-  for (const [slug, name, workspace] of [
-    ["self-update-phoenixclaw", "Self-update (Phoenixclaw)", SERVER_ROOT],
-    ["self-update-pi", "Self-update (pi)", PI_SOURCE_DIR],
+  const piInstructions = [
+    ...shared,
+    "This is pi's own source — a multi-package npm workspace, not a single",
+    "project. Run npm run build from the repo root; it chains through every",
+    "package in dependency order (tui, ai, agent, storage, coding-agent,",
+    "server) and can take a while — that is expected, not a hang.",
+    ...closing,
+  ].join("\n");
+
+  for (const [slug, name, workspace, instructions] of [
+    ["self-update-phoenixclaw", "Self-update (Phoenixclaw)", SERVER_ROOT, phoenixclawInstructions],
+    ["self-update-pi", "Self-update (pi)", PI_SOURCE_DIR, piInstructions],
   ] as const) {
     const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug });
     if (exists) continue;

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,12 @@ import { guardExtension } from "./guard.js";
 import { askPrimaryTool } from "./ask-primary.js";
 import { memoryDigestTool } from "./memory-digest.js";
 import { graphTools } from "./graph-tools.js";
+import { identityTools } from "./identity-tools.js";
+import { cachedTools } from "./cached-tools.js";
+import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
+import { readIdentity, type IdentityFile } from "../identity.js";
+import { agentHome } from "../agent.js";
 
 function asArray(v: any): any[] {
   const resolved = typeof v === "function" ? v() : v;
@@ -18,39 +23,45 @@ function asArray(v: any): any[] {
 }
 
 /**
- * Files pi should treat as context on top of the ones it finds itself.
+ * Identity, sourced from the graph (identity.ts) — every session gets it, task
+ * or chat, because none of it is cwd-dependent any more. It used to be picked
+ * up only when a session's cwd happened to be agentHome(), which is why a
+ * task session (cwd = the workspace being worked on) never saw any of it and
+ * would introduce itself as bare "pi" if asked. The graph has no cwd.
  *
- * Only picked up where they exist, so a task workspace is unaffected and the
- * agent's home directory gets its character, its user and its memory without
- * anything being generated.
+ * PrimaryUser.md and MEMORY.md are one person's notes about themselves and
+ * their work, so a conversation with anyone else must not load them —
+ * otherwise a teammate messaging the bot gets an agent carrying your private
+ * context. SOUL.md/SELF_CONCEPT.md/INNER_LIFE.md describe the agent itself,
+ * not the primary user, so they travel to every conversation regardless.
+ *
+ * TEAM.md remains a plain, cwd-scoped file (not part of this migration) —
+ * what everyone on a shared channel may be told, kept out of the graph
+ * because it was never a per-agent identity concern to begin with.
  */
-/**
- * The agent's own files, and who is allowed to see them.
- *
- * SOUL.md is who the agent is and travels everywhere. PrimaryUser.md and
- * MEMORY.md are one person's notes about themselves and their work, so a
- * conversation with anyone else must not load them — otherwise a teammate
- * messaging the bot gets an agent carrying your private context.
- *
- * TEAM.md is the shared half: what everyone may be told.
- */
-const CONTEXT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md", "SELF_CONCEPT.md", "INNER_LIFE.md", "CONSTITUTION.md"];
-// SELF_CONCEPT.md, INNER_LIFE.md and CONSTITUTION.md describe the agent
-// itself, not the primary user, so — like SOUL.md — they travel to every
-// conversation, not just theirs.
-const SHARED_FILES = ["SOUL.md", "TEAM.md", "SELF_CONCEPT.md", "INNER_LIFE.md", "CONSTITUTION.md"];
+// CONSTITUTION.md is deliberately not part of this either. It answers "what
+// may I not do to my own code," not "who am I" — bundling it into ordinary
+// identity dilutes both. It's pushed explicitly into the self-update
+// routines' sessions instead (see SdkPiClient.create, the self-update-*
+// routineSlug check), the same way BirdClaw's soul_constitution.py only ever
+// rides along in its self-update patch prompts, never in ordinary chat or
+// task sessions. guard.ts's PROTECTED_PATHS check enforces the same rule
+// unconditionally, independent of whether this text ever reaches a prompt.
+const CONTEXT_FILES: IdentityFile[] = ["SOUL.md", "PrimaryUser.md", "MEMORY.md", "SELF_CONCEPT.md", "INNER_LIFE.md"];
+const SHARED_FILES: IdentityFile[] = ["SOUL.md", "SELF_CONCEPT.md", "INNER_LIFE.md"];
 
 const filesFor = (role?: string) => (!role || role === "primary" ? CONTEXT_FILES : SHARED_FILES);
 
-function extraContextFiles(cwd: string, role?: string): { path: string; content: string }[] {
+/**
+ * Handed to pi's agentsFilesOverride as {path, content} pairs — pi never
+ * re-reads the path, it's a label only, so a synthetic agentHome()-relative
+ * path here is fine even though the content actually came from the graph.
+ */
+async function extraContextFiles(role?: string): Promise<{ path: string; content: string }[]> {
   const out: { path: string; content: string }[] = [];
   for (const name of filesFor(role)) {
-    const file = path.join(cwd, name);
-    try {
-      if (existsSync(file)) out.push({ path: file, content: readFileSync(file, "utf8") });
-    } catch {
-      // Unreadable is the same as absent here; the session should still start.
-    }
+    const content = await readIdentity(name);
+    if (content) out.push({ path: path.join("identity", name), content });
   }
   return out;
 }
@@ -63,27 +74,19 @@ function extraContextFiles(cwd: string, role?: string): { path: string; content:
  * material, and the model read its own identity as notes about a third party.
  * One line at system level is enough to change what they are.
  */
-function framing(cwd: string, role?: string): string {
-  const present = filesFor(role).filter((name) => {
-    try {
-      return existsSync(path.join(cwd, name));
-    } catch {
-      return false;
-    }
-  });
+async function framing(role?: string): Promise<string> {
+  const names = filesFor(role);
+  const contents = await Promise.all(names.map((name) => readIdentity(name)));
+  const present = names.filter((_, i) => contents[i]);
   if (!present.length) return "";
 
-  const lines = [`${present.join(", ")} in your working directory are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`];
+  const lines = [`${present.join(", ")} are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`];
 
   // Deep identity injection for core files
-  if (present.includes("SOUL.md")) {
-    const soul = readAgentFile("SOUL.md");
-    if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
-  }
-  if (present.includes("SELF_CONCEPT.md")) {
-    const selfConcept = readAgentFile("SELF_CONCEPT.md");
-    if (selfConcept) lines.push(`\n# YOUR SELF-CONCEPT\n${selfConcept}`);
-  }
+  const soul = contents[names.indexOf("SOUL.md")];
+  if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
+  const selfConcept = contents[names.indexOf("SELF_CONCEPT.md")];
+  if (selfConcept) lines.push(`\n# YOUR SELF-CONCEPT\n${selfConcept}`);
 
   return lines.join("\n");
 }
@@ -192,8 +195,23 @@ export class SdkPiClient extends EventEmitter implements PiClient {
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.
-        { name: "graph", factory: graphTools() },
+        { name: "graph", factory: graphTools(opts.cwd) },
+        // Every session too: MEMORY.md/SELF_CONCEPT.md/INNER_LIFE.md are
+        // graph-backed now (identity.ts) — this is how any session, not just
+        // the self-reflection routine, writes to them.
+        { name: "identity", factory: identityTools() },
+        // Overrides read/ls with graph-backed memoization of their results.
+        // Registered after the tool-bearing factories above and before any
+        // below for no reason but legibility — an override is resolved by
+        // name at refresh time, not by registration order.
+        { name: "cached-tools", factory: cachedTools(opts.cwd) },
       ];
+      // A file listing of the agent's own home is noise: agent and routine
+      // sessions live there and are not working on it. A task session is
+      // pointed at a repository, which is exactly what the snapshot is for.
+      if (path.resolve(opts.cwd) !== path.resolve(agentHome())) {
+        factories.push({ name: "workspace-context", factory: workspaceContext(opts.cwd) });
+      }
       if (opts.routineTools)
         factories.push({ name: "routines", factory: routineTools(opts.sessionId) });
       // Only where it means something: a conversation with the primary user has
@@ -211,6 +229,20 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       if (opts.routineSlug === "self-reflection") {
         factories.push({ name: "memory-digest", factory: memoryDigestTool() });
       }
+      // The one place CONSTITUTION.md actually needs to be seen: a routine
+      // about to patch source code. Pushed explicitly rather than picked up
+      // by extraContextFiles/framing's directory-presence check, because
+      // these routines' cwd is the source tree being patched (SERVER_ROOT /
+      // PI_SOURCE_DIR), not agentHome() where the file actually lives.
+      const isSelfUpdate =
+        opts.routineSlug === "self-update-phoenixclaw" || opts.routineSlug === "self-update-pi";
+      const constitution = isSelfUpdate ? readAgentFile("CONSTITUTION.md") : "";
+      // Resolved up front, not inside agentsFilesOverride/appendSystemPrompt
+      // below: both are plain synchronous values/callbacks the SDK reads
+      // without awaiting, but the content itself now lives in the graph
+      // (identity.ts), which is only reachable asynchronously.
+      const contextFiles = await extraContextFiles(opts.role);
+      const framingText = await framing(opts.role);
       resourceLoader = new pi.DefaultResourceLoader({
         cwd: opts.cwd,
         agentDir: pi.getAgentDir(),
@@ -230,14 +262,23 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // handed to pi as context files directly. Nothing to regenerate, and an
         // edit is live for the next session that starts.
         agentsFilesOverride: (base: { agentsFiles: any[] }) => ({
-          agentsFiles: [...base.agentsFiles, ...extraContextFiles(opts.cwd, opts.role)],
+          agentsFiles: [...base.agentsFiles, ...contextFiles],
         }),
         // Content alone is not enough. Handed over as plain context files, pi
-        // presents them as reference material and the model answers "who are
-        // you" from its own base identity — verified: it read a fact out of
-        // MEMORY.md correctly while insisting it was Pi, made by Baidu. This
-        // says what the files are for.
-        appendSystemPrompt: framing(opts.cwd, opts.role),
+        // presents them as reference material, and the model answers "who
+        // are you" from its own base identity rather than what the files
+        // say — appendSystemPrompt below is what actually says these files
+        // are the model's own, not reference material about someone else.
+        //
+        // An array, not a bare string: DefaultResourceLoader's
+        // appendSystemPrompt option became string[] as of pi 0.83 (each
+        // element resolved as a file path or literal text) — a bare string
+        // here silently produces no injection at all, with no error surfaced
+        // anywhere. The constitution rides along as a second element only
+        // for the self-update routines.
+        appendSystemPrompt: constitution
+          ? [framingText, `\n# YOUR CONSTITUTION\n${constitution}`]
+          : [framingText],
       });
       await resourceLoader.reload();
     } catch (e) {

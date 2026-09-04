@@ -15,12 +15,8 @@ import {
   updateSession,
 } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
-import {
-  agentFileStatus,
-  runWizard,
-  writeAgentFile,
-  type WizardInput,
-} from "./agent-setup.js";
+import { runWizard, type WizardInput } from "./agent-setup.js";
+import { identityStatus, writeIdentity, migrateIdentityFromDisk } from "./identity.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
@@ -220,12 +216,12 @@ app.post("/api/agent/sessions", async (req, res) => {
 
 // --- the agent's home directory ---
 
-app.get("/api/agent/setup", (_req, res) => {
-  res.json(agentFileStatus());
+app.get("/api/agent/setup", async (_req, res) => {
+  res.json(await identityStatus());
 });
 
 /** Run the wizard. Refuses to overwrite an existing MEMORY.md. */
-app.post("/api/agent/setup", (req, res) => {
+app.post("/api/agent/setup", async (req, res) => {
   const body = (req.body ?? {}) as WizardInput;
   if (typeof body.agentName !== "string" || !body.agentName.trim()) {
     return res.status(400).json({ error: "The agent needs a name" });
@@ -234,19 +230,19 @@ app.post("/api/agent/setup", (req, res) => {
     return res.status(400).json({ error: "Who is it working for?" });
   }
   try {
-    runWizard(body);
-    res.json(agentFileStatus());
+    await runWizard(body);
+    res.json(await identityStatus());
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
   }
 });
 
-app.put("/api/agent/files/:name", (req, res) => {
+app.put("/api/agent/files/:name", async (req, res) => {
   const content = req.body?.content;
   if (typeof content !== "string") return res.status(400).json({ error: "content required" });
   try {
-    writeAgentFile(req.params.name, content);
-    res.json(agentFileStatus());
+    await writeIdentity(req.params.name, content);
+    res.json(await identityStatus());
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -591,6 +587,11 @@ if (existsSync(webDist)) {
 // docker only seeds a volume that is empty, so an existing deploy would carry a
 // PATH entry pointing at nothing.
 mkdirSync(BIN_DIR, { recursive: true });
+
+// One-time, idempotent: pulls any identity content already on disk into the
+// graph before the first session can start, so existing SELF_CONCEPT/
+// INNER_LIFE work survives the migration to graph-backed identity.
+await migrateIdentityFromDisk();
 
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`pithagoras listening on :${PORT}`);
