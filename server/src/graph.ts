@@ -7,7 +7,7 @@ import {
   timestampTZValue,
   type DuckDBConnection,
 } from "@duckdb/node-api";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -161,13 +161,67 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   `);
 }
 
+/**
+ * Open a DuckDB file, surviving a write-ahead log that cannot be replayed.
+ *
+ * `ALTER TABLE ... ADD COLUMN` re-binds every existing column default when it
+ * is replayed, and both of this app's tables have `now()` defaults. During WAL
+ * replay there is no default database bound, so the bind hits an internal
+ * assertion and *the database will not open at all* — not a degraded start, a
+ * dead process on every boot from then on. Any kill between a migration and
+ * the next checkpoint gets you there: a `docker stop` that hits its timeout,
+ * an OOM, a crash on the very tick that follows a schema change.
+ *
+ * Two halves, because one is not enough:
+ *
+ * - `checkpoint()` after the migrations, below, so the ALTERs land in the main
+ *   file and there is nothing of that shape left in the WAL to replay. That
+ *   prevents it happening again.
+ * - This, which recovers a database already in that state. Renaming the WAL
+ *   aside loses whatever had not been checkpointed — but the alternative is a
+ *   portal that cannot start, and the file is kept rather than deleted so the
+ *   loss is inspectable rather than assumed.
+ */
+export async function openDuckDB(file: string): Promise<DuckDBInstance> {
+  try {
+    return await DuckDBInstance.create(file);
+  } catch (e) {
+    const message = (e as Error).message ?? "";
+    if (!/replaying WAL|WAL file/i.test(message)) throw e;
+    const wal = `${file}.wal`;
+    if (!existsSync(wal)) throw e;
+    const quarantined = `${wal}.unreplayable-${Date.now()}`;
+    renameSync(wal, quarantined);
+    console.error(
+      `[duckdb] ${path.basename(file)}: its write-ahead log could not be replayed and has been moved ` +
+        `to ${path.basename(quarantined)} so the database can open. Anything written since the last ` +
+        `checkpoint is in that file and is not in the database. Original error: ${message.split("\n")[0]}`,
+    );
+    return DuckDBInstance.create(file);
+  }
+}
+
+/** Force everything in the WAL into the main file. See openDuckDB for why this is not optional. */
+export async function checkpoint(conn: DuckDBConnection): Promise<void> {
+  try {
+    await conn.run("CHECKPOINT");
+  } catch {
+    // A checkpoint can legitimately fail while another connection holds a
+    // transaction open. Losing this one is not worth refusing to start: the
+    // next one will catch up, and openDuckDB recovers the case where none does.
+  }
+}
+
 async function getConn(): Promise<DuckDBConnection> {
   if (!connPromise) {
     connPromise = (async () => {
       mkdirSync(DATA_DIR, { recursive: true });
-      const instance = await DuckDBInstance.create(path.join(DATA_DIR, "graph.duckdb"));
+      const instance = await openDuckDB(path.join(DATA_DIR, "graph.duckdb"));
       const conn = await instance.connect();
       await ensureSchema(conn);
+      // Immediately, while nothing else is using the connection: this is the
+      // half that stops the next unclean shutdown bricking the file.
+      await checkpoint(conn);
       return conn;
     })();
   }

@@ -10,3 +10,7 @@ models/
 # VitePress build output and cache
 docs/.vitepress/dist
 docs/.vitepress/cache
+
+# Local (non-docker) run: data dir and env
+run-data/
+.env.local

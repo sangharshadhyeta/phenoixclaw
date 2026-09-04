@@ -1,6 +1,7 @@
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { piSetting } from "./pi-settings.js";
 import { mkdirSync } from "node:fs";
+import { checkpoint, openDuckDB } from "./graph.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -345,9 +346,12 @@ async function getConn(): Promise<DuckDBConnection> {
   if (!connPromise) {
     connPromise = (async () => {
       mkdirSync(DATA_DIR, { recursive: true });
-      const instance = await DuckDBInstance.create(path.join(DATA_DIR, "portal.duckdb"));
+      // Same WAL-replay hazard as the graph — this schema has now() defaults
+      // and ALTER TABLE migrations too. See openDuckDB in graph.ts.
+      const instance = await openDuckDB(path.join(DATA_DIR, "portal.duckdb"));
       const conn = await instance.connect();
       await ensureSchema(conn);
+      await checkpoint(conn);
       await seedSelfReflectionRoutine(conn);
       await seedLearningLoopRoutine(conn);
       await seedSelfUpdateRoutines(conn);
