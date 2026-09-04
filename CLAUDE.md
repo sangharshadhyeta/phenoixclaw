@@ -28,9 +28,11 @@ npm run docs:build
 docker compose up -d --build   # the deployed path; needs .env (see .env.example)
 ```
 
-There is **no test suite, linter, or formatter** in this repo. Typechecking is the only automated
-gate: `npm run build -w server` and `npm run build -w web` (the web build typechecks via `tsc -b`).
-Run both after server or web changes.
+`npm run test:graph` runs the knowledge graph's contract (`server/test/graph-contract.mjs`), ported
+from BirdClaw's `TestKnowledgeGraph`. It is the only test suite; there is no linter or formatter.
+Typechecking is the other gate: `npm run build -w server` and `npm run build -w web` (the web build
+typechecks via `tsc -b`). Run all three after server changes — the graph contract catches things
+`tsc` cannot, which is why it exists.
 
 `server/package.json` depends on `@earendil-works/pi-coding-agent` via `file:../../pi-source/packages/coding-agent`
 — a **sibling checkout** of pi, expected at `../pi-source`. Local dev breaks without it. The Docker
@@ -117,8 +119,14 @@ bug; see the architecture doc.
 
 ## Constraints worth knowing
 
-- `@duckdb/node-api` is pinned to `1.4.4-r.4` because DuckPGQ has no build for 1.5.x. Don't bump it
-  without checking DuckPGQ.
+- `@duckdb/node-api` is pinned to `1.4.4-r.4`. The reason was DuckPGQ, which has been removed
+  (it crashed the process from a background thread); the pin is now free to move, and moving it
+  wants the graph contract run afterwards.
+- Never put a `FOREIGN KEY` on a table whose parent rows get updated. DuckDB rewrites `UPDATE` on a
+  referenced table as delete+insert and trips its own constraint, which froze every node that had
+  an edge. See the comment on `edges` in `graph.ts`.
+- Migrations must be followed by `CHECKPOINT`. An `ALTER TABLE ADD COLUMN` left in the WAL cannot
+  be replayed when the table has `now()` defaults, and the database then refuses to open at all.
 - pi has no approval prompts by design — it runs with its process's permissions. That is why
   `PORTAL_PASSWORD` is required and why the portal is meant for Tailscale/LAN, not the public
   internet. Egress is not restricted; don't claim it is.

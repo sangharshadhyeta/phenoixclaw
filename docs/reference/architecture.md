@@ -91,7 +91,7 @@ of two.
 | `grants` | A one-off tool approval, spent once and expiring in 15 minutes |
 | `notes` | Something the portal said into a conversation while nobody was listening, held for its next turn |
 | `tool_rules` | Standing exceptions to what a non-primary role may run |
-| `audit` | What the [guard](/guide/security) decided, and why — kept to the last 2,000 entries |
+| `audit` | What the [guard](/guide/security) decided, and why — kept to the last 20,000 entries — every autonomous call is recorded, not only refusals |
 | `settings` | Portal-wide overrides |
 
 Migrations run in place — `ALTER TABLE` plus a check against
@@ -124,15 +124,12 @@ search embeds the query — a CPU-only server running `nomic-embed-text-v1.5`
 keyword search whenever the embedding server is unreachable or nothing is
 embedded yet, so a caller never has to branch on availability.
 
-**Traversal uses DuckPGQ**, a community property-graph extension
-(`GRAPH_TABLE`/`MATCH` queries), rather than hand-written joins.
-
-::: warning DuckPGQ pins the DuckDB version
-DuckPGQ has no build published for DuckDB 1.5.x yet, so `@duckdb/node-api` is
-pinned to `1.4.4` — the last version DuckPGQ is confirmed to work against.
-This pin may need to move again once DuckPGQ catches up; don't bump
-`@duckdb/node-api` without checking.
-:::
+**Traversal is plain SQL** — a join for one hop, a recursive CTE for several.
+It used DuckPGQ (`GRAPH_TABLE`/`MATCH`), which raised an internal assertion
+from a background thread on any graph past a handful of nodes and took the
+whole portal down with it. `graph_recall` expands every hit through that path,
+so an unattended run reached it on its own as the graph grew. Nothing was lost
+by removing it, and the pin holding `@duckdb/node-api` at 1.4.4 went with it.
 
 Two tools put this in the agent's hands: `graph_remember(name, type, summary,
 relations?)` writes a node and optionally links it, and `graph_recall(query,

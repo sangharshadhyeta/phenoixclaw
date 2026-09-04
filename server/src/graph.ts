@@ -16,11 +16,11 @@ import path from "node:path";
  * anchor protection, keyword search weighted by confidence), a real database
  * underneath instead of a hand-rolled JSON file with no indexing or schema.
  *
- * Traversal uses DuckPGQ (SQL/PGQ property-graph queries via GRAPH_TABLE/
- * MATCH) rather than hand-written joins. DuckPGQ has no build published for
- * DuckDB's latest minor (1.5.x) — this pins @duckdb/node-api to 1.4.4, the
- * last version DuckPGQ is confirmed to work against. DuckPGQ is a trailing
- * community extension, so this pin may need to move again once it catches up.
+ * Traversal is plain SQL — a join for one hop, a recursive CTE for n. It was
+ * DuckPGQ, which crashed the process from a background thread on any graph
+ * bigger than a few nodes; see the comment above neighbours()/traverse(). With
+ * it went the only reason @duckdb/node-api was pinned to 1.4.4, so that pin is
+ * now free to move.
  */
 
 export type NodeType =
@@ -108,14 +108,73 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
       embedding FLOAT[${EMBEDDING_DIM}]
     )
   `);
+  /**
+   * No FOREIGN KEY on source_id/target_id, deliberately.
+   *
+   * DuckDB implements UPDATE on a table that something references as a delete
+   * followed by an insert, and the delete half trips its own constraint. The
+   * effect is that a node becomes frozen the moment it gains its first edge:
+   *
+   *     upsertNode("Alpha", ...)          -> ok
+   *     upsertEdge("Alpha", "x", "Beta")  -> ok
+   *     upsertNode("Alpha", ...)          -> Constraint Error
+   *
+   * Which is the opposite of what this graph is for. Corroboration — the rule
+   * that re-observing something nudges its confidence up rather than
+   * overwriting it — only means anything on a node you can write to twice, and
+   * the nodes that matter most are exactly the ones with relations: a plan the
+   * loop revises each iteration, an identity anchor, a fact that turned out to
+   * connect to another.
+   *
+   * Referential integrity is kept in code instead: `deleteNodesWhere` already
+   * clears a node's edges before the node itself, which is the only place
+   * either table is deleted from. A dangling edge would cost a join that
+   * matches nothing; a frozen node costs the whole feature.
+   *
+   * Nothing else depended on the constraint: traversal is plain SQL now, and
+   * a join does not consult a foreign key.
+   */
   await conn.run(`
     CREATE TABLE IF NOT EXISTS edges (
-      source_id TEXT NOT NULL REFERENCES nodes(id),
-      target_id TEXT NOT NULL REFERENCES nodes(id),
+      source_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
       relation TEXT NOT NULL,
       weight DOUBLE NOT NULL DEFAULT 1.0
     )
   `);
+
+  // An existing database still carries the constraint, and DuckDB has no
+  // usable ALTER TABLE ... DROP CONSTRAINT for it, so the table is rebuilt.
+  // Any leftover property graph is dropped first, since it is defined over
+  // `edges` and would otherwise hold a reference to the table being replaced.
+  const constraints = await conn.runAndReadAll(
+    "SELECT constraint_type FROM duckdb_constraints() WHERE table_name = 'edges'",
+  );
+  const hasForeignKey = constraints
+    .getRowObjectsJson()
+    .some((r: any) => String(r.constraint_type).toUpperCase() === "FOREIGN KEY");
+  if (hasForeignKey) {
+    try {
+      await conn.run("LOAD duckpgq");
+      await conn.run("DROP PROPERTY GRAPH IF EXISTS knowledge");
+    } catch {
+      // The extension is no longer required, so its absence is expected. If a
+      // stale property graph does block the rebuild below, the error from that
+      // statement says so plainly.
+    }
+    await conn.run(`
+      CREATE TABLE edges_rebuilt (
+        source_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        relation TEXT NOT NULL,
+        weight DOUBLE NOT NULL DEFAULT 1.0
+      )
+    `);
+    await conn.run("INSERT INTO edges_rebuilt SELECT source_id, target_id, relation, weight FROM edges");
+    await conn.run("DROP TABLE edges");
+    await conn.run("ALTER TABLE edges_rebuilt RENAME TO edges");
+    console.log("[graph] rebuilt `edges` without its foreign keys — see the comment in ensureSchema");
+  }
   // CREATE TABLE IF NOT EXISTS is a no-op against an existing database, so a
   // column added after nodes already existed on disk needs its own migration.
   const columns = await conn.runAndReadAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'nodes'");
@@ -151,14 +210,11 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
 
   await conn.run("INSTALL fts");
   await conn.run("LOAD fts");
-  await conn.run("INSTALL duckpgq FROM community");
-  await conn.run("LOAD duckpgq");
-  await conn.run(`
-    CREATE PROPERTY GRAPH IF NOT EXISTS knowledge
-      VERTEX TABLES (nodes)
-      EDGE TABLES (edges SOURCE KEY (source_id) REFERENCES nodes (id)
-                         DESTINATION KEY (target_id) REFERENCES nodes (id))
-  `);
+  // DuckPGQ is deliberately not installed or loaded any more — see the comment
+  // above neighbours()/traverse() for what it was doing and why it had to go.
+  // A database created by an earlier build still has a `knowledge` property
+  // graph in its catalogue; it is inert without the extension, and cleaning it
+  // up is best-effort rather than a reason to fail startup.
 }
 
 /**
@@ -350,17 +406,21 @@ async function ensureFtsIndex(conn: DuckDBConnection): Promise<void> {
 }
 
 /** Keyword search, scored by BM25 match weighted by confidence — the DB-native analog of Sisyphean's hand-rolled token-overlap scoring. */
-export async function searchNodes(query: string, limit = 10): Promise<NodeRow[]> {
+export async function searchNodes(query: string, limit = 10, type?: NodeType): Promise<NodeRow[]> {
   const conn = await getConn();
   await ensureFtsIndex(conn);
+  // `type` narrows the search to one kind of node — asking "what episodes
+  // mention this" without every fact that also does. Bound rather than
+  // interpolated, and omitted entirely when not asked for so the planner sees
+  // the same query it always did.
   const reader = await conn.runAndReadAll(
     `SELECT * EXCLUDE (score) FROM (
        SELECT *, fts_main_nodes.match_bm25(id, $query) AS score FROM nodes
      )
-     WHERE score IS NOT NULL
+     WHERE score IS NOT NULL ${type ? "AND type = $type" : ""}
      ORDER BY score * confidence DESC
      LIMIT $limit`,
-    { query, limit },
+    type ? { query, limit, type } : { query, limit },
   );
   return reader.getRowObjectsJson() as unknown as NodeRow[];
 }
@@ -373,23 +433,23 @@ export async function searchNodes(query: string, limit = 10): Promise<NodeRow[]>
  * nothing is embedded yet, so callers never need to branch on availability —
  * same fallback contract Sisyphean's `search_by_embedding` used.
  */
-export async function searchNodesSemantic(query: string, limit = 10): Promise<NodeRow[]> {
+export async function searchNodesSemantic(query: string, limit = 10, type?: NodeType): Promise<NodeRow[]> {
   const queryVec = await embedText(query);
-  if (!queryVec) return searchNodes(query, limit);
+  if (!queryVec) return searchNodes(query, limit, type);
 
   const conn = await getConn();
   const reader = await conn.runAndReadAll(
     `SELECT * EXCLUDE (sim) FROM (
        SELECT *, array_cosine_similarity(embedding, $q) AS sim FROM nodes WHERE embedding IS NOT NULL
      )
-     WHERE sim > 0.3
+     WHERE sim > 0.3 ${type ? "AND type = $type" : ""}
      ORDER BY sim * confidence DESC
      LIMIT $limit`,
-    { q: arrayValue(queryVec), limit },
+    type ? { q: arrayValue(queryVec), limit, type } : { q: arrayValue(queryVec), limit },
     { q: ARRAY(FLOAT, EMBEDDING_DIM) },
   );
   const hits = reader.getRowObjectsJson() as unknown as NodeRow[];
-  return hits.length ? hits : searchNodes(query, limit);
+  return hits.length ? hits : searchNodes(query, limit, type);
 }
 
 /**
@@ -412,50 +472,115 @@ export async function recentNodes(limit = 20): Promise<NodeRow[]> {
 const NODE_COLUMNS = "b.id, b.type, b.name, b.summary, b.confidence, b.observations, b.created_at, b.last_seen";
 
 /**
- * DuckPGQ's GRAPH_TABLE/MATCH doesn't accept bound parameters in its WHERE
- * clause — a limitation of this still-young extension. The id is always our
- * own `normalizeName()` output, but may echo user-supplied text (e.g. a node
- * named "O'Brien's project"), so it's escaped as a SQL string literal rather
- * than trusted as one.
+ * Both of these were DuckPGQ `GRAPH_TABLE`/`MATCH` queries. They are plain SQL
+ * now, and the extension is gone.
+ *
+ * It crashed the process. On a graph of more than a handful of nodes,
+ * traversal raised `INTERNAL Error: Attempted to access index 8 within vector
+ * of size 8` from inside the extension — on a background task thread, so it
+ * was not catchable at the call site and took the whole portal down with it.
+ * `neighbors()` is what `graph_recall` expands its hits with, so the loop
+ * reached this on its own, unattended, as the graph grew.
+ *
+ * Nothing is lost by dropping it. One hop is a join, and n hops is a
+ * recursive CTE — both are ordinary DuckDB, which is already here and does
+ * not need `INSTALL ... FROM community` at startup. What goes with it: the
+ * pin holding `@duckdb/node-api` at 1.4.4 (DuckPGQ published no build for
+ * 1.5.x, which is the only reason that pin existed), and the escaping
+ * workaround below it — GRAPH_TABLE would not accept bound parameters, so
+ * every id had to be spliced in as a quoted literal. These take parameters
+ * like any other query, so a node named "O'Brien's project" is no longer a
+ * question about quoting.
  */
-const sqlLiteral = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+
+const NEIGHBOR_COLUMNS = "n.id, n.type, n.name, n.summary, n.confidence, n.observations, n.created_at, n.last_seen";
 
 /** Immediate neighbors in both directions, with the relation label — one hop. */
 export async function neighbors(name: string): Promise<NeighborRow[]> {
   const conn = await getConn();
-  const id = sqlLiteral(normalizeName(name));
-  // Sequential, not Promise.all: a single DuckDBConnection runs one
-  // statement at a time — concurrent queries on it fail the same way.
-  const out = await conn.runAndReadAll(
-    `FROM GRAPH_TABLE (knowledge
-       MATCH (a:nodes)-[e:edges]->(b:nodes)
-       WHERE a.id = ${id}
-       COLUMNS (${NODE_COLUMNS}, e.relation AS relation, 'out' AS direction))`,
+  const reader = await conn.runAndReadAll(
+    `SELECT ${NEIGHBOR_COLUMNS}, e.relation AS relation, 'out' AS direction
+       FROM edges e JOIN nodes n ON n.id = e.target_id
+      WHERE e.source_id = $id
+     UNION ALL
+     SELECT ${NEIGHBOR_COLUMNS}, e.relation AS relation, 'in' AS direction
+       FROM edges e JOIN nodes n ON n.id = e.source_id
+      WHERE e.target_id = $id`,
+    { id: normalizeName(name) },
   );
-  const inn = await conn.runAndReadAll(
-    `FROM GRAPH_TABLE (knowledge
-       MATCH (a:nodes)<-[e:edges]-(b:nodes)
-       WHERE a.id = ${id}
-       COLUMNS (${NODE_COLUMNS}, e.relation AS relation, 'in' AS direction))`,
-  );
-  return [...out.getRowObjectsJson(), ...inn.getRowObjectsJson()] as unknown as NeighborRow[];
+  return reader.getRowObjectsJson() as unknown as NeighborRow[];
 }
 
 /**
- * Everything reachable within `depth` hops (outbound), without per-edge
- * relation labels — matches Sisyphean's `bfs()` depth (2 by default), for
- * callers that want the wider neighborhood rather than just direct links.
+ * Everything reachable within `depth` hops, without per-edge relation labels
+ * — matches Sisyphean's `bfs()` depth (2 by default), for callers that want
+ * the wider neighborhood rather than just direct links.
+ *
+ * Undirected, following an edge either way, which is what the old MATCH did
+ * not do and what a "what is this connected to" question actually means: a
+ * fact linked *to* a project is as relevant to that project as one linked
+ * from it. `UNION` rather than `UNION ALL` inside the CTE so a cycle
+ * terminates instead of running forever.
  */
 export async function traverse(name: string, depth = 2): Promise<NodeRow[]> {
   const conn = await getConn();
-  const id = sqlLiteral(normalizeName(name));
   const reader = await conn.runAndReadAll(
-    `FROM GRAPH_TABLE (knowledge
-       MATCH (a:nodes)-[e:edges]->{1,${Math.max(1, Math.trunc(depth))}}(b:nodes)
-       WHERE a.id = ${id}
-       COLUMNS (${NODE_COLUMNS}))`,
+    `WITH RECURSIVE reachable(id, depth) AS (
+       SELECT $id, 0
+       UNION
+       SELECT CASE WHEN e.source_id = r.id THEN e.target_id ELSE e.source_id END, r.depth + 1
+         FROM reachable r
+         JOIN edges e ON e.source_id = r.id OR e.target_id = r.id
+        WHERE r.depth < $depth
+     )
+     SELECT n.* FROM nodes n JOIN reachable r ON r.id = n.id WHERE n.id <> $id`,
+    { id: normalizeName(name), depth: Math.max(1, Math.trunc(depth)) },
   );
   return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
+/**
+ * The rest of BirdClaw's GraphStore surface, which its test suite asserts and
+ * this port had not needed until now.
+ *
+ * `removeNode` is the one that was actually missing something: cleanup could
+ * only prune by age, expiry or category, so a single wrong belief could not be
+ * taken out — an agent that writes its own memory needs to be able to correct
+ * it, not only wait for it to get old. The other three are conveniences the
+ * same suite checks.
+ */
+
+/** Every node of one type. */
+export async function nodesByType(type: NodeType, limit = 1000): Promise<NodeRow[]> {
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    "SELECT * FROM nodes WHERE type = $type ORDER BY last_seen DESC LIMIT $limit",
+    { type, limit },
+  );
+  return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
+/** How many nodes there are, in total or of one type. */
+export async function nodeCount(type?: NodeType): Promise<number> {
+  const conn = await getConn();
+  const reader = type
+    ? await conn.runAndReadAll("SELECT count(*) AS n FROM nodes WHERE type = $type", { type })
+    : await conn.runAndReadAll("SELECT count(*) AS n FROM nodes");
+  return Number((reader.getRowObjectsJson()[0] as any)?.n ?? 0);
+}
+
+/**
+ * Delete one node and every edge touching it. True when it existed.
+ *
+ * Anchors are exempt: identity is not something a stray call removes. Rewrite
+ * one through identity.ts instead, which is the deliberate path.
+ */
+export async function removeNode(name: string): Promise<boolean> {
+  const conn = await getConn();
+  const id = normalizeName(name);
+  const existing = await getNode(id);
+  if (!existing || existing.type === "anchor") return false;
+  return (await deleteNodesWhere(conn, "id = $id", { id })) > 0;
 }
 
 // --- the permeable boundary ---

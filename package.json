@@ -13,6 +13,7 @@
     "dev:web": "npm run dev -w web",
     "start": "node server/dist/index.js",
     "docs": "npm run dev -w docs",
-    "docs:build": "npm run build -w docs"
+    "docs:build": "npm run build -w docs",
+    "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs"
   }
 }
