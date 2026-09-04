@@ -25,6 +25,12 @@ export interface LaunchOptions {
   whoNow?: () => { role: string; key?: string };
   /** False turns off the guard's taint rules for this session. */
   enforceTaint?: boolean;
+  /**
+   * True when this session's turns are the agent's own initiative rather than
+   * anyone's request — held to the constitution's allowlist, and given
+   * CONSTITUTION.md in full. See pi/constitution.ts.
+   */
+  autonomous?: boolean;
 }
 
 export interface Executor {
@@ -73,6 +79,7 @@ export class HostExecutor implements Executor {
       sessionId: opts.sessionId,
       whoNow: opts.whoNow,
       enforceTaint: opts.enforceTaint,
+      autonomous: opts.autonomous,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,

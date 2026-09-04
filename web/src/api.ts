@@ -78,6 +78,8 @@ export interface Routine {
   freshSession: boolean;
   /** False lets this routine act on what it read — see the guard. */
   guard: boolean;
+  /** True runs this routine on the agent's own initiative, bounded by the constitution. */
+  autonomous: boolean;
   /** null inherits the portal default; "" means this one never reports. */
   reportChannel: string | null;
   reportTarget: string | null;
@@ -263,6 +265,7 @@ export const api = {
       enabled?: boolean;
       freshSession?: boolean;
       guard?: boolean;
+      autonomous?: boolean;
       reportChannel?: string | null;
       reportTarget?: string | null;
     }

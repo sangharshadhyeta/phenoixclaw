@@ -25,6 +25,8 @@ const toApi = (row: RoutineRow) => ({
   instructions: row.instructions,
   freshSession: Boolean(row.fresh_session),
   guard: row.guard === 1,
+  /** Runs on the agent's own initiative, held to the constitution's allowlist. */
+  autonomous: row.autonomous === 1,
   /** null inherits the portal default; "" is an explicit "never report". */
   reportChannel: row.report_channel,
   reportTarget: row.report_target,
@@ -238,6 +240,10 @@ export function routinesRouter(): Router {
     if (typeof req.body?.guard === "boolean") {
       sets.push("guard = $guard");
       params.guard = req.body.guard ? 1 : 0;
+    }
+    if (typeof req.body?.autonomous === "boolean") {
+      sets.push("autonomous = $autonomous");
+      params.autonomous = req.body.autonomous ? 1 : 0;
     }
     if ("reportChannel" in (req.body ?? {})) {
       const report = readReport(req.body);

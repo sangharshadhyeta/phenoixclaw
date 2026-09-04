@@ -26,6 +26,8 @@ export interface RoutineRow {
   fresh_session: number;
   /** 0 turns off the injection guard's blocking rules for this routine's runs. */
   guard: number;
+  /** 1 when runs are the agent's own initiative — see pi/constitution.ts. */
+  autonomous: number;
   /** null runs in agentHome(), like every routine before this column existed. */
   workspace: string | null;
   /**

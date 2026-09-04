@@ -467,6 +467,7 @@ function RoutineDetail({
   const [instructions, setInstructions] = useState(r.instructions);
   const [fresh, setFresh] = useState(r.freshSession);
   const [guard, setGuard] = useState(r.guard);
+  const [autonomous, setAutonomous] = useState(r.autonomous);
   // "" = inherit the portal default, "off" = stay quiet, else "channel\u0000target".
   const [report, setReport] = useState(reportValue(r));
   const [targets, setTargets] = useState<ReportTarget[]>([]);
@@ -483,6 +484,7 @@ function RoutineDetail({
     setInstructions(r.instructions);
     setFresh(r.freshSession);
     setGuard(r.guard);
+    setAutonomous(r.autonomous);
     setReport(reportValue(r));
   }, [r.id, r.updatedAt]);
 
@@ -510,6 +512,7 @@ function RoutineDetail({
     instructions !== r.instructions ||
     fresh !== r.freshSession ||
     guard !== r.guard ||
+    autonomous !== r.autonomous ||
     report !== reportValue(r);
 
   const act = async (which: "save" | "run", fn: () => Promise<unknown>) => {
@@ -645,6 +648,34 @@ function RoutineDetail({
           </span>
         </button>
 
+        <button
+          type="button"
+          onClick={() => setAutonomous(!autonomous)}
+          className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left transition hover:bg-fg/5"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="text-sm text-fg">Acts on its own initiative</p>
+            <p className="text-[11px] text-fg-subtle">
+              On: this run is held to the constitution rather than to your permissions. It can
+              read, search, use its own memory and identity documents, and ask you — and nothing
+              else: no shell, no editing files, no scheduling. Every call it makes is recorded in
+              Audit, not just the refused ones. For work you want happening while nobody is
+              watching it.
+            </p>
+          </div>
+          <span
+            className={`relative h-5 w-9 shrink-0 rounded-full transition ${
+              autonomous ? "bg-accent" : "bg-raised"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                autonomous ? "left-[1.125rem]" : "left-0.5"
+              }`}
+            />
+          </span>
+        </button>
+
         <label className="block pt-1">
           <span className="mb-1 block text-xs text-fg-subtle">Report to</span>
           <select
@@ -734,6 +765,7 @@ function RoutineDetail({
                 instructions,
                 freshSession: fresh,
                 guard,
+                autonomous,
                 ...reportPatch(report),
               });
               setSaved(true);

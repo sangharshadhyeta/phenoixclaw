@@ -168,6 +168,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     sessionId?: string;
     /** False lets a run act on what it read — see guardExtension. */
     enforceTaint?: boolean;
+    /** True when nobody asked for this turn — see pi/constitution.ts. */
+    autonomous?: boolean;
   }): Promise<SdkPiClient> {
     // Imported lazily so the server still boots (and the container executor
     // still works) if the SDK cannot initialise in this environment.
@@ -229,14 +231,23 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       if (opts.routineSlug === "self-reflection") {
         factories.push({ name: "memory-digest", factory: memoryDigestTool() });
       }
-      // The one place CONSTITUTION.md actually needs to be seen: a routine
-      // about to patch source code. Pushed explicitly rather than picked up
-      // by extraContextFiles/framing's directory-presence check, because
-      // these routines' cwd is the source tree being patched (SERVER_ROOT /
-      // PI_SOURCE_DIR), not agentHome() where the file actually lives.
+      // The two places CONSTITUTION.md actually needs to be seen: a routine
+      // about to patch source code, and a turn nobody asked for. Pushed
+      // explicitly rather than picked up by extraContextFiles/framing's
+      // directory-presence check, because neither runs with agentHome() as
+      // its cwd — a self-update routine's cwd is the source tree being
+      // patched (SERVER_ROOT / PI_SOURCE_DIR).
+      //
+      // An autonomous run gets it because guard.ts's allowlist only bounds
+      // what such a turn can *do*: the clauses about being useful, telling
+      // the truth and not substituting for human judgement are about what it
+      // decides, and nothing below the prompt can check those. The allowlist
+      // is the floor under the prose, not a replacement for it — see the
+      // closing comment in pi/constitution.ts.
       const isSelfUpdate =
         opts.routineSlug === "self-update-phoenixclaw" || opts.routineSlug === "self-update-pi";
-      const constitution = isSelfUpdate ? readAgentFile("CONSTITUTION.md") : "";
+      const constitution =
+        isSelfUpdate || opts.autonomous ? readAgentFile("CONSTITUTION.md") : "";
       // Resolved up front, not inside agentsFilesOverride/appendSystemPrompt
       // below: both are plain synchronous values/callbacks the SDK reads
       // without awaiting, but the content itself now lives in the graph

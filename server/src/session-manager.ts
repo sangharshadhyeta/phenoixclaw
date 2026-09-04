@@ -11,6 +11,7 @@ import {
   getSettings,
   markOrphanedSessionsInterrupted,
   routineGuards,
+  routineAutonomous,
   runningIdleRoutineSessions,
   updateSession,
 } from "./db.js";
@@ -142,6 +143,8 @@ class SessionManager extends EventEmitter {
     // The session's own choices win over the portal defaults. Without this a
     // restart relaunched pi on the default model, quietly undoing the pick.
     const settings = await getSettings();
+    const autonomous =
+      session.kind === "routine" && (await routineAutonomous(session.routine_slug));
     const client = await executor.launch({
       sessionId,
       workspacePath: session.workspace,
@@ -158,10 +161,22 @@ class SessionManager extends EventEmitter {
       routineSlug: session.kind === "routine" ? session.routine_slug : undefined,
       // A routine may be exempted from the taint rules; nothing else can be.
       enforceTaint: session.kind === "routine" ? await routineGuards(session.routine_slug) : true,
+      // A routine that runs on the agent's own initiative. Read once at
+      // launch rather than per call: unlike the speaker in a group chat, this
+      // cannot change mid-session — nobody is going to start speaking for a
+      // turn nobody asked for.
+      autonomous,
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,
-      whoNow: () => ({ role: this.speakerRole(sessionId), key: this.speakerKey(sessionId) }),
+      // "autonomous" is not a person's role and no row in `people` ever holds
+      // it — it is the answer to "who is asking for this", when the answer is
+      // nobody. It outranks the speaker because an autonomous run has no
+      // speaker to defer to.
+      whoNow: () =>
+        autonomous
+          ? { role: "autonomous" as const }
+          : { role: this.speakerRole(sessionId), key: this.speakerKey(sessionId) },
     });
 
     // pi writes the file lazily, so it usually does not exist yet at launch.

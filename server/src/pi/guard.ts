@@ -6,6 +6,7 @@ import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { CONSTITUTION_FILE } from "../agent-setup.js";
 import { agentHome } from "../agent.js";
 import { IDENTITY_FILES, writeIdentity } from "../identity.js";
+import { autonomousDenial } from "./constitution.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -368,7 +369,41 @@ export function guardExtension(
         }
       }
 
-      if (
+      /**
+       * A turn the agent started by itself, bounded by the constitution.
+       *
+       * Ahead of the role check because it is not a role in the same sense:
+       * nobody is speaking. The ordinary roles answer "what may this person
+       * get the agent to do"; this answers "what may the agent do when no
+       * person asked at all", and the constitution is the only thing with an
+       * opinion about that.
+       *
+       * Every call is recorded, allowed ones included — "you operate
+       * transparently: what you did is visible, not hidden from the person
+       * who runs you" is a clause too, and an unattended run that only logs
+       * its refusals leaves no account of what it actually did.
+       */
+      if (role === "autonomous") {
+        const clause = autonomousDenial(event.toolName);
+        if (clause) {
+          console.warn(`[guard ${sessionId}] blocked ${event.toolName}: autonomous`);
+          note("refused", `Constitution — ${clause}`);
+          return {
+            block: true,
+            reason:
+              `Refused: nobody asked for this. You started this turn yourself, and "${event.toolName}" ` +
+              `is not something you may do on your own initiative. Your constitution says: "${clause}" ` +
+              `You can read, search, use your own memory and identity documents, and ask your primary ` +
+              `user. If this needs doing, say so — use ask_primary, or record it and raise it the next ` +
+              `time somebody speaks to you. Do not look for another way to do it.`,
+          };
+        }
+        note("autonomous", "Acting on its own initiative");
+        // Deliberately falls through to the taint rules rather than returning:
+        // `read` is on the autonomous allowlist and read-credentials is a rule
+        // that fires on a read, so returning here would hand an autonomous run
+        // the one path past the injection guard that no other role has.
+      } else if (
         role !== "primary" &&
         !READ_ONLY.has(event.toolName) &&
         !(await allowedByRule(role, event.toolName, event.input ?? {}, key, note)) &&

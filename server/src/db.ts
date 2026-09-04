@@ -155,6 +155,7 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
       instructions TEXT NOT NULL DEFAULT '',
       fresh_session INTEGER NOT NULL DEFAULT 0,
       guard INTEGER NOT NULL DEFAULT 1,
+      autonomous INTEGER NOT NULL DEFAULT 0,
       workspace TEXT,
       report_channel TEXT,
       report_target TEXT,
@@ -310,6 +311,9 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["report_target", "TEXT"],
     ["last_report_at", "TEXT"],
     ["guard", "INTEGER NOT NULL DEFAULT 1"],
+    // Off by default, and it has to be: switching an existing routine to an
+    // autonomous turn would take away tools its instructions already rely on.
+    ["autonomous", "INTEGER NOT NULL DEFAULT 0"],
     ["workspace", "TEXT"],
   ] as const) {
     if (!routineCols.has(col)) await conn.run(`ALTER TABLE routines ADD COLUMN ${col} ${ddl}`);
@@ -729,7 +733,17 @@ export interface AuditRow {
 }
 
 /** Keeps the log from growing without bound; old entries are not evidence. */
-const AUDIT_KEEP = 2000;
+/**
+ * Ten times what a supervised portal needed.
+ *
+ * The constitution's transparency clause is enforced by recording every
+ * autonomous tool call, not only the refused ones (pi/guard.ts) — and a run
+ * that thinks unattended produces those steadily, with nobody reading them
+ * as they arrive. At 2,000 an afternoon of autonomous work would evict every
+ * human-relevant decision before anyone came to look, which turns the audit
+ * log into the opposite of an account of what happened.
+ */
+const AUDIT_KEEP = 20000;
 
 export async function recordAudit(entry: {
   kind: string;
@@ -783,6 +797,27 @@ export async function routineGuards(slug: string | null | undefined): Promise<bo
   const conn = await getDb();
   const row = await one<{ guard: number }>(conn, "SELECT guard FROM routines WHERE slug = $slug", { slug });
   return row ? row.guard === 1 : true;
+}
+
+/**
+ * Does this routine run on the agent's own initiative — bounded by the
+ * constitution rather than by whoever is speaking? Unknown means no.
+ *
+ * Separate from `guard` and not a weaker version of it: `guard` decides
+ * whether the *taint* rules block once a run has read something untrusted,
+ * and applies to a run somebody asked for. This decides whether a run nobody
+ * asked for is held to pi/constitution.ts's allowlist, and the two compose —
+ * an autonomous run still meets the taint rules on the tools it does have.
+ */
+export async function routineAutonomous(slug: string | null | undefined): Promise<boolean> {
+  if (!slug) return false;
+  const conn = await getDb();
+  const row = await one<{ autonomous: number }>(
+    conn,
+    "SELECT autonomous FROM routines WHERE slug = $slug",
+    { slug },
+  );
+  return row ? row.autonomous === 1 : false;
 }
 
 /**
