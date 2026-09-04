@@ -28,9 +28,9 @@ npm run docs:build
 docker compose up -d --build   # the deployed path; needs .env (see .env.example)
 ```
 
-`npm test` runs both contracts — the knowledge graph's (`server/test/graph-contract.mjs`, ported
-from BirdClaw's `TestKnowledgeGraph`) and the pruner's (`server/test/prune-contract.mjs`). They are
-the only tests; there is no linter or formatter.
+`npm test` runs three contracts — the knowledge graph's (`server/test/graph-contract.mjs`, ported
+from BirdClaw's `TestKnowledgeGraph`), the pruner's, and the web reader's. They are the only tests;
+there is no linter or formatter.
 Typechecking is the other gate: `npm run build -w server` and `npm run build -w web` (the web build
 typechecks via `tsc -b`). Run all three after server changes — the graph contract catches things
 `tsc` cannot, which is why it exists.

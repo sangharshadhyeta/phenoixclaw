@@ -12,6 +12,7 @@ import { memoryDigestTool } from "./memory-digest.js";
 import { graphTools } from "./graph-tools.js";
 import { identityTools } from "./identity-tools.js";
 import { skillTools } from "./skill-tools.js";
+import { webTools } from "./web-tools.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -208,6 +209,9 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // below for no reason but legibility — an override is resolved by
         // name at refresh time, not by registration order.
         { name: "cached-tools", factory: cachedTools(opts.cwd) },
+        // Every session: looking something up is an ordinary thing to do, and
+        // the guard treats what comes back the same way for all of them.
+        { name: "web", factory: webTools() },
       ];
       // A file listing of the agent's own home is noise: agent and routine
       // sessions live there and are not working on it. A task session is

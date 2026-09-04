@@ -73,6 +73,14 @@ export const AUTONOMOUS_TOOLS = new Set([
   // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
   // directory, and it cannot replace a skill a person wrote.
   "skill_write",
+  // Reading the world. Both are untrusted sources (guard.ts), so using either
+  // taints the turn and closes `identity_update`/`skill_write` behind the
+  // `self-rewrite` rule for the rest of it. That is the trade that makes an
+  // unattended run with web access reasonable: it can learn from what it
+  // reads — `graph_remember` stays open — but it cannot let what it read
+  // rewrite who it is.
+  "web_search",
+  "web_fetch",
   // Involving a human.
   "ask_primary",
   "report",

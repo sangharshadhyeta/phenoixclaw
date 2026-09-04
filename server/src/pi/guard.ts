@@ -33,8 +33,18 @@ import { autonomousDenial } from "./constitution.js";
  * make an attempt visible instead of silent.
  */
 
-/** Commands whose output is somebody else's words. */
-const UNTRUSTED_COMMAND = /\b(himalaya|mutt|neomutt|notmuch|offlineimap|mbsync|curl|wget|lynx|w3m)\b/;
+/**
+ * Sources whose output is somebody else's words.
+ *
+ * Matched against the bash command for `bash`, and against the tool's own name
+ * otherwise — which is how `web_search`/`web_fetch` get here. They are the
+ * whole reason the `self-rewrite` rule below exists: reading the open web on
+ * purpose, every iteration, is a different proposition from occasionally
+ * curling something, and the identity documents are what an injected page
+ * would most want to reach.
+ */
+const UNTRUSTED_COMMAND =
+  /\b(himalaya|mutt|neomutt|notmuch|offlineimap|mbsync|curl|wget|lynx|w3m|web_search|web_fetch)\b/;
 
 interface Rule {
   name: string;
