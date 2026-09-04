@@ -12,7 +12,7 @@ import {
   markOrphanedSessionsInterrupted,
   routineGuards,
   routineAutonomous,
-  runningIdleRoutineSessions,
+  runningQuietRoutineSessions,
   updateSession,
 } from "./db.js";
 
@@ -549,10 +549,10 @@ class SessionManager extends EventEmitter {
     await this.record(sessionId, "portal_status", { status: "idle", aborted: true });
   }
 
-  /** Interrupt any in-progress @idle dream — see the comment in prompt(). */
+  /** Interrupt any in-progress @idle or @continuous run — see prompt(). */
   private pauseIdleDreaming(exceptSessionId: string): void {
     void (async () => {
-      for (const row of await runningIdleRoutineSessions()) {
+      for (const row of await runningQuietRoutineSessions()) {
         if (row.id === exceptSessionId) continue;
         void this.abort(row.id).catch(() => {});
       }

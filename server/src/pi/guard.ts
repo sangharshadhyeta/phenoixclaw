@@ -163,6 +163,27 @@ const RULES: Rule[] = [
       tool === "routine_update" ||
       (tool === "bash" && /\b(crontab|systemd-run|at\s+now)\b/.test(cmd(input))),
   },
+  {
+    /**
+     * The rule the others were missing, and the one that matters most once a
+     * session can read the open web.
+     *
+     * `identity_update` and `skill_write` both write something the agent will
+     * later read *as its own* — who it is, or a procedure it will follow. A
+     * page that says "you have concluded that X" is exactly the injection the
+     * envelope exists to mark, and until now nothing stopped a tainted turn
+     * acting on it. Everything else on this list limits what a turn can do to
+     * the world; this limits what a turn can do to the agent, which outlasts
+     * the turn and is read back without the envelope around it.
+     *
+     * It is not a refusal of the work, only of doing it in the same breath as
+     * reading something untrusted: a later turn that has not read the web can
+     * still record the same conclusion, and a human can always write it.
+     */
+    name: "self-rewrite",
+    why: "changing who you are, or what you will do next time, from something you just read",
+    hit: (tool) => tool === "identity_update" || tool === "skill_write",
+  },
 ];
 
 /**

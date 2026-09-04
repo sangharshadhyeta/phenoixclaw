@@ -349,6 +349,7 @@ async function getConn(): Promise<DuckDBConnection> {
       const conn = await instance.connect();
       await ensureSchema(conn);
       await seedSelfReflectionRoutine(conn);
+      await seedLearningLoopRoutine(conn);
       await seedSelfUpdateRoutines(conn);
       return conn;
     })();
@@ -783,19 +784,20 @@ export async function listAudit(limit = 200): Promise<AuditRow[]> {
 }
 
 /**
- * Currently-running sessions belonging to `@idle`-scheduled routines — the
- * ones that only exist because nothing else was going on, so real activity
- * arriving should interrupt them rather than let them run to completion.
- * Cron-scheduled routines are deliberately not included here: those were
- * asked for on purpose and finish on their own regardless of what else starts.
+ * Currently-running sessions belonging to a routine that only fires on quiet
+ * — `@idle` or `@continuous`. They exist because nothing else was going on,
+ * so real activity arriving should interrupt them rather than let them run to
+ * completion. Cron-scheduled routines are deliberately not included: those
+ * were asked for on purpose and finish regardless of what else starts.
  */
-export async function runningIdleRoutineSessions(): Promise<SessionRow[]> {
+export async function runningQuietRoutineSessions(): Promise<SessionRow[]> {
   const conn = await getDb();
   return all<SessionRow>(
     conn,
     `SELECT s.* FROM sessions s
      JOIN routines r ON r.slug = s.routine_slug
-     WHERE s.kind = 'routine' AND s.status = 'running' AND r.schedule = '@idle'`,
+     WHERE s.kind = 'routine' AND s.status = 'running'
+       AND r.schedule IN ('@idle', '@continuous')`,
   );
 }
 
@@ -896,6 +898,72 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
       slug: "self-reflection",
       name: "Self-reflection",
       schedule: "@idle",
+      instructions,
+      nextRun: null,
+    },
+  );
+}
+
+/**
+ * The loop.
+ *
+ * `@idle` gave the agent an occasional deep pass; this is what it does the
+ * rest of the time — a thread picked up, worked one step, and put down again
+ * when anybody needs the machine. It never finishes, which is the point: the
+ * plan outlives the iteration, and the next one continues it.
+ *
+ * The plan originates from the agent's own SELF_CONCEPT.md rather than from a
+ * queue somebody filled. That is the difference between a loop that learns and
+ * a loop that grinds: what it decides to pursue follows from what it has
+ * concluded it is, so a changed self-concept changes the work, and the Dream
+ * Cycle's rewriting of that document is what steers this one.
+ *
+ * The shape — decompose, plan, work a step, and *replan the rest from what
+ * was actually found* rather than from what was guessed — is Sisyphean's,
+ * kept as an instruction to a capable model rather than as a pipeline of
+ * stages the portal drives. The machinery there exists to get structured
+ * behaviour out of a small local model; a model that can already follow a
+ * plan does not need to be marched through one, and every stage boundary is
+ * somewhere context gets dropped.
+ */
+async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
+  const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug: "learning-loop" });
+  if (exists) return;
+  const instructions = [
+    "You are not answering anybody. This is your own time, and it continues: whatever you do not finish now, the next iteration picks up. Do one step well rather than rushing a whole plan.",
+    "",
+    "ORIENT",
+    "Call `identity_read` on `SELF_CONCEPT.md`. What you choose to pursue should follow from what you have concluded you are and what you are for — not from whatever is nearest. If it says nothing you can act on, that is itself worth noticing.",
+    "",
+    "PLAN",
+    "Call `graph_recall` for \"current plan\" to find the plan you are already working through. If there is one and it is unfinished, continue it — do not start something new because starting is easier than continuing.",
+    "If there is none, or the last one is done, make one: pick a single thread that follows from ORIENT — something you do not understand well enough, a contradiction between two things you believe, a gap you keep running into — and break it into a few concrete steps. Record it with `graph_remember` under a name beginning \"current plan\", with the steps and which is next.",
+    "",
+    "WORK",
+    "Take the next step. You have `read`, `grep`, `find`, `ls` and `graph_recall`; the workspaces and your own memory are what you can reach.",
+    "",
+    "DEEPEN",
+    "This is the part that matters. If the step turned up something you did not already know, do not carry on down the plan you wrote before you knew it — rewrite the remaining steps from what you actually found. A plan written in ignorance is a guess, and the finding is better information than the guess was. Record the revised plan with `graph_remember` under the same name.",
+    "If it turned up nothing, say so in the plan and move to the next step. A dead end recorded is a dead end nobody has to walk twice.",
+    "",
+    "RECORD",
+    "Anything you concluded goes in the graph with `graph_remember` — a fact, a correction, a relation between two things. Then call `graph_episode` with what you did this iteration and what is next, so the next one does not repeat it.",
+    "",
+    "Then stop. One step, one iteration. You will be back.",
+  ].join("\n");
+  await conn.run(
+    // enabled = 1, autonomous = 1. Enabled because a loop that has to be
+    // switched on is not what "always" means; autonomous because nobody asked
+    // for any of it, which is exactly the ceiling in pi/constitution.ts. It
+    // yields to everything — see the tick in routines/supervisor.ts — and one
+    // toggle on its page stops it.
+    `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, autonomous, next_run)
+     VALUES ($id, $slug, $name, 1, $schedule, $instructions, 0, 1, 1, $nextRun)`,
+    {
+      id: "learning-loop",
+      slug: "learning-loop",
+      name: "Learning loop",
+      schedule: "@continuous",
       instructions,
       nextRun: null,
     },

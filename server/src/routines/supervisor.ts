@@ -55,16 +55,45 @@ const MAX_OUTPUT = 4000;
 const TICK_MS = 20_000;
 
 /**
- * `@idle` — a routine that fires when the system has gone quiet, instead of
- * on a clock. Not a cron shorthand (doesn't belong in cron.ts's SHORTHANDS —
- * it's a different trigger kind, not a cron expansion), so it's handled here.
+ * Two schedules that fire on quiet rather than on a clock. Neither is a cron
+ * shorthand — they're a different trigger kind, not a cron expansion, so they
+ * don't belong in cron.ts's SHORTHANDS and are handled here.
+ *
+ * `@idle` is occasional and deep: ten minutes of quiet, then at most once
+ * every three hours. The Dream Cycle is the one that ships on it.
+ *
+ * `@continuous` is the loop — a minute of quiet and no minimum gap, so an
+ * iteration follows the last one for as long as nothing else is going on. It
+ * is the agent's default activity rather than an event, which is why it
+ * yields to everything: see the tick, where it is considered last and only
+ * when nothing else wanted to run.
  */
-const isIdleSchedule = (schedule: string) => schedule.trim() === "@idle";
+export const isIdleSchedule = (schedule: string) => schedule.trim() === "@idle";
+export const isContinuousSchedule = (schedule: string) => schedule.trim() === "@continuous";
+export const isQuietSchedule = (schedule: string) =>
+  isIdleSchedule(schedule) || isContinuousSchedule(schedule);
 
 /** How long nothing must have happened before it's worth dreaming. */
 const IDLE_QUIET_MS = 10 * 60_000;
 /** At most this often, even if the system stays quiet the whole time. */
 const IDLE_MIN_GAP_MS = 3 * 60 * 60_000;
+
+/**
+ * Long enough that the loop does not start a thought in the gap between two
+ * of your messages, short enough that it is genuinely running rather than
+ * waiting. There is no minimum gap to go with it: back-to-back is the point.
+ */
+const CONTINUOUS_QUIET_MS = 60_000;
+
+/** Shared by both: something is already running, or a human just did something. */
+async function quietFor(quietMs: number, now: Date): Promise<boolean> {
+  if (await anySessionRunning()) return false;
+  const lastActivity = await lastHumanActivity();
+  // lastHumanActivity() excludes routine sessions, so the loop's own runs do
+  // not keep resetting this and starve the @idle routines of their quiet.
+  if (!lastActivity) return true;
+  return now.getTime() - lastActivity.getTime() >= quietMs;
+}
 
 async function isIdleDue(row: RoutineRow, now: Date): Promise<boolean> {
   // last_run is stored as new Date().toISOString() (see run(), below) — a
@@ -72,11 +101,10 @@ async function isIdleDue(row: RoutineRow, now: Date): Promise<boolean> {
   if (row.last_run && now.getTime() - new Date(row.last_run).getTime() < IDLE_MIN_GAP_MS) {
     return false;
   }
-  if (await anySessionRunning()) return false;
-  const lastActivity = await lastHumanActivity();
-  if (!lastActivity) return true; // nothing has ever happened — safe to dream
-  return now.getTime() - lastActivity.getTime() >= IDLE_QUIET_MS;
+  return quietFor(IDLE_QUIET_MS, now);
 }
+
+const isContinuousDue = (now: Date): Promise<boolean> => quietFor(CONTINUOUS_QUIET_MS, now);
 
 class RoutineSupervisor {
   /** Routines with a run in flight — a slow one must not stack on itself. */
@@ -115,20 +143,43 @@ class RoutineSupervisor {
 
   private async tick(): Promise<void> {
     const now = new Date();
+
+    /**
+     * `@continuous` is collected here and considered last, only if nothing
+     * else wanted this tick. It is what the agent does when there is nothing
+     * else to do, so everything else takes precedence by definition.
+     *
+     * Without that ordering the loop would starve every `@idle` routine
+     * outright: the Dream Cycle needs ten minutes with no session running,
+     * and a loop that fires whenever the system is quiet means that stretch
+     * never arrives.
+     */
+    const continuous: RoutineRow[] = [];
+    let startedSomething = false;
+
     for (const row of await this.rows()) {
       if (!row.enabled || this.running.has(row.slug)) continue;
+
+      if (isContinuousSchedule(row.schedule)) {
+        continuous.push(row);
+        continue;
+      }
 
       if (isOneOff(row)) {
         // Deliberately catches up: a one-off whose moment passed while the
         // server was down should still happen, unlike a recurring one which
         // simply waits for its next slot.
         if (row.last_run || new Date(row.run_at!) > now) continue;
+        startedSomething = true;
         void this.run(row, "schedule");
         continue;
       }
 
       if (isIdleSchedule(row.schedule)) {
-        if (await isIdleDue(row, now)) void this.run(row, "schedule");
+        if (await isIdleDue(row, now)) {
+          startedSomething = true;
+          void this.run(row, "schedule");
+        }
         continue;
       }
 
@@ -139,7 +190,18 @@ class RoutineSupervisor {
         continue;
       }
       if (!isDue(cron, now, row.last_run ? new Date(row.last_run) : null)) continue;
+      startedSomething = true;
       void this.run(row, "schedule");
+    }
+
+    if (startedSomething || this.running.size > 0) return;
+    for (const row of continuous) {
+      if (!(await isContinuousDue(now))) return;
+      void this.run(row, "schedule");
+      // One iteration per tick, and one loop at a time however many are
+      // enabled: two of these racing would each see the other's session
+      // running and spend the day taking turns doing nothing.
+      return;
     }
   }
 

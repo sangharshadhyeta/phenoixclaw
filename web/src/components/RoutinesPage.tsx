@@ -26,6 +26,8 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 const PRESETS = [
+  { label: "Continuously", cron: "@continuous" },
+  { label: "When idle", cron: "@idle" },
   { label: "Every 15 min", cron: "*/15 * * * *" },
   { label: "Hourly", cron: "@hourly" },
   { label: "Daily 9am", cron: "0 9 * * *" },
@@ -324,6 +326,9 @@ function SchedulePicker({
 
   useEffect(() => {
     if (!value.trim()) return setPreview({});
+    // Neither fires on a clock, so there is no next time to show and the
+    // preview endpoint (cron only) would just report them as invalid.
+    if (value.trim() === "@continuous" || value.trim() === "@idle") return setPreview({});
     let cancelled = false;
     const t = setTimeout(() => {
       api

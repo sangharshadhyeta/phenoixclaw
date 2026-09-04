@@ -54,10 +54,10 @@ function readTiming(input: { schedule?: unknown; runAt?: unknown }):
   if (!schedule && !runAt) return { error: "Needs a schedule, or a time to run once" };
 
   if (schedule) {
-    // "@idle" isn't a cron shorthand — it's a different trigger kind (fires
-    // when the system has gone quiet, see routines/supervisor.ts), so it
-    // skips cron validation rather than being added to cron.ts's SHORTHANDS.
-    if (schedule === "@idle") return { schedule, runAt: null };
+    // Neither of these is a cron shorthand — they're a different trigger
+    // kind (fire when the system has gone quiet, see routines/supervisor.ts),
+    // so they skip cron validation rather than joining cron.ts's SHORTHANDS.
+    if (schedule === "@idle" || schedule === "@continuous") return { schedule, runAt: null };
     const bad = isValidCron(schedule);
     return bad ? { error: bad } : { schedule, runAt: null };
   }
