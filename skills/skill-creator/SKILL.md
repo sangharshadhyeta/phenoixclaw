@@ -23,6 +23,29 @@ hardcoded path — it differs between installs.
 The folder name is not what matters; the `name` in the frontmatter is. Keep
 them the same anyway, or the next person to look will be confused.
 
+### If you have no shell
+
+A turn you started yourself — the self-reflection cycle, or anything else
+running with nobody waiting — has no `bash` and no `write`. Use `skill_write`
+instead:
+
+```
+skill_write(name: "cut-a-release",
+            description: "Use when cutting a release: bump, tag, push.",
+            body: "# Cut a release\n\n1. …")
+```
+
+It creates the folder, composes the frontmatter from `name` and `description`
+so it cannot come out malformed, and writes `SKILL.md`. Everything below about
+*what* to write applies unchanged — only the mechanics differ.
+
+Two limits worth knowing before you plan a skill around it. It writes
+`SKILL.md` and nothing else, so a skill needing scripts, references or
+templates is not one you can finish this way: write the procedure alone, or
+leave it for a session that has a shell. And it will not overwrite a skill it
+did not write, so extending someone else's means saying so rather than
+replacing it.
+
 ## The minimum
 
 ```markdown
@@ -135,8 +158,9 @@ Then check your work:
 cat "$HOME/.pi/agent/skills/<name>/SKILL.md"
 ```
 
-Confirm the frontmatter is quoted, the name is unique, and the description
-reads as a trigger rather than a title.
+Or `read` the same path, if you have no shell. Confirm the frontmatter is
+quoted, the name is unique, and the description reads as a trigger rather than
+a title.
 
 ## Editing and removing
 
@@ -151,9 +175,9 @@ Two questions worth asking first, because a skill that exists is a skill that
 loads for every session:
 
 - **Is it reusable?** A one-off answer is not a skill.
-- **Does one already cover this?** Check `$HOME/.pi/agent/skills` first and
-  extend rather than duplicate — two skills with overlapping descriptions means
-  neither reliably wins.
+- **Does one already cover this?** Check `$HOME/.pi/agent/skills` first — `ls`
+  is enough — and extend rather than duplicate. Two skills with overlapping
+  descriptions means neither reliably wins.
 
 More detail, when you need it:
 

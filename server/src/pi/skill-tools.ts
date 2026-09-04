@@ -58,12 +58,14 @@ export function skillTools(sessionId?: string) {
     pi.registerTool({
       name: "skill_write",
       label: "Write skill",
+      // Deliberately not a summary of how to write a good skill: the
+      // `skill-creator` skill is that, in full, and two copies of the same
+      // guidance drift apart. This says what the tool does and points at it.
       description:
-        "Record a reusable procedure as a skill, so a future session can find and follow it. Use this " +
-        "when you notice a pattern worth repeating — the steps you would take again, written down for " +
-        "next time. The description is what decides whether the skill is ever used: write a trigger " +
-        "(\"Use when the user asks to...\"), not a title. Writing a name that already exists replaces " +
-        "your own earlier version of that skill; it will not overwrite one written by a person.",
+        "Record a reusable procedure as a skill, so a future session can find and follow it. Read your " +
+        "`skill-creator` skill first — it covers what to write and how to check whether one already " +
+        "covers this. Writing a name that already exists replaces your own earlier version of that " +
+        "skill; it will not overwrite one written by a person.",
       promptSnippet: "skill_write — record a reusable procedure as a skill",
       parameters: Type.Object({
         name: Type.String({

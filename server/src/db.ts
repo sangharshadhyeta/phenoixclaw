@@ -874,7 +874,7 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
     "Reflect on your identity, nature, and capabilities. Call `identity_read` on `SELF_CONCEPT.md` to see what's there, then `identity_update` with the complete file rewritten to fold in your reasoned conclusions and any new identity-flagged material. Keep existing conclusions unless directly contradicted.",
     "",
     "PHASE 6: SKILL SYNTHESIS",
-    "If the digest reveals a reusable pattern — steps you would take again — record it with `skill_write`. The description is what decides whether the skill is ever used: write a trigger (\"Use when...\"), not a title. Skip this phase entirely if nothing genuinely reusable came up; a skill nobody needs is noise every future session has to read past.",
+    "If the digest reveals a reusable pattern — steps you would take again — write it down. Follow your `skill-creator` skill: it covers what makes a description work, what belongs in the body, and to check `$HOME/.pi/agent/skills` for one that already covers this and extend it rather than adding a second. Use `skill_write` to do the writing. Skip this phase entirely if nothing genuinely reusable came up; a skill nobody needs is noise every future session reads past.",
     "",
     "PHASE 7: CLEANUP",
     "Use the `routine_cleanup` tool to prune stale sessions, old tasks, and expired or aged-out memory.",
