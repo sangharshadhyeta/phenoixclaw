@@ -70,9 +70,15 @@ export const AUTONOMOUS_TOOLS = new Set([
   "identity_read",
   "identity_update",
   "remember_user",
-  // Its own housekeeping.
+  // Its own housekeeping, and the plan for the work in hand. Planning is not
+  // scheduling: these write a checklist inside this session, which is why they
+  // are here while routine_create/update/run are refused below.
   "dream_progress",
   "routine_cleanup",
+  "task_plan",
+  "task_list",
+  "task_start",
+  "task_finish",
   // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
   // directory, and it cannot replace a skill a person wrote.
   "skill_write",

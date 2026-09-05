@@ -14,6 +14,7 @@ import {
   listSessions,
   updateSession,
 } from "./db.js";
+import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
 import { identityStatus, writeIdentity, migrateIdentityFromDisk } from "./identity.js";
@@ -331,6 +332,18 @@ app.post("/api/sessions/:id/abort", async (req, res) => {
 });
 
 // --- per-session config (the web equivalent of the TUI's slash commands) ---
+
+/**
+ * The agent's plan for this session — read-only.
+ *
+ * There is no endpoint to write one, deliberately. These are the agent's own
+ * steps for the work in hand, not a queue you fill: routines are the thing you
+ * create and schedule. The UI shows this so you can watch it work, and polls
+ * it alongside everything else.
+ */
+app.get("/api/sessions/:id/tasks", async (req, res) => {
+  res.json({ tasks: await listTasks(req.params.id) });
+});
 
 app.get("/api/sessions/:id/config", async (req, res) => {
   const session = await getSession(req.params.id);

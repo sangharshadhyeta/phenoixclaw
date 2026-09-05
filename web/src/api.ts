@@ -310,6 +310,10 @@ export const api = {
 
   abort: (id: string) => json<{ ok: true }>(`/api/sessions/${id}/abort`, { method: "POST" }),
 
+  /** The agent's plan for a session. Read-only — it writes these, not you. */
+  getTasks: (id: string) =>
+    json<{ tasks: Task[] }>(`/api/sessions/${id}/tasks`).then((r) => r.tasks),
+
   /** Cheap: never starts pi. Stats are null when the session is not live. */
   config: (id: string) => json<PiConfig>(`/api/sessions/${id}/config`),
   /** Starts pi if needed — only called when the model picker is opened. */
@@ -622,6 +626,16 @@ export interface ToolRule {
   person_name: string | null;
   note: string;
   created_at: string;
+}
+
+/** A step in the agent's own plan for a session — written by it, shown to you. */
+export interface Task {
+  seq: number;
+  description: string;
+  status: "pending" | "running" | "done" | "failed";
+  result: string;
+  started_at: string | null;
+  ended_at: string | null;
 }
 
 /** One decision the guard made, for the audit view. */

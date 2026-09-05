@@ -14,6 +14,7 @@ import { identityTools } from "./identity-tools.js";
 import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
+import { taskTools } from "./task-tools.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -224,6 +225,12 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // the guard treats what comes back the same way for all of them.
         { name: "web", factory: webTools() },
       ];
+      // The agent's own checklist for the work in hand. Every session: a task
+      // session breaking down a change and the learning loop working a plan
+      // are the same shape, and neither is a routine.
+      if (opts.sessionId) {
+        factories.push({ name: "tasks", factory: taskTools(opts.sessionId) });
+      }
       // Notes about the primary user, so only their own conversations may
       // write them — see user-tools.ts.
       if (!opts.role || opts.role === "primary") {
@@ -278,8 +285,13 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // decides, and nothing below the prompt can check those. The allowlist
       // is the floor under the prose, not a replacement for it — see the
       // closing comment in pi/constitution.ts.
+      // The two per-tree routines this replaced are still recognised, so a
+      // deployment that enabled one keeps getting the constitution in its
+      // prompt rather than silently losing it at upgrade.
       const isSelfUpdate =
-        opts.routineSlug === "self-update-phoenixclaw" || opts.routineSlug === "self-update-pi";
+        opts.routineSlug === "self-update" ||
+        opts.routineSlug === "self-update-phoenixclaw" ||
+        opts.routineSlug === "self-update-pi";
       const constitution =
         isSelfUpdate || opts.autonomous ? readAgentFile("CONSTITUTION.md") : "";
       // Resolved up front, not inside agentsFilesOverride/appendSystemPrompt

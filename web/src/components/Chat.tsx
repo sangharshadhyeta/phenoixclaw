@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import { api, type PiCommand, type PortalEvent, type Session } from "../api";
 import { buildTranscript } from "../transcript";
 import { ComposerBar } from "./ComposerBar";
+import { TaskPanel } from "./TaskPanel";
 
 /**
  * Context the portal attaches to a message, and what to call it.
@@ -158,6 +159,11 @@ export function Chat({
         </div>
         </div>
       </header>
+
+      {/* Under the header rather than in the transcript: the plan is state, not
+          something that was said, and threading it into the conversation would
+          make it scroll away exactly when it is worth seeing. */}
+      <TaskPanel sessionId={session.id} running={running} />
 
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto w-full max-w-3xl space-y-3">

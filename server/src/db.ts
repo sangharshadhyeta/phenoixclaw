@@ -172,6 +172,37 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   `);
   await conn.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
 
+  /**
+   * The steps a session is working through — BirdClaw's `agent/task_list.py`,
+   * scoped to a session rather than to a request.
+   *
+   * BirdClaw needs a whole task *registry* because it has no sessions: a task
+   * is its unit of work, with a lifecycle and an owner. Here `sessions` is
+   * already that table, so porting the registry would be building a second one
+   * with the same columns. What it does not have is the layer below — the
+   * checklist inside one piece of work, which is what the learning loop has
+   * been approximating with a free-text "current plan" node in the graph.
+   *
+   * Ordered by `seq` rather than by insertion: a plan gets rewritten as the
+   * work teaches you what it should have been, and the order after a rewrite
+   * is the point of rewriting it.
+   */
+  await conn.run("CREATE SEQUENCE IF NOT EXISTS tasks_seq START 1");
+  await conn.run(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id BIGINT PRIMARY KEY DEFAULT nextval('tasks_seq'),
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      result TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMP NOT NULL DEFAULT now(),
+      started_at TEXT,
+      ended_at TEXT
+    )
+  `);
+  await conn.run("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, seq)");
+
   // Who the agent talks to. Identified by the platform's own stable id,
   // scoped by channel, because a display name is chosen by whoever types it.
   await conn.run(`
@@ -834,6 +865,99 @@ export async function routineAutonomous(slug: string | null | undefined): Promis
   return row ? row.autonomous === 1 : false;
 }
 
+export type TaskStatus = "pending" | "running" | "done" | "failed";
+
+export interface TaskRow {
+  id: number;
+  session_id: string;
+  seq: number;
+  description: string;
+  status: TaskStatus;
+  result: string;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+export async function listTasks(sessionId: string): Promise<TaskRow[]> {
+  const conn = await getDb();
+  return all<TaskRow>(conn, "SELECT * FROM tasks WHERE session_id = $sessionId ORDER BY seq", { sessionId });
+}
+
+/**
+ * Replace the plan.
+ *
+ * Steps already finished are carried over rather than dropped: replanning is
+ * how the loop reacts to what it just learned, and a rewrite that forgot the
+ * three things already done would have it do them again. Matching is by
+ * description, which is what the model would have to reuse anyway to mean
+ * "this same step".
+ */
+export async function setTasks(sessionId: string, descriptions: string[]): Promise<TaskRow[]> {
+  const conn = await getDb();
+  const existing = await listTasks(sessionId);
+  const finished = new Map(
+    existing.filter((t) => t.status === "done" || t.status === "failed").map((t) => [t.description.trim(), t]),
+  );
+
+  await conn.run("DELETE FROM tasks WHERE session_id = $sessionId", { sessionId });
+  let seq = 0;
+  for (const raw of descriptions) {
+    const description = raw.trim();
+    if (!description) continue;
+    const prior = finished.get(description);
+    await conn.run(
+      `INSERT INTO tasks (session_id, seq, description, status, result, started_at, ended_at)
+       VALUES ($sessionId, $seq, $description, $status, $result, $startedAt, $endedAt)`,
+      {
+        sessionId,
+        seq: seq++,
+        description,
+        status: prior?.status ?? "pending",
+        result: prior?.result ?? "",
+        startedAt: prior?.started_at ?? null,
+        endedAt: prior?.ended_at ?? null,
+      },
+    );
+  }
+  return listTasks(sessionId);
+}
+
+/** The next step to work on, and the one `task_start` picks up. */
+export async function nextTask(sessionId: string): Promise<TaskRow | undefined> {
+  const conn = await getDb();
+  return one<TaskRow>(
+    conn,
+    "SELECT * FROM tasks WHERE session_id = $sessionId AND status = 'pending' ORDER BY seq LIMIT 1",
+    { sessionId },
+  );
+}
+
+export async function setTaskStatus(
+  sessionId: string,
+  seq: number,
+  status: TaskStatus,
+  result = "",
+): Promise<TaskRow | undefined> {
+  const conn = await getDb();
+  const now = new Date().toISOString();
+  await conn.run(
+    `UPDATE tasks
+        SET status = $status,
+            result = CASE WHEN $result != '' THEN $result ELSE result END,
+            started_at = CASE WHEN $status = 'running' THEN $now ELSE started_at END,
+            ended_at = CASE WHEN $status IN ('done', 'failed') THEN $now ELSE ended_at END
+      WHERE session_id = $sessionId AND seq = $seq`,
+    { sessionId, seq, status, result, now },
+  );
+  return one<TaskRow>(conn, "SELECT * FROM tasks WHERE session_id = $sessionId AND seq = $seq", { sessionId, seq });
+}
+
+export async function clearTasks(sessionId: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run("DELETE FROM tasks WHERE session_id = $sessionId", { sessionId });
+}
+
 /**
  * High-water mark for the self-reflection routine: the last `events.seq`
  * already folded into SELF_CONCEPT.md / INNER_LIFE.md, so a run only digests
@@ -940,18 +1064,19 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
     "Call `identity_read` on `SELF_CONCEPT.md`. What you choose to pursue should follow from what you have concluded you are and what you are for — not from whatever is nearest. If it says nothing you can act on, that is itself worth noticing.",
     "",
     "PLAN",
-    "Call `graph_recall` for \"current plan\" to find the plan you are already working through. If there is one and it is unfinished, continue it — do not start something new because starting is easier than continuing.",
-    "If there is none, or the last one is done, make one: pick a single thread that follows from ORIENT — something you do not understand well enough, a contradiction between two things you believe, a gap you keep running into — and break it into a few concrete steps. Record it with `graph_remember` under a name beginning \"current plan\", with the steps and which is next.",
+    "Call `task_list` to see the plan you are already working through. If it has unfinished steps, continue it — do not start something new because starting is easier than continuing.",
+    "If there is no plan, or the last one is finished, make one: pick a single thread that follows from ORIENT — something you do not understand well enough, a contradiction between two things you believe, a gap you keep running into — and break it into a few concrete steps with `task_plan`.",
     "",
     "WORK",
-    "Take the next step. You have `read`, `grep`, `find`, `ls` and `graph_recall`; the workspaces and your own memory are what you can reach.",
+    "Call `task_start`, then do that step. You have `read`, `grep`, `find`, `ls`, `graph_recall`, and `web_search`/`web_fetch` for anything you cannot answer from what is already here. Record how it went with `task_finish` — say what you actually found, not that you looked.",
     "",
     "DEEPEN",
-    "This is the part that matters. If the step turned up something you did not already know, do not carry on down the plan you wrote before you knew it — rewrite the remaining steps from what you actually found. A plan written in ignorance is a guess, and the finding is better information than the guess was. Record the revised plan with `graph_remember` under the same name.",
-    "If it turned up nothing, say so in the plan and move to the next step. A dead end recorded is a dead end nobody has to walk twice.",
+    "This is the part that matters. If the step turned up something you did not already know, do not carry on down the plan you wrote before you knew it — call `task_plan` again and rewrite the remaining steps from what you actually found. A plan written in ignorance is a guess, and the finding is better information than the guess was. Finished steps keep their results across a rewrite, so repeat them unchanged.",
+    "If it turned up nothing, mark the step failed with what you tried. A dead end recorded is a dead end nobody has to walk twice.",
     "",
     "RECORD",
-    "Anything you concluded goes in the graph with `graph_remember` — a fact, a correction, a relation between two things. Then call `graph_episode` with what you did this iteration and what is next, so the next one does not repeat it.",
+    "Anything you concluded goes in the graph with `graph_remember` — a fact, a correction, a relation between two things. The plan tracks what you did; the graph is for what it taught you, which outlives the plan. Then call `graph_episode` with what you did this iteration.",
+    "If you read anything from the web this iteration, note that you cannot update your identity or write a skill in the same turn — that is deliberate. Record it in the graph and it will still be there next time.",
     "",
     "Then stop. One step, one iteration. You will be back.",
   ].join("\n");
@@ -1009,36 +1134,61 @@ async function seedSelfUpdateRoutines(conn: DuckDBConnection): Promise<void> {
     "yourself — and report what changed and why.",
   ];
 
-  // Two routines, two codebases, two different build commands — same
-  // template with the one line that actually differs filled in, rather than
-  // identical instructions relying on `workspace` alone to tell them apart.
-  const phoenixclawInstructions = [
+  /**
+   * One routine, both codebases.
+   *
+   * This was two — one per tree — which differed by a workspace and a build
+   * command and nothing else. Two routines meant two things to enable, two
+   * reports to read, and two runs competing for the same `@idle` window to do
+   * the same job. The trees are named with absolute paths here, so a single
+   * run can look at either and spend its attention where something actually
+   * needs it, rather than being told which half of the codebase to care about
+   * before it has looked.
+   */
+  const instructions = [
     ...shared,
-    "This is the portal's own server (TypeScript/npm). Run npm run build.",
+    "There are two codebases you may work in, and one run touches one of them:",
+    "",
+    `  ${PHOENIXCLAW_ROOT} — the portal itself (TypeScript/npm).`,
+    "  Build it with: npm run build",
+    "",
+    `  ${PI_SOURCE_DIR} — pi's own source, a multi-package npm workspace`,
+    "  rather than a single project. Build from that repo's root with:",
+    "  npm run build — it chains through every package in dependency order",
+    "  (tui, ai, agent, storage, coding-agent, server) and can take a while.",
+    "  That is expected, not a hang.",
+    "",
+    "Pick whichever has the clearer problem. If neither does, say so and stop —",
+    "a change made because it was your turn to make one is worse than none.",
     ...closing,
   ].join("\n");
 
-  const piInstructions = [
-    ...shared,
-    "This is pi's own source — a multi-package npm workspace, not a single",
-    "project. Run npm run build from the repo root; it chains through every",
-    "package in dependency order (tui, ai, agent, storage, coding-agent,",
-    "server) and can take a while — that is expected, not a hang.",
-    ...closing,
-  ].join("\n");
-
-  for (const [slug, name, workspace, instructions] of [
-    ["self-update-phoenixclaw", "Self-update (Phoenixclaw)", SERVER_ROOT, phoenixclawInstructions],
-    ["self-update-pi", "Self-update (pi)", PI_SOURCE_DIR, piInstructions],
-  ] as const) {
-    const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug });
-    if (exists) continue;
+  const exists = await one(conn, "SELECT 1 AS x FROM routines WHERE slug = $slug", { slug: "self-update" });
+  if (!exists) {
     await conn.run(
       `INSERT INTO routines (id, slug, name, enabled, schedule, instructions, fresh_session, guard, workspace, next_run)
        VALUES ($id, $slug, $name, 0, $schedule, $instructions, 0, 1, $workspace, $nextRun)`,
-      { id: slug, slug, name, schedule: "@idle", instructions, workspace, nextRun: null },
+      {
+        id: "self-update",
+        slug: "self-update",
+        name: "Self-update",
+        schedule: "@idle",
+        instructions,
+        workspace: PHOENIXCLAW_ROOT,
+        nextRun: null,
+      },
     );
   }
+
+  // Retire the pair this replaces — but only where they are untouched: still
+  // disabled, as seeded, and never run. A deployment that enabled one, or
+  // rewrote its instructions, has made a decision, and quietly deleting that
+  // during an upgrade is not a migration, it is data loss.
+  await conn.run(
+    `DELETE FROM routines
+      WHERE slug IN ('self-update-phoenixclaw', 'self-update-pi')
+        AND enabled = 0 AND last_run IS NULL`,
+  );
 }
 
 /** Is anything running right now? Any kind — a dream shouldn't start mid-turn of something else. */
