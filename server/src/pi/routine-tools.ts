@@ -386,13 +386,14 @@ export function selfMaintenanceTools() {
       description:
         "Prune stale sessions, old tasks, and expired or aged-out memory (cached tool results, page " +
         "captures, old episodes and workspace notes) to keep the system efficient. anchor/user/project " +
-        "nodes are never touched, regardless of age.",
+        "nodes are never touched, regardless of age. Neither are routines, pinned sessions, or the " +
+        "session a routine works in — none of those go stale, and none are yours to remove.",
       parameters: Type.Object({
         days: Type.Optional(Type.Number({ description: "How many days of history to keep. Defaults to 30." })),
       }),
       async execute(_id: string, p: any) {
         const days = typeof p.days === "number" ? p.days : 30;
-        const { sessions, routines } = await pruneOldRecords(days);
+        const { sessions } = await pruneOldRecords(days);
         const expired = await pruneExpired();
         const aged = (
           await Promise.all(
@@ -400,7 +401,7 @@ export function selfMaintenanceTools() {
           )
         ).reduce((a, b) => a + b, 0);
         return ok(
-          `Cleanup complete. Pruned ${sessions} sessions, ${routines} routines, ${expired} expired and ` +
+          `Cleanup complete. Pruned ${sessions} sessions, ${expired} expired and ` +
             `${aged} aged-out memory nodes.`,
         );
       },

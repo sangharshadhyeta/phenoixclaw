@@ -508,10 +508,32 @@ export async function updateSession(
   await conn.run(`UPDATE sessions SET ${sets}, updated_at = now() WHERE id = $id`, params);
 }
 
+/**
+ * Every table that hangs off a session, so removing one does not leave its
+ * rows behind pointing at nothing.
+ *
+ * There are no FOREIGN KEYs to do this for us and there cannot be — DuckDB
+ * rewrites an UPDATE on a referenced table as delete+insert and trips its own
+ * constraint, which is why `edges` in graph.ts has none either. So the cascade
+ * is written out, once, and both delete paths go through it. It was only
+ * `events` before, which left tasks, questions, grants and notes accumulating
+ * for the life of the database.
+ */
+const SESSION_CHILD_TABLES = ["events", "tasks", "questions", "grants", "notes"] as const;
+
+async function deleteSessionRows(conn: DuckDBConnection, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  for (const id of ids) {
+    for (const table of SESSION_CHILD_TABLES) {
+      await conn.run(`DELETE FROM ${table} WHERE session_id = $id`, { id });
+    }
+    await conn.run("DELETE FROM sessions WHERE id = $id", { id });
+  }
+}
+
 export async function deleteSession(id: string): Promise<void> {
   const conn = await getDb();
-  await conn.run("DELETE FROM events WHERE session_id = $id", { id });
-  await conn.run("DELETE FROM sessions WHERE id = $id", { id });
+  await deleteSessionRows(conn, [id]);
 }
 
 export async function appendEvent(sessionId: string, type: string, payload: unknown): Promise<EventRow> {
@@ -697,15 +719,59 @@ export async function takeDeliveries(sessionId: string): Promise<string[]> {
   return rows.map((r) => r.text);
 }
 
-/** Take the pending notes for a conversation. Reading them consumes them. */
-export async function pruneOldRecords(days: number): Promise<{ sessions: number; routines: number }> {
+/**
+ * Age out history. Called by `routine_cleanup`, which is on the constitution's
+ * autonomous allowlist — so this runs unattended, on the agent's own
+ * initiative, and everything it deletes is deleted with nobody watching.
+ *
+ * That is the whole reason for the conditions below. The first version aged
+ * out `sessions` and `routines` on `updated_at` alone, and:
+ *
+ *   - A routine **run** never touches `updated_at` — the supervisor writes
+ *     `last_run`, `last_status`, `last_output`, `last_ms` and `next_run`, and
+ *     none of those is it. So a routine that had fired faithfully every day
+ *     for a month still looked untouched since the day it was seeded, and was
+ *     deleted for it. Thirty days after a first boot the Dream Cycle reached
+ *     PHASE 7, called this, and removed the learning loop, the self-update
+ *     routine, and itself.
+ *   - `pinned` was ignored. Pinning is the user saying "keep this"; it is the
+ *     one flag on the table that exists to answer this exact question.
+ *   - Deleting a session left its events, tasks, questions, grants and notes
+ *     behind — see deleteSessionRows.
+ *
+ * So this no longer touches `routines` at all. A routine is configuration,
+ * not history: it has no natural age, and "stale" is not a property it can
+ * have — one that fires twice a year is doing its job on the day it fires.
+ * The narrower test of "never enabled and never ran" does not work either,
+ * because `self-update` is seeded in exactly that state deliberately, waiting
+ * for someone to turn it on; ageing it out would delete the feature before
+ * the user ever saw it. Removing a routine is a decision, and it belongs to
+ * the person, through DELETE /api/routines/:id.
+ */
+export async function pruneOldRecords(days: number): Promise<{ sessions: number }> {
   const conn = await getDb();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const staleSessions = await all<{ id: string }>(conn, "SELECT id FROM sessions WHERE updated_at < $cutoff", { cutoff });
-  await conn.run("DELETE FROM sessions WHERE updated_at < $cutoff", { cutoff });
-  const staleRoutines = await all<{ id: string }>(conn, "SELECT id FROM routines WHERE updated_at < $cutoff", { cutoff });
-  await conn.run("DELETE FROM routines WHERE updated_at < $cutoff", { cutoff });
-  return { sessions: staleSessions.length, routines: staleRoutines.length };
+
+  /**
+   * Pinned is excluded outright. A routine's own session is excluded while
+   * its routine still exists: the session is where a run sees what the last
+   * one did, and "nothing new since yesterday" needs yesterday. Deleting it
+   * does not stop the routine — sessionFor() would simply build a new one —
+   * it just gives it amnesia, silently, on a schedule.
+   */
+  const staleSessions = await all<{ id: string }>(
+    conn,
+    `SELECT s.id FROM sessions s
+      WHERE s.updated_at < $cutoff
+        AND s.pinned = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM routines r WHERE r.slug = s.routine_slug
+        )`,
+    { cutoff },
+  );
+  await deleteSessionRows(conn, staleSessions.map((r) => r.id));
+
+  return { sessions: staleSessions.length };
 }
 
 export interface ToolRule {
