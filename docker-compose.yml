@@ -27,7 +27,48 @@ services:
       # Where a local llama.cpp server is listening. Host networking means the
       # box's own address works from inside the container unchanged.
       LLAMA_BASE_URL: ${LLAMA_BASE_URL:-}
+      # The bundled SearXNG below. Host networking means the container's own
+      # 127.0.0.1 is the host's, so this reaches it without a container name.
+      SEARXNG_URL: "${SEARXNG_URL:-http://127.0.0.1:8888}"
+      UNTRUSTED_TOOLS: ${UNTRUSTED_TOOLS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+  # Web search for the agent, self-hosted.
+  #
+  # Bundled rather than left to the operator because `web_search` is otherwise
+  # dead on arrival: every hosted alternative wants a commercial API key, and
+  # an agent that searches on a loop is exactly the workload those meter. This
+  # keeps the queries on your own machine as well, which for a thing that reads
+  # continuously on your behalf is the difference between private and not.
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: phoenixclaw-searxng
+    restart: unless-stopped
+    # Host networking to match the portal — the two find each other on
+    # 127.0.0.1 without a bridge, the same way pi reaches a local llama-server.
+    network_mode: host
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    environment:
+      # Bound to the loopback interface, not 0.0.0.0. With host networking a
+      # container port is a host port: binding this one publicly would put an
+      # open search proxy on the network, which is somebody else's outbound
+      # traffic attributed to your address.
+      SEARXNG_BIND_ADDRESS: 127.0.0.1
+      SEARXNG_PORT: ${SEARXNG_PORT:-8888}
+      SEARXNG_BASE_URL: "http://127.0.0.1:${SEARXNG_PORT:-8888}/"
+      # SearXNG refuses to start on the placeholder in settings.yml, which is
+      # what you want — it signs session state with this.
+      SEARXNG_SECRET: "${SEARXNG_SECRET:?set SEARXNG_SECRET in .env — openssl rand -hex 32}"
+      SEARXNG_LIMITER: "false"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   portal-data:

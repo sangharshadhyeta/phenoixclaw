@@ -30,9 +30,15 @@ adds 150–300 tokens per tool.
 ## Quick start
 
 ```bash
-cp .env.example .env      # set PORTAL_PASSWORD and your provider key
+cp .env.example .env      # set PORTAL_PASSWORD, SEARXNG_SECRET and your provider key
 docker compose up -d --build
 ```
+
+That brings up two containers: the portal, and a **SearXNG** for the agent to
+search with. Search is bundled rather than left to you because every hosted
+alternative wants a commercial API key, and an agent that searches on a loop is
+exactly the workload those meter — this way the queries stay on your machine
+and cost nothing. It listens on the loopback interface only.
 
 Then open `http://<host>:4100`.
 
@@ -89,6 +95,9 @@ The **Config** button in a task opens the web equivalent of pi's TUI slash comma
 | `PI_PROVIDER` / `PI_MODEL` | `openrouter` / `anthropic/claude-sonnet-5` | Passed through to pi. |
 | `OPENROUTER_API_KEY` etc. | — | Provider credentials, forwarded to pi. |
 | `TASK_MEMORY_MB` / `TASK_CPUS` / `TASK_PIDS_LIMIT` | `2048` / `2` / `512` | Per-task caps in `container` mode. |
+| `SEARXNG_SECRET` | — | **Required for web search.** `openssl rand -hex 32`. SearXNG will not start without it. |
+| `SEARXNG_PORT` / `SEARXNG_URL` | `8888` / the bundled instance | Where search lives. Point `SEARXNG_URL` elsewhere to use a SearXNG you already run. |
+| `UNTRUSTED_TOOLS` | — | Extra tool names whose output is treated as untrusted — set it when installing a package that reads the outside world. |
 
 ## Sessions and workspaces
 

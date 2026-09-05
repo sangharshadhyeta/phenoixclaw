@@ -1,0 +1,40 @@
+# SearXNG, as the portal needs it.
+#
+# `use_default_settings` inherits everything upstream ships and overrides only
+# what matters here, so a SearXNG upgrade brings its new engines and fixes
+# along instead of being pinned to whatever was true the day this was written.
+use_default_settings: true
+
+server:
+  # Overridden at runtime by $SEARXNG_SECRET, which is where the real value
+  # belongs — this file is in the repo. Everything under `server:` has an
+  # environment override like that; nothing under `search:` does, which is why
+  # the formats below have to be written here.
+  secret_key: "set-me-via-SEARXNG_SECRET"
+  # The rate limiter exists to stop a public instance being scraped. This one
+  # is not public: it listens on the loopback interface and its only caller is
+  # the agent in the next container — which is exactly the traffic pattern the
+  # limiter would throttle. Also set via $SEARXNG_LIMITER in compose, since
+  # leaving it on needs a valkey/redis container this stack does not run.
+  limiter: false
+  image_proxy: false
+
+search:
+  # The whole point. Upstream enables `html` only, so the JSON API answers 403
+  # and `web_search` gets an error it cannot explain — the single most common
+  # way a self-hosted SearXNG looks broken when it is running fine.
+  formats:
+    - html
+    - json
+  # Kept modest deliberately: an agent that searches on a loop is a steady
+  # stream of queries, and engines that rate-limit will start failing if every
+  # one of them is asked every time.
+  autocomplete: ""
+  default_lang: "en"
+
+engines:
+  # Off by default here — they rate-limit hardest and are the first to start
+  # returning captchas to an automated caller, which shows up as intermittent
+  # empty results rather than as an error.
+  - name: google
+    disabled: true

@@ -23,6 +23,47 @@ services:
       PI_THINKING_LEVEL: ${PI_THINKING_LEVEL:-medium}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SEARXNG_URL: "${SEARXNG_URL:-http://127.0.0.1:8888}"
+      UNTRUSTED_TOOLS: ${UNTRUSTED_TOOLS:-}
+
+  # Web search for the agent — see docker-compose.yml for why it is bundled.
+  #
+  # This variant has no repo to bind-mount, so settings.yml lives in a named
+  # volume you populate once. That step is not optional: `search.formats` has
+  # no environment variable (unlike everything under `server:`), and SearXNG
+  # ships with `html` only — so until the file exists the JSON API answers 403
+  # to every request and web_search looks broken while the container looks
+  # healthy. Write this into searxng-config as `settings.yml`:
+  #
+  #     use_default_settings: true
+  #     search:
+  #       formats:
+  #         - html
+  #         - json
+  #
+  # The repo's searxng/settings.yml is the same file with comments.
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: phoenixclaw-searxng
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - searxng-config:/etc/searxng
+    environment:
+      SEARXNG_BIND_ADDRESS: 127.0.0.1
+      SEARXNG_PORT: ${SEARXNG_PORT:-8888}
+      SEARXNG_BASE_URL: "http://127.0.0.1:${SEARXNG_PORT:-8888}/"
+      SEARXNG_SECRET: "${SEARXNG_SECRET:?set SEARXNG_SECRET — openssl rand -hex 32}"
+      SEARXNG_LIMITER: "false"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   pithagoras-data:
+  searxng-config:
