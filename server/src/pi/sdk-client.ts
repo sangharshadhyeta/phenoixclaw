@@ -15,6 +15,7 @@ import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
+import { knowledgeTools } from "./knowledge-tools.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -223,6 +224,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // Every session: looking something up is an ordinary thing to do, and
         // the guard treats what comes back the same way for all of them.
         { name: "web", factory: webTools() },
+        // Reading something into memory, and finding where something is
+        // defined. Both are ordinary in any session — a coding task wants the
+        // second as much as the loop wants the first.
+        { name: "knowledge", factory: knowledgeTools(opts.cwd) },
       ];
       // The agent's own checklist for the work in hand. Every session: a task
       // session breaking down a change and the learning loop working a plan

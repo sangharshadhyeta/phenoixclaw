@@ -64,6 +64,12 @@ export const AUTONOMOUS_TOOLS = new Set([
   "graph_episode",
   "workspace_note",
   "memory_digest",
+  // Reading a page into the graph, and locating a definition. The first is
+  // extraction from something already read, recorded at low confidence — the
+  // same category as graph_remember, which is why a tainted turn may still do
+  // it. What a tainted turn may not do is rewrite the agent itself.
+  "graph_ingest",
+  "find_symbol",
   // Its own identity, and what it knows about the person it works for. Both
   // are behind the `self-rewrite` taint rule, so a turn that has read the web
   // cannot write either.

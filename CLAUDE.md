@@ -29,9 +29,9 @@ docker compose up -d --build   # the deployed path; needs .env (see .env.example
 sudo ./scripts/install-searxng.sh  # web search on a host with no container runtime
 ```
 
-`npm test` runs three contracts — the knowledge graph's (`server/test/graph-contract.mjs`, ported
-from BirdClaw's `TestKnowledgeGraph`), the pruner's, and the web reader's. They are the only tests;
-there is no linter or formatter.
+`npm test` runs five contracts — the knowledge graph's (`server/test/graph-contract.mjs`, ported
+from BirdClaw's `TestKnowledgeGraph`), the pruner's, the web reader's, the symbol finder's and the
+local-model client's. 67 assertions, no network, no linter, no formatter.
 Typechecking is the other gate: `npm run build -w server` and `npm run build -w web` (the web build
 typechecks via `tsc -b`). Run all three after server changes — the graph contract catches things
 `tsc` cannot, which is why it exists.
@@ -131,6 +131,11 @@ bug; see the architecture doc.
 - Never put a `FOREIGN KEY` on a table whose parent rows get updated. DuckDB rewrites `UPDATE` on a
   referenced table as delete+insert and trips its own constraint, which froze every node that had
   an edge. See the comment on `edges` in `graph.ts`.
+- The local model is a **reasoning** model and its thinking comes out of the same token budget as
+  its answer. `llm.ts` sends `chat_template_kwargs: {enable_thinking: false}` for exactly that
+  reason — without it, extraction calls burn the whole budget deliberating and return an empty
+  `content` with `finish_reason: "length"`, which looks identical to the model having nothing to
+  say. Don't remove it, and don't "fix" a silent extraction failure by raising `max_tokens`.
 - Migrations must be followed by `CHECKPOINT`. An `ALTER TABLE ADD COLUMN` left in the WAL cannot
   be replayed when the table has `now()` defaults, and the database then refuses to open at all.
 - pi has no approval prompts by design — it runs with its process's permissions. That is why

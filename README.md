@@ -178,13 +178,14 @@ left spinning forever; sending another message resumes the conversation.
 ## Tests
 
 ```bash
-npm test             # graph, pruner and web-reader contracts — 42 assertions
+npm test             # five contracts, 67 assertions, no network
 ```
 
-Ported from BirdClaw's own suite. They use a real DuckDB file on purpose: the three bugs they
-caught — a node that froze once it had an edge, a graph extension crashing the process from a
-background thread, and a write-ahead log that bricked the database on restart — are all invisible
-to `tsc` and all survive a mock.
+Ported from BirdClaw's own suite. They use a real DuckDB file on purpose: the bugs they caught — a
+node that froze once it had an edge, a graph extension crashing the process from a background
+thread, a write-ahead log that bricked the database on restart, and a reasoning model that spent
+its entire token budget thinking and returned nothing — are all invisible to `tsc` and all survive
+a mock.
 
 ## Documentation
 
