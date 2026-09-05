@@ -14,6 +14,7 @@ import {
   routineGuards,
   routineAutonomous,
   runningQuietRoutineSessions,
+  runningSessions,
   updateSession,
 } from "./db.js";
 
@@ -192,6 +193,41 @@ class SessionManager extends EventEmitter {
     } catch {
       // See above.
     }
+  }
+
+  /**
+   * Put right any session the database thinks is running that is not.
+   *
+   * `anySessionRunning()` gates both quiet schedules, so one row stuck at
+   * `running` stops the learning loop and the Dream Cycle *permanently* —
+   * every tick asks "is anything running", the answer is yes forever, and
+   * nothing fires again until someone restarts the portal. That is the shape
+   * of "it just stopped": no error, no log line, a system that looks healthy
+   * and has quietly gone still.
+   *
+   * The row goes stale whenever a run ends without its closing status
+   * reaching the database — a pi process that dies mid-turn, a hang the
+   * timeout gives up on, a crash between the work and the update. Marking
+   * orphans at boot covered exactly one of those, the restart, and left the
+   * rest to be noticed by a person.
+   *
+   * The live client is the authority: if this process has no client for that
+   * session, or it is not running, then it is not running whatever the row
+   * says. Reconciled on every tick, so a stall lasts one tick rather than
+   * until somebody notices.
+   */
+  async reconcileRunning(): Promise<number> {
+    let corrected = 0;
+    for (const row of await runningSessions()) {
+      if (this.live.get(row.id)?.client.running) continue;
+      await updateSession(row.id, { status: "idle" });
+      await this.record(row.id, "portal_status", { status: "idle", reconciled: true });
+      corrected++;
+    }
+    if (corrected) {
+      console.warn(`[portal] ${corrected} session(s) were marked running but were not — released`);
+    }
+    return corrected;
   }
 
   /** Record a portal-generated event on a session — used for run bookends. */

@@ -564,6 +564,12 @@ export async function eventsSince(sessionId: string, since = 0, limit = 5000): P
  * that owned it died with the previous server. Mark them interrupted so the UI
  * can offer a resume instead of showing a spinner forever.
  */
+/** Every session the database currently believes is running. */
+export async function runningSessions(): Promise<SessionRow[]> {
+  const conn = await getDb();
+  return all<SessionRow>(conn, "SELECT * FROM sessions WHERE status = 'running'");
+}
+
 export async function markOrphanedSessionsInterrupted(): Promise<number> {
   const conn = await getDb();
   const before = await all<{ id: string }>(conn, "SELECT id FROM sessions WHERE status = 'running'");
@@ -1065,7 +1071,9 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
     "",
     "PLAN",
     "Call `task_list` to see the plan you are already working through. If it has unfinished steps, continue it — do not start something new because starting is easier than continuing.",
-    "If there is no plan, or the last one is finished, make one: pick a single thread that follows from ORIENT — something you do not understand well enough, a contradiction between two things you believe, a gap you keep running into — and break it into a few concrete steps with `task_plan`.",
+    "But first check whether you are actually getting anywhere. Look at what the finished steps concluded. If the last few steps restate each other, or you have been circling the same subject for several iterations without a step that changed what you believe, then this thread is done whether or not it feels finished — say so in `task_finish` and pick a different one.",
+    "If there is no plan, or the last one is finished, make one. Call `graph_recall` for \"episode\" to see what recent iterations already pursued, and pick something else: a thread you have not tried, from a different part of what you do. Understanding your own machinery is a legitimate subject exactly once — it is the nearest thing to hand when you have nothing else, which is why it is also the easiest place to get stuck. Prefer a question about the work, the person you work for, or something you have read that you did not follow up.",
+    "Break it into a few concrete steps with `task_plan`. Steps that differ from each other: if two of them could be finished by the same piece of reading, they are one step.",
     "",
     "WORK",
     "Call `task_start`, then do that step. You have `read`, `grep`, `find`, `ls`, `graph_recall`, and `web_search`/`web_fetch` for anything you cannot answer from what is already here. Record how it went with `task_finish` — say what you actually found, not that you looked.",
@@ -1079,6 +1087,8 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
     "If you read anything from the web this iteration, note that you cannot update your identity or write a skill in the same turn — that is deliberate. Record it in the graph and it will still be there next time.",
     "",
     "Then stop. One step, one iteration. You will be back.",
+    "",
+    "If you find yourself with nothing worth doing: say that plainly and stop. An iteration that concludes \"nothing needed attention\" is a real result and costs nothing. Manufacturing work to fill the turn is worse than idling, because it fills your memory with things that were never worth remembering.",
   ].join("\n");
   await conn.run(
     // enabled = 1, autonomous = 1. Enabled because a loop that has to be

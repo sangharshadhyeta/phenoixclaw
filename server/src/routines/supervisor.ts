@@ -144,6 +144,10 @@ class RoutineSupervisor {
   private async tick(): Promise<void> {
     const now = new Date();
 
+    // Before deciding whether anything is due: a session wrongly marked
+    // running blocks every quiet schedule forever. See reconcileRunning.
+    await sessions.reconcileRunning().catch(() => {});
+
     /**
      * `@continuous` is collected here and considered last, only if nothing
      * else wanted this tick. It is what the agent does when there is nothing
