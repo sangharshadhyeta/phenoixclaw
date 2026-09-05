@@ -4,6 +4,8 @@ import { agentHome } from "../agent.js";
 import { sessions, EXECUTOR_KIND } from "../session-manager.js";
 import { isDue, nextRun, parseCron } from "./cron.js";
 import { reportFraming, reportToFor } from "../pi/report-tool.js";
+import { PHOENIXCLAW_ROOT, PI_SOURCE_DIR } from "../db.js";
+import { afterRun, beforeRun, summarise, treesFor, type Snapshot } from "./self-update-envelope.js";
 
 /**
  * Runs routines when they are due.
@@ -229,6 +231,33 @@ class RoutineSupervisor {
       { lastRun: new Date().toISOString(), id: row.id },
     );
 
+    /**
+     * Self-update edits the source of the portal it is running inside, so its
+     * safety cannot be instructions alone — see self-update-envelope.ts. The
+     * envelope refuses a dirty tree, verifies what changed, and reverts what
+     * does not build, whatever the model did or did not do.
+     *
+     * Matched on slug because these are the only routines that legitimately
+     * write to those trees. The pair this replaced is still recognised, so a
+     * deployment that enabled one keeps the envelope rather than silently
+     * losing it at upgrade — the same rule sdk-client.ts follows for the
+     * constitution.
+     */
+    const enveloped = ["self-update", "self-update-phoenixclaw", "self-update-pi"].includes(row.slug);
+    const trees = enveloped ? treesFor(PHOENIXCLAW_ROOT, PI_SOURCE_DIR) : [];
+    let snapshots: Snapshot[] = [];
+    if (enveloped) {
+      const pre = await beforeRun(trees);
+      if (!pre.ok) {
+        await this.finish(row.id, "error", pre.reason, Date.now() - started);
+        this.running.delete(row.slug);
+        await this.refreshSchedules();
+        const reader = await conn.runAndReadAll("SELECT * FROM routines WHERE id = $id", { id: row.id });
+        return reader.getRowObjectsJson()[0] as unknown as RoutineRow;
+      }
+      snapshots = pre.snapshots;
+    }
+
     try {
       const session = await this.sessionFor(row);
       // Bookends, so the mirrored stream in the main conversation reads as
@@ -244,9 +273,33 @@ class RoutineSupervisor {
         phase: "end",
         summary: (output ?? "").slice(0, 400),
       });
-      await this.finish(row.id, "ok", output, Date.now() - started);
+      // Verified before the run is called ok: a change that does not build is
+      // reverted, and the outcome joins the stored output so the report says
+      // what actually happened to the tree rather than what the model believed.
+      let verdict = "";
+      if (enveloped) {
+        const outcomes = await afterRun(trees, snapshots);
+        verdict = summarise(outcomes);
+        const broke = outcomes.some((o) => o.reverted);
+        await sessions.note(session.id, "portal_routine", {
+          routine: row.name,
+          slug: row.slug,
+          phase: "verify",
+          summary: verdict,
+        });
+        await this.finish(row.id, broke ? "error" : "ok", `${output ?? ""}\n\n${verdict}`.trim(), Date.now() - started);
+      } else {
+        await this.finish(row.id, "ok", output, Date.now() - started);
+      }
     } catch (e) {
-      await this.finish(row.id, "error", (e as Error).message, Date.now() - started);
+      // A run that failed part-way is the case the revert exists for: it is
+      // most likely to have left a half-finished edit behind.
+      let verdict = "";
+      if (enveloped && snapshots.length) {
+        verdict = summarise(await afterRun(trees, snapshots)).trim();
+      }
+      const message = (e as Error).message;
+      await this.finish(row.id, "error", verdict ? `${message}\n\n${verdict}` : message, Date.now() - started);
     } finally {
       this.running.delete(row.slug);
       // A one-off has nothing left to do. Disabled rather than deleted, so the

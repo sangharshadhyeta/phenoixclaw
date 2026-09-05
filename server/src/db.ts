@@ -1264,7 +1264,7 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
 
 /** Both are one level up from wherever this file itself runs from — dist/ or src/, doesn't matter, both are direct children of server/. */
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PHOENIXCLAW_ROOT = path.resolve(SERVER_ROOT, "..");
+export const PHOENIXCLAW_ROOT = path.resolve(SERVER_ROOT, "..");
 /**
  * pi's own source, a sibling of Phoenixclaw rather than a child of it.
  *
@@ -1274,7 +1274,7 @@ const PHOENIXCLAW_ROOT = path.resolve(SERVER_ROOT, "..");
  * install — leaving pi-source with no node_modules at all. Overridable so a
  * different checkout location still works.
  */
-const PI_SOURCE_DIR = process.env.PI_SOURCE_DIR || path.resolve(PHOENIXCLAW_ROOT, "..", "pi-source");
+export const PI_SOURCE_DIR = process.env.PI_SOURCE_DIR || path.resolve(PHOENIXCLAW_ROOT, "..", "pi-source");
 
 /**
  * Seeds two self-update routines, disabled by default — the user turns one
