@@ -17,7 +17,7 @@ import {
 import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
-import { identityStatus, writeIdentity, migrateIdentityFromDisk } from "./identity.js";
+import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles } from "./identity.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
@@ -607,6 +607,11 @@ mkdirSync(BIN_DIR, { recursive: true });
 // graph before the first session can start, so existing SELF_CONCEPT/
 // INNER_LIFE work survives the migration to graph-backed identity.
 await migrateIdentityFromDisk();
+// After the migration, because it rewrites what that just seeded. See
+// stopIdentityNamingFiles: an agent seeded before this carries content that
+// tells it to open files which do not exist.
+const renamed = await stopIdentityNamingFiles();
+if (renamed > 0) console.log(`[portal] repaired ${renamed} identity document(s) that described themselves as files`);
 
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`phenoixclaw listening on :${PORT}`);

@@ -52,12 +52,48 @@ const inject = mount(memoryInjector(CWD, "primary"));
   ok("it carries the confidence it was recorded at", /confidence 0\.\d\d/.test(r.systemPrompt));
 }
 
-// --- a lead, not an answer: the epistemics must be stated ---
+// --- a record is not a belief, and must not be hedged like one -------------
+// "Verify, don't recall" governs claims about the world. It does not govern
+// what was said: the agent was there, and hedging that reads as it doubting
+// its own experience. Remembering across time is the feature, not a risk.
 {
   const r = await inject("tell me about being alive");
-  ok("the block says it is unverified", /have not verified/i.test(r.systemPrompt));
-  ok("and says to check what is load-bearing", /check it before relying/i.test(r.systemPrompt));
-  ok("and to say when answering from memory", /from memory rather than/i.test(r.systemPrompt));
+  ok("memory is presented as the agent's own", /YOUR MEMORY/i.test(r.systemPrompt));
+  ok("and not as guesswork", /not guesswork/i.test(r.systemPrompt));
+  ok("records and beliefs are distinguished",
+     /What happened is a record/i.test(r.systemPrompt) && /is a belief/i.test(r.systemPrompt));
+  ok("only beliefs are asked to be checked", /load-bearing for your answer, check it/i.test(r.systemPrompt));
+}
+
+// --- temporal awareness: where a memory is from, said out loud -------------
+// A memory with no provenance is indistinguishable from something happening
+// now, and an agent that cannot tell "we are discussing this" from "we
+// discussed this in March" answers as though the older thing is still running.
+{
+  const { upsertNode: up } = await import(dist("graph.js"));
+  await up("conversation:2026-09-05:THIS", "episode", "when: 2026-09-05 09:00 | they asked: about being alive here", 0.3);
+  await up("conversation:2026-09-01:OTHER", "episode", "when: 2026-09-01 09:00 | they asked: about being alive elsewhere", 0.3);
+
+  const here = mount(memoryInjector(CWD, "primary", "THIS"));
+  const r = await here("what did we say about being alive");
+
+  ok("records are grouped under what happened", /What happened, and when/.test(r.systemPrompt));
+  ok("this conversation's own history is marked as such",
+     /\[earlier in this conversation[^\]]*\]/.test(r.systemPrompt));
+  ok("another conversation is marked as another",
+     /\[in a different conversation[^\]]*\]/.test(r.systemPrompt));
+  ok("and both carry a time", /(today|yesterday|\d+ days ago|\d{4}-\d\d-\d\d)/.test(r.systemPrompt));
+  ok("the agent is told not to treat elsewhere as now",
+     /not what is happening now/.test(r.systemPrompt));
+  ok("and told where the current work actually is",
+     /working on right now is in the conversation itself/.test(r.systemPrompt));
+
+  // Without a session id there is nothing to compare against, so nothing is
+  // claimed either way rather than guessing.
+  const anon = mount(memoryInjector(CWD, "primary"));
+  const a = await anon("what did we say about being alive");
+  ok("with no session id, nothing is claimed to be 'this' conversation",
+     !/earlier in this conversation/.test(a.systemPrompt));
 }
 
 // --- it must not fire on every turn ---

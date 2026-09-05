@@ -161,6 +161,26 @@ export async function harvestTurn(
     return { harvest: { skipped: "too short to be worth remembering", extraction: nothing }, seq };
   }
 
+  /**
+   * Composed from the text, not written by a model — and deliberately so.
+   *
+   * A model-written summary was tried here and removed. Summarising a
+   * conversation is what you do when the conversation has to *fit*: it is the
+   * compression step of an accumulate-and-compact context, and pi's own
+   * summariser exists to serve exactly that. Once context is assembled by
+   * search (context-assembler.ts) there is nothing to compress — what is
+   * needed is not a shorter conversation but a findable one.
+   *
+   * And for finding, a paraphrase is worse. Search matches words, and the
+   * words most likely to be searched for are the ones the person actually
+   * used. A summary that renders "move our vector store from Chroma to
+   * Qdrant" as "discussed database migration options" has lost precisely the
+   * terms that would have retrieved it. Keeping their phrasing verbatim costs
+   * a model call less and recalls better.
+   *
+   * Meaning is not lost by this: it is tier 2's job, which extracts entities
+   * and the relations between them, and links them back here.
+   */
   const name = nodeNameFor(session);
   await upsertNode(name, "episode", summary, HARVEST_CONFIDENCE);
 

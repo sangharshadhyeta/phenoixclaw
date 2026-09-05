@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { keywordPrune } from "../prune.js";
+import { semanticPrune } from "../ingest.js";
 import { recallPage, rememberPage } from "../page-store.js";
 
 /**
@@ -118,7 +119,9 @@ export function webTools() {
          */
         const cached = await recallPage(parsed.toString());
         if (cached) {
-          return text(`${parsed.toString()}\n\n${keywordPrune(cached, goalFor(p, parsed), FETCH_CHAR_CAP)}`);
+          return text(
+            `${parsed.toString()}\n\n${await semanticPrune(cached, goalFor(p, parsed), FETCH_CHAR_CAP)}`,
+          );
         }
 
         let res: Response;
@@ -146,7 +149,25 @@ export function webTools() {
         // gets the whole page rather than the part the first caller wanted.
         await rememberPage(parsed.toString(), plain);
 
-        const pruned = keywordPrune(plain, goalFor(p, parsed), FETCH_CHAR_CAP);
+        /**
+         * Selected by meaning, not only by shared vocabulary.
+         *
+         * `keywordPrune` scores chunks by overlap with the goal, which fails
+         * quietly on exactly the pages worth fetching: one that answers the
+         * question in different words scores zero and is truncated instead of
+         * read. `semanticPrune` asks the local model to copy out the sentences
+         * that bear on the question, and falls back to keyword pruning when
+         * there is no model, when the page is already short, or when the call
+         * returns nothing — so this is strictly an improvement on the previous
+         * behaviour rather than a new dependency.
+         *
+         * It was written, tested, and never called. Both audits found it
+         * independently (BirdClaw's condenser tier two, Sisyphean's SIS-58).
+         *
+         * The result is still wrapped by the guard's untrusted envelope on the
+         * way out — pruning a page does not launder it.
+         */
+        const pruned = await semanticPrune(plain, goalFor(p, parsed), FETCH_CHAR_CAP);
         return text(`${parsed.toString()}\n\n${pruned}`);
       },
     });

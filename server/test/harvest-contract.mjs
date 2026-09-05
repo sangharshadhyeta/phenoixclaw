@@ -104,5 +104,21 @@ ok("and says why", /too short|nothing said/.test(nothing.harvest.skipped ?? ""))
 ok("tier 2 is handed back as a promise", typeof first.harvest.extraction?.then === "function");
 ok("a missing local model does not lose the record", Boolean(first.harvest.node));
 
+// --- the record keeps the person's own words, not a paraphrase -------------
+// A model-written summary was tried here and removed: summarising is the
+// compression step of an accumulate-and-compact context, and once context is
+// assembled by search there is nothing to compress. For finding, a paraphrase
+// is actively worse — search matches words, and the words worth matching are
+// the ones the person used.
+{
+  const d = await session("sess-d", "verbatim");
+  await turn("sess-d", "We are moving our vector store from Chroma to Qdrant.", "Understood.");
+  const h = await harvestTurn(d, 0);
+  await h.harvest.extraction;
+  const node = await getNode(h.harvest.node);
+  ok("the searchable terms survive verbatim", /Chroma/.test(node.summary) && /Qdrant/.test(node.summary));
+  ok("and so does the phrasing around them", /vector store/.test(node.summary));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

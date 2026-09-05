@@ -629,6 +629,62 @@ export async function appendEvent(sessionId: string, type: string, payload: unkn
  * conversation happened to do while the portal was busy with others" — on a
  * busy box that can be almost nothing.
  */
+/**
+ * Verbatim search across conversations.
+ *
+ * The graph holds a bounded, rewritten summary of each conversation; this
+ * holds every word that was actually said. Both are needed, and the way the
+ * graph fails shows why: a conversation recorded "my favourite colour is
+ * vermilion", the next question asked about "my favorite colour", and keyword
+ * search — exact on tokens, with semantic search unavailable — returned
+ * nothing at all. The memory was there. Nothing could find it.
+ *
+ * Matched with LIKE rather than the FTS index deliberately: a substring match
+ * finds a partial word and does not care how the surrounding text tokenises,
+ * which is the whole point of having a verbatim tier underneath the graph.
+ *
+ * Scoped by the caller, never here — see history-tools.ts for the role rule.
+ */
+export async function searchTranscripts(
+  needle: string,
+  opts: { sessionIds?: string[]; limit?: number } = {},
+): Promise<{ session_id: string; title: string; type: string; payload: string; created_at: string }[]> {
+  const term = needle.trim();
+  if (!term) return [];
+  const conn = await getDb();
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
+
+  // A LIKE pattern, with the wildcards the caller did not ask for escaped.
+  const pattern = `%${term.replace(/([%_\\])/g, "\\$1")}%`;
+  const scoped = opts.sessionIds?.length
+    ? `AND e.session_id IN (${opts.sessionIds.map((_, i) => `$s${i}`).join(", ")})`
+    : "";
+  const params: Record<string, any> = { pattern, limit };
+  opts.sessionIds?.forEach((id, i) => (params[`s${i}`] = id));
+
+  return all(
+    conn,
+    `SELECT e.session_id, s.title, e.type, e.payload, e.created_at
+       FROM events e JOIN sessions s ON s.id = e.session_id
+      WHERE e.type IN ('portal_prompt', 'message_update')
+        AND e.payload LIKE $pattern ESCAPE '\\'
+        ${scoped}
+      ORDER BY e.seq DESC
+      LIMIT $limit`,
+    params,
+  );
+}
+
+/** Conversations a primary-role session may search: everything but routine noise. */
+export async function searchableSessionIds(): Promise<string[]> {
+  const conn = await getDb();
+  const rows = await all<{ id: string }>(
+    conn,
+    "SELECT id FROM sessions WHERE kind != 'routine' AND role = 'primary'",
+  );
+  return rows.map((r) => r.id);
+}
+
 export async function replayStart(sessionId: string, keep: number): Promise<number> {
   const conn = await getDb();
   const row = await one<{ seq: number }>(

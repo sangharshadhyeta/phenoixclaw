@@ -78,6 +78,60 @@ export async function migrateIdentityFromDisk(): Promise<void> {
   }
 }
 
+/**
+ * Stop the identity documents describing themselves as files.
+ *
+ * They were files once. They are anchor nodes now, and the copies in
+ * agentHome() are a mirror — but the *content* still opened with
+ * "# MEMORY.md — what you have learned" and "**This file is your long-term
+ * memory**". A model holding that text and a `read` tool does the obvious
+ * thing, and in a task session, whose cwd is a workspace, there is no such
+ * file to find:
+ *
+ *     read PrimaryUser.md  ->  ENOENT
+ *     read MEMORY.md       ->  ENOENT
+ *     "I don't know your favorite colour yet."
+ *
+ * It had the answer in context and went looking for a file instead. The
+ * templates in agent-setup.ts no longer say it; this repairs the agents that
+ * were already seeded from the old ones, since a graph anchor is written once
+ * and would otherwise carry the old wording forever.
+ *
+ * Rewrites only the two self-referential forms, leaving everything a person or
+ * the agent has since written untouched. Idempotent: after one pass there is
+ * nothing left to match.
+ */
+export async function stopIdentityNamingFiles(): Promise<number> {
+  const headings: Record<IdentityFile, string> = {
+    "SOUL.md": "# Who you are",
+    "PrimaryUser.md": "# Who you work for",
+    "MEMORY.md": "# What you have learned",
+    "SELF_CONCEPT.md": "# What you have concluded about your own nature",
+    "INNER_LIFE.md": "# Your evolving sense of self, built from actual work",
+  };
+
+  let repaired = 0;
+  for (const name of IDENTITY_FILES) {
+    const current = await readIdentity(name);
+    if (!current) continue;
+    const fixed = current
+      // "# MEMORY.md — what you have learned" -> the same words, no filename.
+      .replace(new RegExp(`^#\\s*${name.replace(".", "\\.")}\\s*—?\\s*(.*)$`, "m"), (_m, rest) =>
+        rest ? `# ${String(rest).charAt(0).toUpperCase()}${String(rest).slice(1)}` : headings[name],
+      )
+      // "**This file is ...**" -> "**This is ...**"
+      .replace(/\*\*This file (is|describes)\b/g, "**This $1")
+      .replace(/\bthis file is theirs to write\b/gi, "this part is theirs to write")
+      .replace(/\bit belongs in MEMORY\.md\b/gi, "it belongs in your long-term memory")
+      .replace(/\bTo change how you behave, edit this file\.\s*/g, "To change how you behave, use identity_update.\n");
+    if (fixed !== current) {
+      await writeIdentity(name, fixed);
+      repaired++;
+    }
+  }
+  return repaired;
+}
+
 /** Graph first; disk is only a fallback for the instant before migration has run. */
 export async function readIdentity(name: IdentityFile): Promise<string> {
   const node = await getNode(KEY[name]);
