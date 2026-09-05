@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useNavigate, useParams } from "react-router-do
 import { api, type PortalEvent, type Session, type Workspace } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Chat } from "./components/Chat";
+import { MemoryPage } from "./components/MemoryPage";
 import { Login } from "./components/Login";
 import { ConfigModal } from "./components/ConfigModal";
 import { ExtensionDialog, type UiRequest } from "./components/ExtensionDialog";
@@ -51,6 +52,7 @@ export default function App() {
       <Route path="/agent" element={<Shell view="agent" />} />
       <Route path="/routines" element={<Shell view="routines" />} />
       <Route path="/audit" element={<Shell view="audit" />} />
+      <Route path="/memory" element={<Shell view="memory" />} />
       <Route path="/s/:sessionId" element={<Shell />} />
       <Route path="/s/:sessionId/settings" element={<Shell settings />} />
       <Route path="/s/:sessionId/settings/:tab" element={<Shell settings />} />
@@ -66,7 +68,7 @@ function Shell({
   view = "chat",
 }: {
   settings?: boolean;
-  view?: "chat" | "sessions" | "agent" | "routines" | "audit";
+  view?: "chat" | "sessions" | "agent" | "routines" | "audit" | "memory";
 }) {
   const { sessionId, tab } = useParams<{ sessionId?: string; tab?: string }>();
   const navigate = useNavigate();
@@ -230,6 +232,8 @@ function Shell({
           <RoutinesPage onOpenSession={(id) => navigate(`/s/${id}`)} />
         ) : view === "audit" ? (
           <AuditPage />
+        ) : view === "memory" ? (
+          <MemoryPage />
         ) : active ? (
           <Chat
             session={active}

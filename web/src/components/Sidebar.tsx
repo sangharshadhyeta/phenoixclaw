@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import {
   LuBot,
+  LuBrain,
   LuClock,
   LuMessagesSquare,
   LuPin,
@@ -65,7 +66,7 @@ export function Sidebar({
   executor: string;
   activeId: string | null;
   /** Which top-level destination is showing, so the nav can mark it. */
-  view: "chat" | "sessions" | "agent" | "routines" | "audit";
+  view: "chat" | "sessions" | "agent" | "routines" | "audit" | "memory";
   onSelect: (id: string) => void;
   onCreate: (workspacePath: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -73,7 +74,7 @@ export function Sidebar({
   onPin: (id: string, pinned: boolean) => Promise<void>;
   onCreateWorkspace: (name: string) => Promise<Workspace>;
   onOpenSettings: () => void;
-  onNavigate: (to: "sessions" | "agent" | "routines" | "audit") => void;
+  onNavigate: (to: "sessions" | "agent" | "routines" | "audit" | "memory") => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [choice, setChoice] = useState<string>(NEW);
@@ -158,6 +159,12 @@ export function Sidebar({
           label="Routines"
           onClick={() => onNavigate("routines")}
           active={view === "routines"}
+        />
+        <NavItem
+          icon={<LuBrain />}
+          label="Memory"
+          onClick={() => onNavigate("memory")}
+          active={view === "memory"}
         />
         <NavItem
           icon={<LuShield />}

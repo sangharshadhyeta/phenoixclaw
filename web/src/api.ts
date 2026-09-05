@@ -310,6 +310,16 @@ export const api = {
 
   abort: (id: string) => json<{ ok: true }>(`/api/sessions/${id}/abort`, { method: "POST" }),
 
+  /** What the agent knows. Read-only: it writes this, and editing behind its back only confuses it. */
+  memory: (q = "", type = "") =>
+    json<{ total: number; counts: Record<string, number>; nodes: MemoryNode[] }>(
+      `/api/memory?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`,
+    ),
+  memoryNeighbors: (name: string) =>
+    json<{ neighbors: Neighbor[] }>(`/api/memory/neighbors?name=${encodeURIComponent(name)}`).then(
+      (r) => r.neighbors,
+    ),
+
   /** The agent's plan for a session. Read-only — it writes these, not you. */
   getTasks: (id: string) =>
     json<{ tasks: Task[] }>(`/api/sessions/${id}/tasks`).then((r) => r.tasks),
@@ -626,6 +636,24 @@ export interface ToolRule {
   person_name: string | null;
   note: string;
   created_at: string;
+}
+
+/** One thing the agent knows — a node in its knowledge graph. */
+export interface MemoryNode {
+  id: string;
+  type: string;
+  name: string;
+  summary: string;
+  confidence: number;
+  observations: number;
+  created_at: string;
+  last_seen: string;
+}
+
+/** A relation from one thing it knows to another. */
+export interface Neighbor extends MemoryNode {
+  relation: string;
+  direction: "out" | "in";
 }
 
 /** A step in the agent's own plan for a session — written by it, shown to you. */
