@@ -210,12 +210,62 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     autonomous?: boolean;
     /** True when this conversation has already read something untrusted. */
     tainted?: boolean;
+    /**
+     * Whether the working directory's own `.pi` resources may be loaded and
+     * executed. False for anything pointed at somebody else's code.
+     */
+    projectTrusted?: boolean;
   }): Promise<SdkPiClient> {
     // Imported lazily so the server still boots (and the container executor
     // still works) if the SDK cannot initialise in this environment.
     const pi: any = await import("@earendil-works/pi-coding-agent");
 
     const modelRuntime = await pi.ModelRuntime.create();
+
+    /**
+     * Whether pi may load and run the *workspace's* own `.pi` resources.
+     *
+     * pi defaults this to trusted (`settings-manager.ts`'s
+     * `options.projectTrusted ?? true`) — right for a CLI a developer points at
+     * their own checkout, and wrong here. The portal opens sessions against
+     * arbitrary repositories, and a trusted project loads that repository's
+     * `.pi/extensions`, `.pi/SYSTEM.md` and `.pi/APPEND_SYSTEM.md`: arbitrary
+     * code in this process, beside the guard, and arbitrary instructions ahead
+     * of the agent's own. Cloning a hostile repo and opening a session on it
+     * was full compromise.
+     *
+     * So it is opt-in, decided by the caller (session-manager.ts) rather than
+     * defaulted here: trusted only where the agent owns the tree.
+     *
+     * Passed to the resource loader *and* to createAgentSession, because the
+     * loader that discovers SYSTEM.md is a different object from the session
+     * that reads settings, and defaulting either one re-opens the hole.
+     */
+    const settingsManager = pi.SettingsManager.create(opts.cwd, pi.getAgentDir(), {
+      projectTrusted: opts.projectTrusted === true,
+    });
+
+    /**
+     * The built-in tools this session gets, named explicitly.
+     *
+     * pi enables four by default — read, bash, edit, write (`sdk.ts`'s `tools`
+     * documentation). `grep`, `find` and `ls` ship with it but are **off**,
+     * which quietly made a nonsense of guard.ts's READ_ONLY allowlist: it names
+     * read/grep/find/ls, so a colleague was being permitted three tools that
+     * did not exist and left with `read` alone, while write/edit/bash were
+     * registered for every session and refused one call at a time.
+     *
+     * An autonomous turn gets the read-only set and nothing else. The
+     * constitution already refuses bash/write/edit for such a turn
+     * (constitution.ts's CITED map), so this changes no decision — it moves the
+     * refusal from per-call into the session's shape, which means the schemas
+     * are not in the prompt either. The role check stays per-call and is
+     * deliberately not expressed here: a group conversation changes speaker
+     * between messages, and a launch-time list would freeze capability to
+     * whoever happened to speak first.
+     */
+    const READ_TOOLS = ["read", "grep", "find", "ls"];
+    const tools = opts.autonomous ? READ_TOOLS : [...READ_TOOLS, "bash", "edit", "write"];
 
     // Without an explicit loader the SDK starts with no extensions, skills or
     // prompt templates — so installed packages contribute no commands at all.
@@ -351,6 +401,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       resourceLoader = new pi.DefaultResourceLoader({
         cwd: opts.cwd,
         agentDir: pi.getAgentDir(),
+        // Same instance as createAgentSession below — this is the object whose
+        // isProjectTrusted() gates discoverSystemPromptFile() and its append
+        // counterpart in pi's resource loader.
+        settingsManager,
         // Available everywhere without being installed, and not editable in
         // place: they belong to the image, so an edit would be lost on the next
         // deploy without saying so.
@@ -418,6 +472,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       cwd: opts.cwd,
       sessionManager,
       modelRuntime,
+      settingsManager,
+      tools,
       ...(resourceLoader ? { resourceLoader } : {}),
       ...(model ? { model } : {}),
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),

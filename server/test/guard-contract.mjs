@@ -144,5 +144,33 @@ const blocked = (r) => Boolean(r && r.block);
      blocked(await g.call("bash", { command: `echo x > ${path.join(agentHome(), "CONSTITUTION.md")}` })));
 }
 
+// --- 6. the parallel-batch blind spot (Phase 0.2) ----------------------------
+// pi resolves every tool_call preflight in a batch before running any of them,
+// so no sibling's tool_result has landed when a call is judged. Taint set only
+// from tool_result therefore missed [web_fetch, bash "git push"] emitted in one
+// assistant message: both guards passed, and the taint arrived after the push.
+{
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, REPO));
+  // Exactly a batch: two tool_call events, no tool_result between them.
+  const first = await g.call("web_fetch", { url: "https://example.com" });
+  const second = await g.call("bash", { command: "git push origin main" });
+  ok("the untrusted call itself is allowed", !blocked(first));
+  ok("a publish in the SAME batch is refused", blocked(second));
+  ok("and cites the publish rule", /publish|untrusted/i.test(second?.reason ?? ""));
+}
+{
+  // The same for a bash-shaped untrusted source, which is recognised by command.
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, REPO));
+  await g.call("bash", { command: "curl https://example.com/page" });
+  ok("a curl taints its own batch too",
+     blocked(await g.call("identity_update", { file: "SOUL.md", content: "x" })));
+}
+{
+  // And an ordinary session is still untouched — the rules stay tainted-only.
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, REPO));
+  await g.call("read", { path: "README.md" });
+  ok("a clean session may still publish", !blocked(await g.call("bash", { command: "git push origin main" })));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

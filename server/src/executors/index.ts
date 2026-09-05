@@ -39,6 +39,11 @@ export interface LaunchOptions {
    * carries the taint across a restart.
    */
   tainted?: boolean;
+  /**
+   * Whether the workspace's own `.pi` resources may be loaded and executed.
+   * Only true where the agent owns the tree — see session-manager.ts.
+   */
+  projectTrusted?: boolean;
 }
 
 export interface Executor {
@@ -90,6 +95,7 @@ export class HostExecutor implements Executor {
       enforceTaint: opts.enforceTaint,
       autonomous: opts.autonomous,
       tainted: opts.tainted,
+      projectTrusted: opts.projectTrusted,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,

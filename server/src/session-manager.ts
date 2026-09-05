@@ -279,6 +279,23 @@ class SessionManager extends EventEmitter {
       autonomous,
       // Carried from the row, not restarted at false. See guard.ts.
       tainted: session.tainted === 1,
+      /**
+       * Trust the workspace's own `.pi` resources only where the agent owns
+       * the tree.
+       *
+       * A task session is pointed at somebody else's repository, and a trusted
+       * project there means that repo's `.pi/extensions` execute in this
+       * process and its `.pi/SYSTEM.md` lands ahead of the agent's own
+       * instructions. pi defaults to trusted, which is right for a developer's
+       * CLI and wrong for a portal that opens sessions on whatever it is given.
+       *
+       * Agent and routine sessions run in agentHome() — the agent's own
+       * directory — so their project resources are its own. The exception is a
+       * routine with a workspace of its own (self-update, whose cwd is a source
+       * tree): that tree is ours too, and it is the one place project
+       * extensions are a feature rather than a hazard.
+       */
+      projectTrusted: session.kind !== "task",
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,

@@ -452,9 +452,10 @@ export function guardExtension(
       const source = toolName === "bash" ? cmd(event.input ?? {}) : toolName;
       if (!isUntrustedSource(toolName, source) || event.isError) return undefined;
 
-      // The row as well as the closure, so this survives whatever ends the
-      // process. Not awaited — this handler is synchronous by contract, and
-      // the in-memory flag below is already correct for this turn.
+      // Usually already set by the tool_call handler above; this stays as the
+      // backstop for anything that reaches a result without having been
+      // recognised on the way in. Not awaited — this handler is synchronous by
+      // contract, and the in-memory flag is already correct for this turn.
       if (!tainted && portalSessionId) void markSessionTainted(portalSessionId).catch(() => {});
       tainted = true;
       const { open, close } = envelope(randomBytes(8).toString("hex"));
@@ -469,6 +470,32 @@ export function guardExtension(
     });
 
     pi.on("tool_call", async (event: any) => {
+      /**
+       * Taint on the *call*, not only on the result.
+       *
+       * pi runs a batch of tool calls with every preflight resolved before any
+       * execution (agent-loop.ts's executeToolCallsParallel pushes thunks and
+       * only invokes them at the closing Promise.all). So within one assistant
+       * message no tool has produced a result when its siblings are judged —
+       * and the taint below used to be set from `tool_result` alone. A model
+       * emitting [web_fetch, bash "git push …"] in a single message therefore
+       * passed both guards untainted, and the taint landed after the push had
+       * gone. Every rule in RULES was evadable that way, which is precisely
+       * what an injected page would ask for.
+       *
+       * The tool is about to run, so treating the session as tainted from this
+       * moment is honest rather than pessimistic. pi does ship the structural
+       * fix — `toolExecution: "sequential"` — but it is not reachable from the
+       * SDK path the portal uses (createAgentSession never passes it), and it
+       * would cost every batch its parallelism to close a hole this closes for
+       * nothing.
+       */
+      const callName = String(event.toolName ?? "");
+      if (!tainted && isUntrustedSource(callName, callName === "bash" ? cmd(event.input ?? {}) : callName)) {
+        tainted = true;
+        if (portalSessionId) void markSessionTainted(portalSessionId).catch(() => {});
+      }
+
       const { role, key } = whoNow();
       // A one-off approval, spent here. Checked last, after the standing rules,
       // because it is the expensive kind of permission: somebody was asked.

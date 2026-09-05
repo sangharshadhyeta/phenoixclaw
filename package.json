@@ -16,12 +16,13 @@
     "docs:build": "npm run build -w docs",
     "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs",
     "test:prune": "node server/test/prune-contract.mjs",
-    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard",
+    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard && npm run test:trust",
     "test:web": "node server/test/web-contract.mjs",
     "test:symbols": "node server/test/code-index-contract.mjs",
     "test:llm": "node server/test/llm-contract.mjs",
     "test:cleanup": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/cleanup-contract.mjs",
     "test:self-concept": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/self-concept-contract.mjs",
-    "test:guard": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/guard-contract.mjs"
+    "test:guard": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/guard-contract.mjs",
+    "test:trust": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/trust-contract.mjs"
   }
 }
