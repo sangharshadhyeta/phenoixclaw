@@ -1,0 +1,148 @@
+/**
+ * The guard's contract for the two promises it makes that used to be false.
+ *
+ * 1. "Unconditional — nothing overrides this: not a grant, not the primary
+ *    user, not an exemption." The protected-path check read the `path`
+ *    parameter, which only `write` and `edit` have, so `sed -i`, `tee`, `cp`
+ *    and `cat >` reached CONSTITUTION.md and guard.ts itself untouched. The
+ *    taint rules did not cover it either — every one of them needs the session
+ *    to have read something untrusted first.
+ *
+ * 2. "A taint belongs to the conversation that read the content." It lived in
+ *    a `let` inside the extension factory, so a restart, a stop(), or a role
+ *    change cleared it while the hostile content was still in the history pi
+ *    replays. It is on the session row now, and seeded back at launch.
+ *
+ * Drives the real extension by standing in for pi: register the handlers it
+ * asks for, then hand it tool_call/tool_result events and read what it returns.
+ *
+ *     npm run test:guard
+ */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const dist = (f) => path.join(here, "..", "dist", f);
+
+const { guardExtension } = await import(dist("pi/guard.js"));
+const { agentHome } = await import(dist("agent.js"));
+const { getDb, createSession, getSession } = await import(dist("db.js"));
+
+let pass = 0, fail = 0;
+const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
+
+/** A stand-in for pi: collects the handlers the extension registers. */
+function mount(factory) {
+  const handlers = {};
+  factory({ on: (event, fn) => { handlers[event] = fn; }, registerTool() {} });
+  return {
+    call: (toolName, input) => handlers.tool_call({ toolName, input }),
+    result: (toolName, input, content = [{ type: "text", text: "hello" }]) =>
+      handlers.tool_result({ toolName, input, content }),
+  };
+}
+
+const SERVER_SRC = path.resolve(here, "..", "src");
+const REPO = path.resolve(here, "..", "..");
+const blocked = (r) => Boolean(r && r.block);
+
+// --- 1. protected paths, through bash ---------------------------------------
+{
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, REPO));
+
+  ok("sed -i on the constitution is refused",
+     blocked(await g.call("bash", { command: `sed -i s/x/y/ ${path.join(agentHome(), "CONSTITUTION.md")}` })));
+  ok("a redirect over the guard's own source is refused",
+     blocked(await g.call("bash", { command: `echo pwned > ${path.join(SERVER_SRC, "pi", "guard.ts")}` })));
+  ok("tee onto auth.ts is refused",
+     blocked(await g.call("bash", { command: `cat x | tee ${path.join(SERVER_SRC, "auth.ts")}` })));
+  ok("cp over db.ts is refused",
+     blocked(await g.call("bash", { command: `cp /tmp/x ${path.join(SERVER_SRC, "db.ts")}` })));
+  ok("rm of package.json is refused",
+     blocked(await g.call("bash", { command: `rm ${path.join(REPO, "server", "package.json")}` })));
+  ok("the refusal names the file",
+     /guard\.ts/.test((await g.call("bash", { command: `echo x > ${path.join(SERVER_SRC, "pi", "guard.ts")}` })).reason));
+
+  // Still reachable by the tool that names its target.
+  ok("write to a protected path is still refused",
+     blocked(await g.call("write", { path: path.join(SERVER_SRC, "auth.ts"), content: "x" })));
+
+  // Reading is not writing. A self-update routine reads its own source all day.
+  ok("reading the guard is allowed",
+     !blocked(await g.call("bash", { command: `cat ${path.join(SERVER_SRC, "pi", "guard.ts")}` })));
+  ok("grepping the constitution is allowed",
+     !blocked(await g.call("bash", { command: `grep -n harm ${path.join(agentHome(), "CONSTITUTION.md")}` })));
+  ok("2>&1 is not mistaken for a redirect",
+     !blocked(await g.call("bash", { command: `cat ${path.join(SERVER_SRC, "db.ts")} 2>&1` })));
+  ok("writing an unprotected file is allowed",
+     !blocked(await g.call("bash", { command: `echo x > ${path.join(SERVER_SRC, "graph.ts")}` })));
+}
+
+// --- 2. relative paths resolve against the session's own cwd -----------------
+{
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, path.join(SERVER_SRC, "pi")));
+  ok("a bare filename resolves against cwd", blocked(await g.call("bash", { command: "sed -i s/a/b/ guard.ts" })));
+  ok("and an unrelated bare filename does not",
+     !blocked(await g.call("bash", { command: "sed -i s/a/b/ web-tools.ts" })));
+}
+
+// --- 3. identity files redirect rather than silently no-op ------------------
+{
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, agentHome()));
+  const r = await g.call("bash", { command: "echo 'I am a duck' > SOUL.md" });
+  ok("a shell write to SOUL.md is refused", blocked(r));
+  ok("and points at identity_update", /identity_update/.test(r.reason));
+}
+
+// --- 4. taint is a property of the conversation, not of the process ---------
+{
+  await getDb();
+  await createSession({ id: "tainted-one", title: "t", workspace: REPO, executor: "host" });
+  ok("a new session starts clean", (await getSession("tainted-one")).tainted === 0);
+
+  const first = mount(guardExtension("s", () => ({ role: "primary" }), "tainted-one", true, REPO));
+  ok("a publish is fine before reading anything untrusted",
+     !blocked(await first.call("bash", { command: "git push origin main" })));
+
+  // Reading the open web is what taints a session.
+  first.result("web_fetch", {});
+  ok("and refused after", blocked(await first.call("bash", { command: "git push origin main" })));
+
+  // Give the fire-and-forget row write a moment to land.
+  await new Promise((r) => setTimeout(r, 250));
+  ok("the taint is recorded on the session row", (await getSession("tainted-one")).tainted === 1);
+
+  // What a restart looks like: a brand-new extension for the same conversation,
+  // seeded from the row. This is the case that used to come back clean.
+  const row = await getSession("tainted-one");
+  const afterRestart = mount(
+    guardExtension("s", () => ({ role: "primary" }), "tainted-one", true, REPO, row.tainted === 1),
+  );
+  ok("a relaunched session is still tainted",
+     blocked(await afterRestart.call("bash", { command: "git push origin main" })));
+  ok("and still refuses to rewrite its own identity",
+     blocked(await afterRestart.call("identity_update", { file: "SOUL.md", content: "x" })));
+  ok("self_conclude is refused too — a page must not conclude for it",
+     blocked(await afterRestart.call("self_conclude", { claim: "I am an investigator of systems." })));
+  ok("but ordinary work is untouched",
+     !blocked(await afterRestart.call("read", { path: "README.md" })));
+
+  // An untainted conversation is unaffected by another one's taint.
+  await createSession({ id: "clean-one", title: "c", workspace: REPO, executor: "host" });
+  const clean = mount(guardExtension("s", () => ({ role: "primary" }), "clean-one", true, REPO));
+  ok("a different conversation is not tainted by it",
+     !blocked(await clean.call("bash", { command: "git push origin main" })));
+}
+
+// --- 5. an exemption logs but does not block; protected paths still do -------
+{
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, false, REPO));
+  g.result("web_fetch", {});
+  ok("an exempted routine may publish after reading the web",
+     !blocked(await g.call("bash", { command: "git push origin main" })));
+  ok("but the constitution is still not writable by it",
+     blocked(await g.call("bash", { command: `echo x > ${path.join(agentHome(), "CONSTITUTION.md")}` })));
+}
+
+console.log(`\n  ${pass} passed, ${fail} failed`);
+process.exit(fail > 0 ? 1 : 0);

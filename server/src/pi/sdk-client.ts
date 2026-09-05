@@ -208,6 +208,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     enforceTaint?: boolean;
     /** True when nobody asked for this turn — see pi/constitution.ts. */
     autonomous?: boolean;
+    /** True when this conversation has already read something untrusted. */
+    tainted?: boolean;
   }): Promise<SdkPiClient> {
     // Imported lazily so the server still boots (and the container executor
     // still works) if the SDK cannot initialise in this environment.
@@ -232,6 +234,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.sessionId,
             opts.enforceTaint !== false,
             opts.cwd,
+            opts.tainted === true,
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.

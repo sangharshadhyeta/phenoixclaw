@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { listToolRules, markSessionTainted, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { CONSTITUTION_FILE } from "../agent-setup.js";
 import { agentHome } from "../agent.js";
 import { IDENTITY_FILES, writeIdentity } from "../identity.js";
@@ -167,6 +167,62 @@ const IDENTITY_PATHS = new Map<string, string>(
   IDENTITY_FILES.map((name) => [path.join(agentHome(), name), name]),
 );
 
+/**
+ * Folding stderr in is a fixed idiom, not redirection — stripped wherever it
+ * appears, not only at the end, so the `>` in `2>&1` is never mistaken for one
+ * by the write detection below.
+ */
+const STDERR_ANYWHERE = /\s+2>(&1|\/dev\/null)/g;
+
+/**
+ * Shell constructs that change a file rather than read one.
+ *
+ * `write`/`edit` name their target in a parameter; bash does not, so the only
+ * question that can be asked of a command is whether it looks like it writes
+ * *and* mentions something protected. Both halves are needed: refusing every
+ * command that merely names guard.ts would block reading it, and a self-update
+ * routine legitimately reads its own source all day.
+ */
+const WRITES_A_FILE =
+  /(^|[\s;&|(])(sed\s+(-[^\s]*\s+)*-i|tee|cp|mv|rm|dd|truncate|shred|install|ln|patch|chmod|chown)\b|>/;
+
+/**
+ * The protected path a bash command appears to write to, if any.
+ *
+ * Every path-ish token is resolved against the session's cwd and looked up in
+ * the set, which is what lets a bare `guard.ts` be caught when cwd happens to
+ * be server/src/pi, and `server/src/pi/guard.ts` when it is the repo root.
+ *
+ * This over-refuses in one shape: `grep foo guard.ts > out.txt` writes only to
+ * out.txt but mentions a protected path alongside a redirect, and is refused.
+ * That is the deliberate direction to be wrong in — the same command without
+ * the redirect is allowed, and the refusal says which file it was about. The
+ * alternative is parsing shell, which is how a check like this ends up with
+ * holes rather than false positives.
+ */
+function protectedTargetInCommand(
+  command: string,
+  cwd: string | undefined,
+  paths: Iterable<string>,
+): string | undefined {
+  const cleaned = command.replace(STDERR_ANYWHERE, "");
+  if (!WRITES_A_FILE.test(cleaned)) return undefined;
+  const known = paths instanceof Set ? paths : new Set(paths);
+  const base = cwd ?? process.cwd();
+  for (const raw of cleaned.match(/[\w.~/@+-]+/g) ?? []) {
+    if (!raw.includes("/") && !raw.includes(".")) continue;
+    const token = raw.startsWith("~/") ? path.join(process.env.HOME ?? "", raw.slice(2)) : raw;
+    let resolved: string;
+    try {
+      resolved = path.resolve(base, token);
+    } catch {
+      continue;
+    }
+    if (known.has(resolved)) return resolved;
+  }
+  return undefined;
+}
+
 const RULES: Rule[] = [
   {
     name: "pipe-to-shell",
@@ -230,9 +286,13 @@ const RULES: Rule[] = [
      * the world; this limits what a turn can do to the agent, which outlasts
      * the turn and is read back without the envelope around it.
      *
-     * It is not a refusal of the work, only of doing it in the same breath as
-     * reading something untrusted: a later turn that has not read the web can
-     * still record the same conclusion, and a human can always write it.
+     * It is not a refusal of the work, only of where the work may happen. Note
+     * that "a later turn" is not the escape here and never was: the taint is
+     * per *conversation*, not per turn, so every later turn in this session is
+     * refused too — and now that the flag is stored on the session row, that
+     * holds across a restart as well. A conversation that has not read
+     * anything untrusted can still record the same conclusion, and a human can
+     * always write it.
      */
     name: "self-rewrite",
     why: "changing who you are, what you have concluded about yourself, what you know about your user, or what you will do next time, from something you just read",
@@ -370,18 +430,32 @@ export function guardExtension(
    */
   enforceTaint = true,
   /** The session's own working directory, for resolving a relative target path against. */
-  cwd?: string
+  cwd?: string,
+  /**
+   * Whether this conversation had already read something untrusted before this
+   * process started — `sessions.tainted`, read at launch.
+   *
+   * Without it the flag below started false on every relaunch, so a restart, a
+   * stop(), or a role change handed a tainted conversation a clean slate while
+   * the hostile content was still sitting in the history pi replays.
+   */
+  alreadyTainted = false
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
-    // content, and this factory runs once per session.
-    let tainted = false;
+    // content, and this factory runs once per session. Seeded from the row so
+    // it is the conversation's property rather than the process's.
+    let tainted = alreadyTainted;
 
     pi.on("tool_result", (event: any) => {
       const toolName = String(event.toolName ?? "");
       const source = toolName === "bash" ? cmd(event.input ?? {}) : toolName;
       if (!isUntrustedSource(toolName, source) || event.isError) return undefined;
 
+      // The row as well as the closure, so this survives whatever ends the
+      // process. Not awaited — this handler is synchronous by contract, and
+      // the in-memory flag below is already correct for this turn.
+      if (!tainted && portalSessionId) void markSessionTainted(portalSessionId).catch(() => {});
       tainted = true;
       const { open, close } = envelope(randomBytes(8).toString("hex"));
       const content = (Array.isArray(event.content) ? event.content : []).map((part: any) =>
@@ -423,16 +497,37 @@ export function guardExtension(
       // routine legitimately writes files all over its own source tree, and
       // only these few exact paths are off-limits — a basename match would
       // wrongly block any unrelated file that happened to share a name.
-      if (event.toolName === "write" || event.toolName === "edit") {
-        const raw = target(event.input ?? {});
-        const resolved = raw ? path.resolve(cwd ?? process.cwd(), raw) : "";
+      //
+      // `bash` is here because that promise was false without it. The check
+      // read the `path`/`file_path` parameter, which only `write` and `edit`
+      // have, so `sed -i`, `tee`, `cp` and `cat >` reached CONSTITUTION.md,
+      // this file, auth.ts, db.ts, index.ts and package.json untouched — and
+      // the taint rules did not cover the gap, since every one of them needs
+      // the session to have read something untrusted first. The self-update
+      // routine is the case that matters: it runs with the guard on but is
+      // not autonomous, so `bash` is a tool it actually has, and its whole
+      // job is editing the two trees these paths sit in.
+      if (event.toolName === "write" || event.toolName === "edit" || event.toolName === "bash") {
+        // bash names no target parameter, so the command is scanned instead —
+        // otherwise `sed -i` and `cat >` walked straight past a check whose
+        // whole promise is that nothing overrides it.
+        const raw = event.toolName === "bash" ? "" : target(event.input ?? {});
+        const resolved = raw
+          ? path.resolve(cwd ?? process.cwd(), raw)
+          : event.toolName === "bash"
+            ? protectedTargetInCommand(cmd(event.input ?? {}), cwd, [
+                ...PROTECTED_PATHS,
+                ...IDENTITY_PATHS.keys(),
+              ]) ?? ""
+            : "";
         if (resolved && PROTECTED_PATHS.has(resolved)) {
           note("refused", "Protected file — blocked by the constitution");
           return {
             block: true,
             reason:
-              `Refused: this file is protected by the constitution and cannot be changed by any ` +
-              `tool call. Say so plainly rather than trying another way to write it.`,
+              `Refused: "${path.basename(resolved)}" is protected by the constitution and cannot be ` +
+              `changed by any tool call — not with write or edit, and not with a shell command ` +
+              `either. Say so plainly rather than trying another way to write it.`,
           };
         }
         const identityName = resolved ? IDENTITY_PATHS.get(resolved) : undefined;
@@ -442,9 +537,10 @@ export function guardExtension(
             block: true,
             reason:
               `Refused: "${identityName}" is graph-backed now, not a plain file — this on-disk copy is ` +
-              `only a mirror and a direct write to it will not actually change what any session (including ` +
-              `this one, next time) is told. Call identity_update with file="${identityName}" and the ` +
-              `complete new content instead. Use identity_read first if you need to see what's there now.`,
+              `only a mirror, and writing it (with edit, or with a shell command) will not actually change ` +
+              `what any session (including this one, next time) is told. Call identity_update with ` +
+              `file="${identityName}" and the complete new content instead. Use identity_read first if ` +
+              `you need to see what's there now.`,
           };
         }
       }

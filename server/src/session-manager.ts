@@ -277,6 +277,8 @@ class SessionManager extends EventEmitter {
       // cannot change mid-session — nobody is going to start speaking for a
       // turn nobody asked for.
       autonomous,
+      // Carried from the row, not restarted at false. See guard.ts.
+      tainted: session.tainted === 1,
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,

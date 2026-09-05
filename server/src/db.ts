@@ -50,6 +50,17 @@ export interface SessionRow {
   role: "primary" | "colleague" | "guest" | "unknown";
   /** Who last spoke here, surviving a restart that empties the in-memory map. */
   last_person_key: string | null;
+  /**
+   * 1 once this conversation has read something untrusted — see pi/guard.ts.
+   *
+   * On the row rather than only in the guard's own closure, because a taint
+   * belongs to the *conversation*, and the conversation outlives the process.
+   * The flag used to live in a `let` inside guardExtension, which meant a
+   * restart, a `stop()`, or a role change silently cleared it: the session
+   * resumed with the hostile content still in pi's replayed history and every
+   * rule back off.
+   */
+  tainted: number;
 }
 
 export interface EventRow {
@@ -80,6 +91,36 @@ async function tableColumns(conn: DuckDBConnection, table: string): Promise<Set<
   return new Set(reader.getRowObjectsJson().map((r: any) => r.column_name as string));
 }
 
+/**
+ * Add a column to a table that already exists on disk.
+ *
+ * DuckDB refuses a constraint on ALTER TABLE outright —
+ *
+ *     Parser Error: Adding columns with constraints not yet supported
+ *
+ * — so `INTEGER NOT NULL DEFAULT 0` is fine in the CREATE TABLE above and
+ * fatal here, and fatal at *startup*, as an uncaught rejection before the
+ * server ever listens. Every entry in the lists below carried that shape.
+ * None had fired, because each column had only ever been added to a table
+ * being created fresh; the first database old enough to actually need one of
+ * these migrations would have failed to open at all.
+ *
+ * So the constraint is dropped for the ALTER and the intent is preserved by
+ * backfilling: existing rows get the default they would have had, and the
+ * column is left nullable, which no caller can tell apart from NOT NULL once
+ * there are no nulls in it. New databases still get the real constraint from
+ * CREATE TABLE.
+ */
+async function addColumn(conn: DuckDBConnection, table: string, col: string, ddl: string): Promise<void> {
+  const wasNotNull = /\bNOT\s+NULL\b/i.test(ddl);
+  const relaxed = ddl.replace(/\bNOT\s+NULL\b/i, " ").replace(/\s+/g, " ").trim();
+  await conn.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${relaxed}`);
+  const fallback = /\bDEFAULT\s+(.+)$/i.exec(relaxed)?.[1];
+  if (wasNotNull && fallback) {
+    await conn.run(`UPDATE ${table} SET ${col} = ${fallback} WHERE ${col} IS NULL`);
+  }
+}
+
 async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   await conn.run("CREATE SEQUENCE IF NOT EXISTS events_seq START 1");
   await conn.run("CREATE SEQUENCE IF NOT EXISTS notes_id_seq START 1");
@@ -105,7 +146,8 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
       channel_key TEXT,
       routine_slug TEXT,
       role TEXT NOT NULL DEFAULT 'primary',
-      last_person_key TEXT
+      last_person_key TEXT,
+      tainted INTEGER NOT NULL DEFAULT 0
     )
   `);
 
@@ -322,8 +364,9 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["channel_slug", "TEXT"],
     ["channel_key", "TEXT"],
     ["routine_slug", "TEXT"],
+    ["tainted", "INTEGER NOT NULL DEFAULT 0"],
   ] as const) {
-    if (!sessionCols.has(col)) await conn.run(`ALTER TABLE sessions ADD COLUMN ${col} ${ddl}`);
+    if (!sessionCols.has(col)) await addColumn(conn, "sessions", col, ddl);
   }
 
   const channelCols = await tableColumns(conn, "channels");
@@ -333,7 +376,7 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["relay_progress", "INTEGER NOT NULL DEFAULT 1"],
     ["relay_tools", "INTEGER NOT NULL DEFAULT 1"],
   ] as const) {
-    if (!channelCols.has(col)) await conn.run(`ALTER TABLE channels ADD COLUMN ${col} ${ddl}`);
+    if (!channelCols.has(col)) await addColumn(conn, "channels", col, ddl);
   }
 
   const routineCols = await tableColumns(conn, "routines");
@@ -350,7 +393,7 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     // the ceiling was designed around.
     ["workspace", "TEXT"],
   ] as const) {
-    if (!routineCols.has(col)) await conn.run(`ALTER TABLE routines ADD COLUMN ${col} ${ddl}`);
+    if (!routineCols.has(col)) await addColumn(conn, "routines", col, ddl);
   }
   // Once, at the moment the column first appears — not on every boot. A
   // deployment that later turns this off has made a choice, and re-asserting
@@ -360,16 +403,16 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   }
 
   const ruleCols = await tableColumns(conn, "tool_rules");
-  if (!ruleCols.has("person_key")) await conn.run("ALTER TABLE tool_rules ADD COLUMN person_key TEXT");
+  if (!ruleCols.has("person_key")) await addColumn(conn, "tool_rules", "person_key", "TEXT");
 
   const questionCols = await tableColumns(conn, "questions");
   for (const col of ["action_tool", "action"]) {
-    if (!questionCols.has(col)) await conn.run(`ALTER TABLE questions ADD COLUMN ${col} TEXT`);
+    if (!questionCols.has(col)) await addColumn(conn, "questions", col, "TEXT");
   }
 
   const noteCols = await tableColumns(conn, "notes");
   if (!noteCols.has("pending_delivery")) {
-    await conn.run("ALTER TABLE notes ADD COLUMN pending_delivery INTEGER NOT NULL DEFAULT 0");
+    await addColumn(conn, "notes", "pending_delivery", "INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -535,6 +578,26 @@ async function deleteSessionRows(conn: DuckDBConnection, ids: string[]): Promise
 export async function deleteSession(id: string): Promise<void> {
   const conn = await getDb();
   await deleteSessionRows(conn, [id]);
+}
+
+/**
+ * Mark a conversation as having read something untrusted.
+ *
+ * Write-only and one-way: nothing here clears it. A taint is a fact about what
+ * this conversation has already seen, and the content stays in its history —
+ * so "it has been a while" is not a reason for the rules to come back off.
+ * Clearing one is a deliberate act for a person to take, on a conversation
+ * they have looked at; there is deliberately no code path that does it
+ * quietly.
+ *
+ * Called from the guard's tool_result handler, which is not awaited, so this
+ * is fire-and-forget by contract. A lost write fails safe in the wrong
+ * direction — the in-memory flag is still set for the life of the process, and
+ * the row catches up on the next tainting read.
+ */
+export async function markSessionTainted(id: string): Promise<void> {
+  const conn = await getDb();
+  await conn.run("UPDATE sessions SET tainted = 1 WHERE id = $id", { id });
 }
 
 export async function appendEvent(sessionId: string, type: string, payload: unknown): Promise<EventRow> {

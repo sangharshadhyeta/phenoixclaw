@@ -10,6 +10,10 @@
  * with nobody watching. Pinned sessions went the same way, and every deleted
  * session left its events and tasks behind.
  *
+ * It also pins the ALTER TABLE behaviour the column migrations depend on —
+ * see the bottom of the file. @duckdb/node-api's pin is documented as free to
+ * move, and that is exactly the kind of change that would break it silently.
+ *
  * Needs a database, so it runs against a throwaway DATA_DIR:
  *
  *     npm run test:cleanup
@@ -90,6 +94,41 @@ for (const table of ["events", "tasks", "notes", "grants"]) {
 await conn.run("UPDATE routines SET updated_at = now() - INTERVAL 400 DAY");
 await pruneOldRecords(1);
 ok("a one-day cutoff still spares every routine", JSON.stringify(await slugs()) === JSON.stringify(seeded));
+
+// --- what ALTER TABLE will and will not accept -------------------------------
+// DuckDB rejects a constraint on ALTER TABLE ADD COLUMN, and the failure lands
+// at startup as an uncaught rejection before the server ever listens. Every
+// column migration carried `NOT NULL DEFAULT x` and none had ever fired,
+// because each column had only been added to a table being created fresh — the
+// first database old enough to need one would have failed to open. addColumn()
+// drops the constraint and backfills instead; these assertions are what tell us
+// if a DuckDB upgrade makes that unnecessary, or changes it again.
+await conn.run("CREATE TABLE alter_probe (id TEXT)");
+await conn.run("INSERT INTO alter_probe VALUES ('a')");
+
+let rejected = false;
+try {
+  await conn.run("ALTER TABLE alter_probe ADD COLUMN n INTEGER NOT NULL DEFAULT 0");
+} catch (e) {
+  rejected = /constraint/i.test(String(e?.message ?? e));
+}
+ok("DuckDB still rejects ADD COLUMN with a constraint", rejected);
+
+await conn.run("ALTER TABLE alter_probe ADD COLUMN m INTEGER DEFAULT 0");
+ok("without the constraint it is accepted",
+   (await conn.runAndReadAll("SELECT m FROM alter_probe")).getRowObjectsJson()[0].m === 0);
+
+// The backfill the helper does, so an existing row is never left null.
+await conn.run("ALTER TABLE alter_probe ADD COLUMN k INTEGER");
+await conn.run("UPDATE alter_probe SET k = 0 WHERE k IS NULL");
+ok("a backfilled column has no nulls",
+   (await conn.runAndReadAll("SELECT 1 FROM alter_probe WHERE k IS NULL")).getRowObjectsJson().length === 0);
+
+// And the column the taint actually needs is present and defaulted.
+ok("sessions.tainted exists and defaults to 0",
+   (await conn.runAndReadAll(
+     "SELECT count(*) AS n FROM information_schema.columns WHERE table_name = 'sessions' AND column_name = 'tainted'",
+   )).getRowObjectsJson()[0].n == 1);
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

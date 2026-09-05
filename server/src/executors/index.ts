@@ -33,6 +33,12 @@ export interface LaunchOptions {
    * CONSTITUTION.md in full. See pi/constitution.ts.
    */
   autonomous?: boolean;
+  /**
+   * True when this conversation has already read something untrusted, from
+   * `sessions.tainted`. The guard's own flag is per process; this is what
+   * carries the taint across a restart.
+   */
+  tainted?: boolean;
 }
 
 export interface Executor {
@@ -83,6 +89,7 @@ export class HostExecutor implements Executor {
       whoNow: opts.whoNow,
       enforceTaint: opts.enforceTaint,
       autonomous: opts.autonomous,
+      tainted: opts.tainted,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,
