@@ -58,14 +58,50 @@ they would outside a container.
 ## How it works
 
 ```
-Browser ──SSE (replay + tail)──▶ portal ──JSONL over stdio──▶ pi --mode rpc
+Browser ──SSE (replay + tail)──▶ portal ──▶ pi (SDK, in process)
                                     │
-                                    └─▶ SQLite: sessions + full event log
+                                    └─▶ DuckDB: sessions + full event log + knowledge graph
 ```
 
 The browser never drives the agent. Submitting a prompt returns as soon as pi *accepts* it;
 the run continues server-side. The client reconnects with the last event id it saw
 (`?since=`), so nothing is lost and nothing is duplicated.
+
+## It doesn't stop when you leave
+
+Two schedules fire on quiet rather than on a clock, so the agent keeps working when nothing
+else is going on and yields the moment you show up.
+
+- **Learning loop** (`@continuous`) — orients from its own `SELF_CONCEPT.md`, picks one thread
+  worth pursuing, plans it, works a step, and *replans the rest from what it actually found*
+  rather than from what it guessed. Its plan is visible in the session, and it never finishes:
+  what one iteration leaves undone the next picks up.
+- **Dream Cycle** (`@idle`) — the occasional deep pass. Digests what has happened, folds it into
+  the knowledge graph, reflects across it, and rewrites `SELF_CONCEPT.md` and `INNER_LIFE.md`.
+  Which is what steers the loop, so the two feed each other.
+
+Everything either of them does is mirrored into the agent's own conversation as it happens —
+you watch it think, and typing interrupts it and takes over. Its own working context stays
+separate, so its inner monologue never crowds out yours.
+
+## What bounds it
+
+`CONSTITUTION.md` used to be prose the model was shown. It is now enforced: a turn nobody asked
+for is held to an allowlist — read, search, its own memory and identity, its own plan, and asking
+you. No shell, no editing files, no scheduling. Refusals cite the clause that stopped them, and
+every autonomous call is recorded in **Audit**, not just the refused ones.
+
+Reading the open web taints a turn, which closes `identity_update`, `skill_write` and
+`remember_user` for the rest of it. So the agent can learn from what it reads and cannot let what
+it reads rewrite who it is.
+
+## What it remembers
+
+A knowledge graph in DuckDB, with hybrid keyword + embedding search. Re-observing something
+raises its confidence rather than overwriting it. Its identity documents live there too, so a
+task session working in your repo knows who it is — which a file in a home directory could never
+tell it. Facts scoped to a project stay there; what it knows about you and its own skills travel
+everywhere.
 
 ## Execution modes
 
@@ -127,6 +163,25 @@ left spinning forever; sending another message resumes the conversation.
   run stops.
 - Two sessions pointed at the same workspace in `host` mode will edit the same working tree.
   Use `container` mode or separate workspaces if you want to run those in parallel.
+- The constitution's allowlist is enforced under the `host` executor only. `container` speaks
+  RPC and never loads these extensions.
+- Untrusted-source detection is a list of tool names. A pi package installed through **Packages**
+  registers whatever names it likes, so anything that reads the outside world under a name the
+  guard has not heard of must be named in `UNTRUSTED_TOOLS` — otherwise its output arrives
+  unwrapped and the injection guard is off for exactly the content it exists for.
+- The loop is only as good as what it orients from. Until you run the setup wizard,
+  `SELF_CONCEPT.md` is empty and it is reasoning from nothing.
+
+## Tests
+
+```bash
+npm test             # graph, pruner and web-reader contracts — 42 assertions
+```
+
+Ported from BirdClaw's own suite. They use a real DuckDB file on purpose: the three bugs they
+caught — a node that froze once it had an edge, a graph extension crashing the process from a
+background thread, and a write-ahead log that bricked the database on restart — are all invisible
+to `tsc` and all survive a mock.
 
 ## Documentation
 

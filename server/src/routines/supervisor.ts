@@ -227,8 +227,18 @@ class RoutineSupervisor {
 
     try {
       const session = await this.sessionFor(row);
+      // Bookends, so the mirrored stream in the main conversation reads as
+      // "it started this, then it did these things, then it finished" rather
+      // than as loose output appearing from nowhere.
+      await sessions.note(session.id, "portal_routine", { routine: row.name, slug: row.slug, phase: "start" });
       const output = await sessions.ask(session.id, await prompt(row, trigger), {
         timeoutMs: RUN_TIMEOUT_MS,
+      });
+      await sessions.note(session.id, "portal_routine", {
+        routine: row.name,
+        slug: row.slug,
+        phase: "end",
+        summary: (output ?? "").slice(0, 400),
       });
       await this.finish(row.id, "ok", output, Date.now() - started);
     } catch (e) {

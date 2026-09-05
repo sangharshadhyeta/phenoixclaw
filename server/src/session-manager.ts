@@ -5,6 +5,7 @@ import path from "node:path";
 import type { PiClient } from "./pi/types.js";
 import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
 import { buildExecutor, type Executor, type ExecutorKind } from "./executors/index.js";
+import { isMirrorable, mirror } from "./mirror.js";
 import {
   appendEvent,
   getSession,
@@ -154,6 +155,7 @@ class SessionManager extends EventEmitter {
       .then(async () => {
         const row = await appendEvent(sessionId, type, payload);
         this.emit(`session:${sessionId}`, row);
+        await this.mirrorToMain(sessionId, type, payload);
       })
       // A failed append must not break the chain: the next event would then
       // never be written at all, losing the rest of the conversation rather
@@ -164,6 +166,37 @@ class SessionManager extends EventEmitter {
 
     this.appends.set(sessionId, next);
     return next;
+  }
+
+  /**
+   * Routine slugs by session, so a mirrored line can say which routine it came
+   * from. Populated at launch; a session with no entry is not a routine and is
+   * not mirrored.
+   */
+  private routineOf = new Map<string, string>();
+
+  /**
+   * Put a routine's milestones into the agent's main conversation.
+   *
+   * On the same chain as the append above, so the mirror keeps the order the
+   * original had. Failures are swallowed: not being able to show something is
+   * not a reason to stop recording it, and the source session's own log is
+   * still the authoritative record.
+   */
+  private async mirrorToMain(sessionId: string, type: string, payload: unknown): Promise<void> {
+    const slug = this.routineOf.get(sessionId);
+    if (!slug || !isMirrorable(type)) return;
+    try {
+      const mirrored = await mirror(EXECUTOR_KIND, { slug, sessionId }, type, payload);
+      if (mirrored) this.emit(`session:${mirrored.sessionId}`, mirrored.row);
+    } catch {
+      // See above.
+    }
+  }
+
+  /** Record a portal-generated event on a session — used for run bookends. */
+  async note(sessionId: string, type: string, payload: unknown): Promise<void> {
+    await this.record(sessionId, type, payload);
   }
 
   private async ensureClient(sessionId: string): Promise<PiClient> {
@@ -182,6 +215,11 @@ class SessionManager extends EventEmitter {
     const settings = await getSettings();
     const autonomous =
       session.kind === "routine" && (await routineAutonomous(session.routine_slug));
+    // Remembered here rather than looked up per event: record() is on the hot
+    // path for every streamed delta and must not do a database read.
+    if (session.kind === "routine" && session.routine_slug) {
+      this.routineOf.set(sessionId, session.routine_slug);
+    }
     const client = await executor.launch({
       sessionId,
       workspacePath: session.workspace,

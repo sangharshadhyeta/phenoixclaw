@@ -4,7 +4,9 @@ export type Item =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; thinking: string; done: boolean }
   | { kind: "tool"; id: string; name: string; status: "running" | "done" | "error"; detail?: string }
-  | { kind: "notice"; id: string; text: string; tone: "info" | "error" };
+  | { kind: "notice"; id: string; text: string; tone: "info" | "error" }
+  /** Something the agent did on its own initiative, mirrored in from a routine. */
+  | { kind: "self"; id: string; source: string; text: string; phase?: "start" | "end" };
 
 /**
  * Fold pi's event stream into renderable turns.
@@ -28,6 +30,42 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
   for (const ev of events) {
     const p = ev.payload ?? {};
     switch (ev.type) {
+      /**
+       * A routine's milestone, shown in the agent's own conversation.
+       *
+       * Rendered as its own kind rather than folded into the assistant turns
+       * around it: this was not said to the reader, and a transcript that
+       * blurs "what it told you" into "what it was doing on its own" is
+       * exactly the confusion the mirror exists to avoid.
+       */
+      case "mirrored": {
+        closeCurrent();
+        const inner = p.payload ?? {};
+        const source = String(p.source ?? "routine");
+        if (p.type === "portal_routine") {
+          const phase = inner.phase === "end" ? "end" : "start";
+          items.push({
+            kind: "self",
+            id: `m${ev.seq}`,
+            source: String(inner.routine ?? source),
+            phase,
+            text: phase === "end" ? String(inner.summary ?? "") : "",
+          });
+          break;
+        }
+        if (p.type === "tool_execution_start") {
+          items.push({
+            kind: "self",
+            id: `m${ev.seq}`,
+            source,
+            text: `${String(inner.toolName ?? inner.name ?? "tool")}${
+              summarizeToolInput(inner) ? ` — ${summarizeToolInput(inner)}` : ""
+            }`,
+          });
+        }
+        break;
+      }
+
       case "portal_prompt":
         closeCurrent();
         items.push({ kind: "user", id: `u${ev.seq}`, text: String(p.message ?? "") });

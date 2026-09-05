@@ -244,6 +244,26 @@ export function Chat({
               </div>
             );
           }
+          if (item.kind === "self") {
+            /**
+             * The agent working on its own initiative, mirrored in from a
+             * routine. Set to one side and dimmed: it is here so nothing it
+             * does is hidden, not because it was said to you — and a reader
+             * should never have to work out which of the two they are looking
+             * at. Type into the box and it stops and answers you.
+             */
+            return (
+              <div
+                key={item.id}
+                className="flex gap-2 border-l-2 border-line py-0.5 pl-3 text-[11px] text-fg-faint"
+              >
+                <span className="shrink-0 font-medium text-fg-subtle">
+                  {item.phase === "start" ? "▸" : item.phase === "end" ? "■" : "·"} {item.source}
+                </span>
+                {item.text && <span className="min-w-0 truncate">{item.text}</span>}
+              </div>
+            );
+          }
           return (
             <div
               key={item.id}
