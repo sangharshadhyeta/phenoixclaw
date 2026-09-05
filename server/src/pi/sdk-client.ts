@@ -65,15 +65,30 @@ const SHARED_FILES: IdentityFile[] = ["SOUL.md", "INNER_LIFE.md"];
 const filesFor = (role?: string) => (!role || role === "primary" ? CONTEXT_FILES : SHARED_FILES);
 
 /**
- * Handed to pi's agentsFilesOverride as {path, content} pairs — pi never
- * re-reads the path, it's a label only, so a synthetic agentHome()-relative
- * path here is fine even though the content actually came from the graph.
+ * Handed to pi's agentsFilesOverride as {path, content} pairs.
+ *
+ * pi never re-reads the path — it is a label only. **The model does.** These
+ * were labelled `identity/SOUL.md`, which is a relative path, and a session
+ * whose cwd is a workspace resolved it against that workspace and tried to
+ * read it:
+ *
+ *     read identity/INNER_LIFE.md
+ *     → ENOENT: no such file or directory
+ *
+ * and then spent seven more calls hunting for a directory that has never
+ * existed anywhere, because the content is in the graph and the only thing on
+ * disk is a mirror in agentHome(). A task session has no `identity_read` to
+ * fall back on either, so there was no recovery — the run died of confusion
+ * over a filename the portal invented.
+ *
+ * The label now says what it is and cannot be resolved as a path. The content
+ * is already in the prompt; nothing needs to go looking for it.
  */
 async function extraContextFiles(role?: string): Promise<{ path: string; content: string }[]> {
   const out: { path: string; content: string }[] = [];
   for (const name of filesFor(role)) {
     const content = await readIdentity(name);
-    if (content) out.push({ path: path.join("identity", name), content });
+    if (content) out.push({ path: `<your ${name.replace(/\.md$/, "").toLowerCase().replace(/_/g, " ")}>`, content });
   }
   return out;
 }
@@ -106,8 +121,28 @@ async function framing(role?: string): Promise<string> {
   const selfConcept = await selfConceptExcerpt();
   if (!present.length && !selfConcept) return "";
 
+  /**
+   * What follows is the agent's own, and is *already here*.
+   *
+   * This used to list filenames — "SOUL.md, PrimaryUser.md, MEMORY.md,
+   * INNER_LIFE.md are yours" — which was true when they were files and became
+   * a trap when they moved into the graph. Naming a file to a model that has
+   * `read` is an instruction to read it, and the identity files are the one
+   * thing in the prompt that cannot be read: the graph is the source, the
+   * agentHome() copies are a mirror, and a session working in a workspace can
+   * reach neither by that name.
+   *
+   * So the anchor no longer names files. It says the content below is the
+   * agent's own and is already present, which is the only thing the model
+   * actually needs to know — and removes the reason to go looking.
+   */
   const lines = present.length
-    ? [`${present.join(", ")} are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`]
+    ? [
+        "What follows is you — your own identity and memory, not reference material about " +
+          "someone else, and not files on disk. It is already here in full: there is nothing " +
+          "to open, and no path to look for. Each section opens with a block saying what it " +
+          "is for; follow it.",
+      ]
     : [];
 
   // Deep identity injection for core files

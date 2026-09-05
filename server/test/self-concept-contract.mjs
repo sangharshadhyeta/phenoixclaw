@@ -104,5 +104,31 @@ const after = await selfConceptExcerpt();
 ok("a real conclusion does appear", after.includes("steadier at review"));
 ok("and the template still does not", !after.includes("section headers"));
 
+// --- identity is never presented as a file --------------------------------
+// A task session was told its identity lived at `identity/INNER_LIFE.md`. That
+// is a relative path, so it resolved against the workspace, and the model did
+// the obvious thing:
+//
+//     read identity/INNER_LIFE.md  →  ENOENT
+//
+// then spent seven more calls hunting a directory that has never existed. The
+// content is in the graph; the agentHome() copies are a mirror; a task session
+// has no identity_read to recover with. The label was the whole bug.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/pi/sdk-client.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function extraContextFiles"), src.indexOf("async function framing"));
+
+  ok("context files are not labelled with a resolvable path",
+     !/path\.join\("identity"/.test(fn));
+  ok("the label is self-describing instead",
+     /`<your \$\{name/.test(fn));
+
+  const framing = src.slice(src.indexOf("async function framing"), src.indexOf("export function builtinSkillsDir"));
+  ok("the framing anchor no longer lists filenames", !/\$\{present\.join\(", "\)\} are yours/.test(framing));
+  ok("and says the content is already present, with nothing to open",
+     /nothing\s*" \+\s*"to open|nothing to open/.test(framing) || /no path to look for/.test(framing));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
