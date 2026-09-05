@@ -104,6 +104,10 @@ travel to every conversation (`filesFor()` in `pi/sdk-client.ts`).
    (pipe-to-shell, write-to-path, upload, read-credentials, publish, persist) then refuse. Rules are
    tainted-only on purpose — ordinary coding sessions never meet them. A routine can be exempted,
    which still logs to `audit` as `allowed-by-exemption`.
+   Untrusted-source detection is a **name list** (`isUntrustedSource`), not provenance — a pi package
+   installed through the Packages tab registers whatever tool names it likes, so anything that reads
+   the outside world under an unknown name must be declared in `UNTRUSTED_TOOLS` or it silently
+   bypasses the guard.
 2. **People / roles.** primary / colleague / guest / blocked, identified by platform id scoped by
    channel (`telegram:100200300`), never by display name. Colleague permissions are an **allowlist**
    (`read`, `grep`, `find`, `ls`, `ask_primary` + explicit `tool_rules`), so any tool added later

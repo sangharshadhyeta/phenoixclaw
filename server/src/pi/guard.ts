@@ -46,6 +46,50 @@ import { autonomousDenial } from "./constitution.js";
 const UNTRUSTED_COMMAND =
   /\b(himalaya|mutt|neomutt|notmuch|offlineimap|mbsync|curl|wget|lynx|w3m|web_search|web_fetch)\b/;
 
+/**
+ * Tool names from the pi web extensions people actually install, and a hook
+ * for the ones they will install next.
+ *
+ * This detection keys off a hardcoded list of names, which is fine while the
+ * portal writes every tool itself and a hole the moment it does not. The
+ * Packages tab installs arbitrary pi packages, and a pi extension registers
+ * whatever tool names it likes: `pi-web-tools` fetches pages as
+ * `fetch_content` and `get_search_content`, `@xl0/pi-lovely-web` adds
+ * `web_image` alongside the two names that do match. Install either and web
+ * content would arrive unwrapped and leave the session untainted — the
+ * injection guard silently off for exactly the content it exists for.
+ *
+ * Naming them here covers what exists today. `UNTRUSTED_TOOLS` covers what
+ * comes after: a comma-separated list an operator sets when installing
+ * anything else that reads the outside world. It is additive and matched on
+ * the whole tool name, so it cannot switch anything off.
+ */
+const KNOWN_UNTRUSTED_TOOLS = new Set([
+  // pi-web-tools
+  "fetch_content",
+  "get_search_content",
+  "code_search",
+  // @xl0/pi-lovely-web
+  "web_image",
+  "http_get",
+]);
+
+const CONFIGURED_UNTRUSTED_TOOLS = new Set(
+  (process.env.UNTRUSTED_TOOLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+/** True when this tool's output is somebody else's words. */
+function isUntrustedSource(toolName: string, source: string): boolean {
+  if (UNTRUSTED_COMMAND.test(source)) return true;
+  // MCP tools reach servers the portal does not control, so their output is
+  // treated the same way as mail.
+  if (/^mcp(_|$)/.test(toolName)) return true;
+  return KNOWN_UNTRUSTED_TOOLS.has(toolName) || CONFIGURED_UNTRUSTED_TOOLS.has(toolName);
+}
+
 interface Rule {
   name: string;
   why: string;
@@ -326,12 +370,9 @@ export function guardExtension(
     let tainted = false;
 
     pi.on("tool_result", (event: any) => {
-      const source =
-        event.toolName === "bash" ? cmd(event.input ?? {}) : String(event.toolName ?? "");
-      // MCP tools reach servers the portal does not control, so their output is
-      // treated the same way as mail: someone else's words.
-      const untrusted = UNTRUSTED_COMMAND.test(source) || /^mcp(_|$)/.test(source);
-      if (!untrusted || event.isError) return undefined;
+      const toolName = String(event.toolName ?? "");
+      const source = toolName === "bash" ? cmd(event.input ?? {}) : toolName;
+      if (!isUntrustedSource(toolName, source) || event.isError) return undefined;
 
       tainted = true;
       const { open, close } = envelope(randomBytes(8).toString("hex"));
