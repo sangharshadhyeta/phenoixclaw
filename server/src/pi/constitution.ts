@@ -64,9 +64,12 @@ export const AUTONOMOUS_TOOLS = new Set([
   "graph_episode",
   "workspace_note",
   "memory_digest",
-  // Its own identity.
+  // Its own identity, and what it knows about the person it works for. Both
+  // are behind the `self-rewrite` taint rule, so a turn that has read the web
+  // cannot write either.
   "identity_read",
   "identity_update",
+  "remember_user",
   // Its own housekeeping.
   "dream_progress",
   "routine_cleanup",

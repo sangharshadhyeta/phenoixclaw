@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { keywordPrune } from "../prune.js";
+import { recallPage, rememberPage } from "../page-store.js";
 
 /**
  * Reading the open web — search and fetch, ported from BirdClaw's
@@ -67,6 +68,17 @@ export function htmlToText(html: string): string {
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
+/**
+ * What to prune the page against: what the caller said they wanted, or failing
+ * that the URL's last segment — a slug is usually a description of the page,
+ * which is the fallback BirdClaw uses too.
+ */
+const goalFor = (p: any, url: URL): string =>
+  String(p.about ?? "").trim() ||
+  decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() ?? "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\.\w+$/, "");
+
 /** An ExtensionFactory — see pi's InlineExtension. */
 export function webTools() {
   return (pi: any): void => {
@@ -97,6 +109,18 @@ export function webTools() {
           return text(`Refusing ${parsed.protocol} — web_fetch reads http and https only.`);
         }
 
+        /**
+         * A page read recently is served from the store rather than fetched
+         * again — see page-store.ts. It still comes back through this tool,
+         * so the guard still marks it untrusted and still taints the session:
+         * a cached page is somebody else's words exactly as much as a fresh
+         * one, and the cache must not become the way round that.
+         */
+        const cached = await recallPage(parsed.toString());
+        if (cached) {
+          return text(`${parsed.toString()}\n\n${keywordPrune(cached, goalFor(p, parsed), FETCH_CHAR_CAP)}`);
+        }
+
         let res: Response;
         try {
           res = await fetch(parsed.toString(), {
@@ -118,15 +142,11 @@ export function webTools() {
         const plain = /html/i.test(contentType) ? htmlToText(body) : body;
         if (!plain.trim()) return text(`${parsed.hostname} returned nothing readable.`);
 
-        // The URL's last segment as a fallback goal, the way BirdClaw does it:
-        // a slug is usually a description of the page.
-        const goal =
-          String(p.about ?? "").trim() ||
-          decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() ?? "")
-            .replace(/[-_]+/g, " ")
-            .replace(/\.\w+$/, "");
+        // Stored before pruning, so a later recall with a different question
+        // gets the whole page rather than the part the first caller wanted.
+        await rememberPage(parsed.toString(), plain);
 
-        const pruned = keywordPrune(plain, goal, FETCH_CHAR_CAP);
+        const pruned = keywordPrune(plain, goalFor(p, parsed), FETCH_CHAR_CAP);
         return text(`${parsed.toString()}\n\n${pruned}`);
       },
     });

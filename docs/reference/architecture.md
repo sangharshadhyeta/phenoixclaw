@@ -106,7 +106,7 @@ A second DuckDB file, `graph.duckdb` — deliberately separate from
 
 | Table | Holds |
 | --- | --- |
-| `nodes` | Typed facts (`user`, `project`, `concept`, `fact`, `skill`, plus a protected `anchor` type) — name, summary, a confidence score, and an embedding |
+| `nodes` | Typed facts (`user`, `project`, `concept`, `fact`, `skill`, plus a protected `anchor` type), and the memory extras — `episode`, `workspace_note`, `tool_cache`, `page`. Name, summary, confidence, an embedding, an optional `category` and a TTL |
 | `edges` | Directed, labelled relations between nodes, with a weight that strengthens on repetition |
 
 **Corroboration, not overwrite.** Re-observing something the graph already
@@ -136,6 +136,21 @@ relations?)` writes a node and optionally links it, and `graph_recall(query,
 limit?)` runs the hybrid search and expands each hit's neighbors one hop. Both
 are registered unconditionally — every session, not just routines — because
 remembering a durable fact is an ordinary-conversation thing.
+
+Two of those types are caches rather than beliefs. `tool_cache` holds
+memoized `read`/`ls` results keyed by their arguments, and `page` holds the
+text of a fetched URL for a day — so a loop that reads the web every few
+minutes stops re-fetching what it read an hour ago, and what it read stays
+searchable afterwards. A cached page is still served through `web_fetch`, so
+it is still marked untrusted: the cache is not a way round the guard.
+
+`user` nodes carry a `category` — `facts`, `preferences`, `interests` or
+`behaviors` — and the agent writes them with `remember_user` as you reveal
+things. A compact excerpt goes into the system prompt, behaviours first and
+with reserved room, since an interaction rule that quietly drops out once the
+agent has learned a dozen other things is worse than one never recorded. It is
+private to the primary user's own conversations, like `PrimaryUser.md`, and
+sits behind the `self-rewrite` taint rule so a page cannot write it.
 
 `memory_digest` is a third tool, registered only for the self-reflection
 routine's session (see [Dream Cycle](/guide/routines#dream-cycle)): it reads

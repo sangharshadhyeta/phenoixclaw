@@ -13,10 +13,12 @@ import { graphTools } from "./graph-tools.js";
 import { identityTools } from "./identity-tools.js";
 import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
+import { userTools } from "./user-tools.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
 import { readIdentity, type IdentityFile } from "../identity.js";
+import { userKnowledgeExcerpt } from "../user-knowledge.js";
 import { agentHome } from "../agent.js";
 
 function asArray(v: any): any[] {
@@ -89,6 +91,15 @@ async function framing(role?: string): Promise<string> {
   if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
   const selfConcept = contents[names.indexOf("SELF_CONCEPT.md")];
   if (selfConcept) lines.push(`\n# YOUR SELF-CONCEPT\n${selfConcept}`);
+
+  // Notes about the primary user — private to their own conversations, the
+  // same rule PrimaryUser.md and MEMORY.md follow above. `filesFor` already
+  // encodes that boundary, so it decides this too rather than a second test
+  // of the role that could drift away from the first.
+  if (filesFor(role) === CONTEXT_FILES) {
+    const known = await userKnowledgeExcerpt();
+    if (known) lines.push(`\n# WHAT YOU KNOW ABOUT THEM\n${known}`);
+  }
 
   return lines.join("\n");
 }
@@ -213,6 +224,11 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // the guard treats what comes back the same way for all of them.
         { name: "web", factory: webTools() },
       ];
+      // Notes about the primary user, so only their own conversations may
+      // write them — see user-tools.ts.
+      if (!opts.role || opts.role === "primary") {
+        factories.push({ name: "user-knowledge", factory: userTools() });
+      }
       // A file listing of the agent's own home is noise: agent and routine
       // sessions live there and are not working on it. A task session is
       // pointed at a repository, which is exactly what the snapshot is for.

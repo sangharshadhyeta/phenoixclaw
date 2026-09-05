@@ -235,8 +235,9 @@ const RULES: Rule[] = [
      * still record the same conclusion, and a human can always write it.
      */
     name: "self-rewrite",
-    why: "changing who you are, or what you will do next time, from something you just read",
-    hit: (tool) => tool === "identity_update" || tool === "skill_write",
+    why: "changing who you are, what you know about your user, or what you will do next time, from something you just read",
+    hit: (tool) =>
+      tool === "identity_update" || tool === "skill_write" || tool === "remember_user",
   },
 ];
 
