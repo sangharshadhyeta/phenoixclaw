@@ -563,6 +563,15 @@ nothing says so.**
 The graceful degradation is deliberate and right; the *silence* is the problem. A
 one-line warning on the first failure would have made this visible immediately.
 
+**Resolved.** The embedding server now runs on `:8100` (768 dimensions, matching
+`EMBEDDING_DIM`) and the portal is launched with `EMBEDDING_BASE_URL` set explicitly. The
+boot log names any dependency that is missing rather than degrading in silence.
+
+Turning it on also exposed a second half nobody had asked about: `upsertNode` embeds on
+write, so all 51 existing nodes had no vector and were invisible to semantic search
+regardless of the server being up. `backfillEmbeddings()` catches them up in the
+background at boot — 49 embedded on the first run.
+
 ### M3 — `upsertNode` re-embeds unchanged summaries
 
 `server/src/graph.ts:319`:

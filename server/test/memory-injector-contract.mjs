@@ -124,5 +124,34 @@ const inject = mount(memoryInjector(CWD, "primary"));
   ok("a failed recall does not throw", threw === false);
 }
 
+// --- memory about the person is not fenced to a directory -----------------
+// The project fence is right for a note about a repo and wrong for a fact
+// about a person. Asked "what are my plans for Thursday" one directory across
+// from where it was said, the agent found nothing, went hunting the filesystem
+// — ls, ls .., grep, ls /workspaces/ — and answered that it did not know.
+{
+  const { upsertNode: up, upsertEdge: link, personalRecall, scopedRecall } = await import(dist("graph.js"));
+
+  await up("conversation:2026-09-06:elsewhere", "episode",
+           "when: 2026-09-06 09:00 | they asked: I have a meeting on Thursday", 0.3);
+  await link("conversation:2026-09-06:elsewhere", "scoped_to", "/workspaces/one");
+
+  await up("note about repo one", "workspace_note", "This repo builds with vitest.", 0.5);
+  await link("note about repo one", "scoped_to", "/workspaces/one");
+
+  const here = await personalRecall("meeting on Thursday", "/workspaces/one", 10);
+  const across = await personalRecall("meeting on Thursday", "/workspaces/two", 10);
+  ok("a conversation is recalled where it happened", here.some((r) => r.name.includes("elsewhere")));
+  ok("and from a different workspace too", across.some((r) => r.name.includes("elsewhere")));
+
+  const fenced = await scopedRecall("meeting on Thursday", "/workspaces/two", 10);
+  ok("the old project-fenced recall could not see it", !fenced.some((r) => r.name.includes("elsewhere")));
+
+  const notes = await personalRecall("vitest build", "/workspaces/two", 10);
+  ok("a project note stays fenced to its project", !notes.some((r) => r.type === "workspace_note"));
+  const own = await personalRecall("vitest build", "/workspaces/one", 10);
+  ok("and is still found in its own project", own.some((r) => r.type === "workspace_note"));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

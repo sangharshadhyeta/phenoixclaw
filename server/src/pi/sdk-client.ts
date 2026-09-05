@@ -68,36 +68,7 @@ const SHARED_FILES: IdentityFile[] = ["SOUL.md", "INNER_LIFE.md"];
 const filesFor = (role?: string) => (!role || role === "primary" ? CONTEXT_FILES : SHARED_FILES);
 
 /**
- * Handed to pi's agentsFilesOverride as {path, content} pairs.
- *
- * pi never re-reads the path — it is a label only. **The model does.** These
- * were labelled `identity/SOUL.md`, which is a relative path, and a session
- * whose cwd is a workspace resolved it against that workspace and tried to
- * read it:
- *
- *     read identity/INNER_LIFE.md
- *     → ENOENT: no such file or directory
- *
- * and then spent seven more calls hunting for a directory that has never
- * existed anywhere, because the content is in the graph and the only thing on
- * disk is a mirror in agentHome(). A task session has no `identity_read` to
- * fall back on either, so there was no recovery — the run died of confusion
- * over a filename the portal invented.
- *
- * The label now says what it is and cannot be resolved as a path. The content
- * is already in the prompt; nothing needs to go looking for it.
- */
-async function extraContextFiles(role?: string): Promise<{ path: string; content: string }[]> {
-  const out: { path: string; content: string }[] = [];
-  for (const name of filesFor(role)) {
-    const content = await readIdentity(name);
-    if (content) out.push({ path: `<your ${name.replace(/\.md$/, "").toLowerCase().replace(/_/g, " ")}>`, content });
-  }
-  return out;
-}
-
-/**
- * A short anchor saying the files are the agent's own.
+ * The agent's identity and memory, assembled into the system prompt.
  *
  * Each file opens with its own instruction block, so this does not repeat them
  * — it exists because a context file is otherwise presented as reference
@@ -148,10 +119,37 @@ async function framing(role?: string): Promise<string> {
       ]
     : [];
 
-  // Deep identity injection for core files
-  const soul = contents[names.indexOf("SOUL.md")];
-  if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
-  if (selfConcept) lines.push(`\n# WHAT YOU HAVE CONCLUDED ABOUT YOURSELF\n${selfConcept}`);
+  /**
+   * Every identity document, in the system prompt and nowhere else.
+   *
+   * These used to arrive twice: once here, and once through pi's
+   * `agentsFilesOverride`, which renders each entry as
+   * `<project_instructions path="…">`. That attribute is what kept sending the
+   * agent to the filesystem. Asked what it remembered, one session reasoned —
+   * in its own visible thinking — "these are described as project
+   * instructions… if they are files, they should be on disk", and then spent
+   * eight calls on ls, grep and find looking for them. The label had already
+   * been changed from `identity/SOUL.md` to something unresolvable; the word
+   * `path` was enough on its own.
+   *
+   * So identity goes through the system prompt, which has no path attribute
+   * and no file framing, and `agentsFiles` goes back to meaning what pi means
+   * by it: AGENTS.md and CLAUDE.md actually present in the workspace. It also
+   * removes the duplication — SOUL.md was being sent in full twice, once in
+   * each channel.
+   */
+  const HEADINGS: Record<IdentityFile, string> = {
+    "SOUL.md": "# YOUR IDENTITY",
+    "SELF_CONCEPT.md": "# WHAT YOU HAVE CONCLUDED ABOUT YOURSELF",
+    "PrimaryUser.md": "# WHO YOU WORK FOR",
+    "MEMORY.md": "# WHAT YOU HAVE LEARNED",
+    "INNER_LIFE.md": "# YOUR INNER LIFE",
+  };
+  names.forEach((name, i) => {
+    const content = contents[i];
+    if (content) lines.push(`\n${HEADINGS[name]}\n${content}`);
+  });
+  if (selfConcept) lines.push(`\n${HEADINGS["SELF_CONCEPT.md"]}\n${selfConcept}`);
 
   // Notes about the primary user — private to their own conversations, the
   // same rule PrimaryUser.md and MEMORY.md follow above. `filesFor` already
@@ -426,8 +424,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       }
       // The two places CONSTITUTION.md actually needs to be seen: a routine
       // about to patch source code, and a turn nobody asked for. Pushed
-      // explicitly rather than picked up by extraContextFiles/framing's
-      // directory-presence check, because neither runs with agentHome() as
+      // explicitly rather than picked up by framing()'s own presence check,
+      // because neither runs with agentHome() as
       // its cwd — a self-update routine's cwd is the source tree being
       // patched (SERVER_ROOT / PI_SOURCE_DIR).
       //
@@ -446,11 +444,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         opts.routineSlug === "self-update-pi";
       const constitution =
         isSelfUpdate || opts.autonomous ? readAgentFile("CONSTITUTION.md") : "";
-      // Resolved up front, not inside agentsFilesOverride/appendSystemPrompt
-      // below: both are plain synchronous values/callbacks the SDK reads
+      // Resolved up front, not inside appendSystemPrompt below: it is a plain
+      // synchronous value the SDK reads
       // without awaiting, but the content itself now lives in the graph
       // (identity.ts), which is only reachable asynchronously.
-      const contextFiles = await extraContextFiles(opts.role);
       const framingText = await framing(opts.role);
       resourceLoader = new pi.DefaultResourceLoader({
         cwd: opts.cwd,
@@ -474,9 +471,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // generating an AGENTS.md from them and keeping it in sync, they are
         // handed to pi as context files directly. Nothing to regenerate, and an
         // edit is live for the next session that starts.
-        agentsFilesOverride: (base: { agentsFiles: any[] }) => ({
-          agentsFiles: [...base.agentsFiles, ...contextFiles],
-        }),
+        // Identity is not in here any more — see framing(). pi's agentsFiles
+        // are workspace files (AGENTS.md, CLAUDE.md) and it renders each with
+        // a `path` attribute, which is precisely what sent the agent looking
+        // on disk for documents that live in the graph.
         // Content alone is not enough. Handed over as plain context files, pi
         // presents them as reference material, and the model answers "who
         // are you" from its own base identity rather than what the files

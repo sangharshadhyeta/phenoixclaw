@@ -18,6 +18,7 @@ import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
 import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles } from "./identity.js";
+import { backfillEmbeddings, unembeddedCount } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
@@ -610,6 +611,30 @@ await migrateIdentityFromDisk();
 // After the migration, because it rewrites what that just seeded. See
 // stopIdentityNamingFiles: an agent seeded before this carries content that
 // tells it to open files which do not exist.
+/**
+ * Catch up any memory written while no embedding server was reachable.
+ *
+ * Not awaited: this is background repair, and the portal must come up whether
+ * or not the model server is there. Batched with a pause between rounds so a
+ * long backlog does not saturate a CPU-only embedder that the live path also
+ * needs.
+ */
+if (process.env.EMBEDDING_BASE_URL) {
+  void (async () => {
+    const waiting = await unembeddedCount().catch(() => 0);
+    if (!waiting) return;
+    console.log(`[portal] ${waiting} memory node(s) have no embedding yet — backfilling in the background`);
+    let done = 0;
+    for (;;) {
+      const n = await backfillEmbeddings().catch(() => 0);
+      if (!n) break;
+      done += n;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (done) console.log(`[portal] embedded ${done} memory node(s); semantic recall now covers them`);
+  })();
+}
+
 const renamed = await stopIdentityNamingFiles();
 if (renamed > 0) console.log(`[portal] repaired ${renamed} identity document(s) that described themselves as files`);
 

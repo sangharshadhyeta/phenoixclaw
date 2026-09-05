@@ -1,4 +1,4 @@
-import { scopedRecall, type NodeRow } from "../graph.js";
+import { personalRecall, type NodeRow } from "../graph.js";
 import { semanticPrune } from "../ingest.js";
 
 /**
@@ -187,7 +187,10 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
 
       let rows: NodeRow[];
       try {
-        rows = visibleTo(role, await scopedRecall(prompt, cwd, CONSIDER_ITEMS));
+        // personalRecall rather than scopedRecall: a conversation is with the
+        // person, not with the directory they happened to be standing in. Only
+        // genuinely project-bound memory stays fenced — see graph.ts.
+        rows = visibleTo(role, await personalRecall(prompt, cwd, CONSIDER_ITEMS));
       } catch {
         // A failed recall must never cost the user their turn. The model still
         // has graph_recall and can ask for itself.

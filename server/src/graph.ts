@@ -661,6 +661,129 @@ const SCOPE_FILTER = (alias: string) => `(
        OR EXISTS (SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to' AND se.target_id = $projectId)
      )`;
 
+/**
+ * Memory that belongs to the *project*, and is fenced to it.
+ *
+ * A note about repo A is noise in repo B, and a cached page or tool result is
+ * meaningless outside the tree it was read in. Everything else belongs to the
+ * person the agent works for and travels with them — see personalRecall.
+ */
+const PROJECT_BOUND = "('workspace_note', 'tool_cache', 'page')";
+
+/**
+ * The fence as a *ranking* signal rather than a filter.
+ *
+ * Project-bound types stay fenced. Everything else — conversations, facts about
+ * the person, the agent's own identity — is returned wherever it was recorded,
+ * with same-project hits ranked above the rest so the work in hand still wins.
+ *
+ * The filter version of this had a failure that looked exactly like amnesia.
+ * Asked "what are my plans for Thursday" in /workspaces/test1234, the agent
+ * found nothing, went hunting the filesystem — ls, ls .., grep, ls
+ * /workspaces/, ls /workspaces/self/ — and answered that it did not know. The
+ * conversation where that was said had been harvested faithfully, and scoped to
+ * /workspaces/test. One directory across, and the memory was invisible: a
+ * meeting on Thursday is a fact about a person, not about a repository, and
+ * standing in a different folder does not make it stop being true.
+ */
+const SOFT_SCOPE = (alias: string) => `(
+       ${alias}.type NOT IN ${PROJECT_BOUND}
+       OR NOT EXISTS (SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to')
+       OR EXISTS (SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to' AND se.target_id = $projectId)
+     )`;
+
+/** 1.0 for a hit in this project, a shade less elsewhere: nearer work ranks first. */
+const SCOPE_BONUS = (alias: string) => `(CASE WHEN EXISTS (
+       SELECT 1 FROM edges se WHERE se.source_id = ${alias}.id AND se.relation = 'scoped_to' AND se.target_id = $projectId
+     ) THEN 1.0 ELSE 0.85 END)`;
+
+/**
+ * What the memory injector searches: everything the person could reasonably
+ * expect to be remembered, ranked with the current project first.
+ */
+/**
+ * Embed nodes that have no vector yet.
+ *
+ * `upsertNode` embeds on write, which means a node written while no embedding
+ * server was reachable has no vector and never gets one — semantic search
+ * simply cannot see it, however good the server is once it arrives. Standing
+ * up the embedding model does not retroactively make a memory findable, and
+ * nothing said so: search quietly stayed keyword-only over 51 existing nodes.
+ *
+ * Runs in the background at boot, in small batches, with the whole thing
+ * abandoned on the first failure. It is catch-up work — the alternative to
+ * doing it slowly is not doing it faster, it is blocking startup on a model
+ * server that may not be there.
+ */
+export async function backfillEmbeddings(batch = 25): Promise<number> {
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    `SELECT id, name, summary FROM nodes
+      WHERE embedding IS NULL AND summary != '' ORDER BY last_seen DESC LIMIT $batch`,
+    { batch },
+  );
+  const rows = reader.getRowObjectsJson() as unknown as { id: string; name: string; summary: string }[];
+  if (!rows.length) return 0;
+
+  let embedded = 0;
+  for (const row of rows) {
+    const vec = await embedText(`${row.name}: ${row.summary}`);
+    // The server is unreachable or has changed shape: stop rather than walk
+    // the whole table failing once per node.
+    if (!vec) break;
+    await conn.run(
+      "UPDATE nodes SET embedding = $embedding WHERE id = $id",
+      { embedding: arrayValue(vec), id: row.id },
+      { embedding: ARRAY(FLOAT, EMBEDDING_DIM) },
+    );
+    embedded++;
+  }
+  if (embedded) dirty = true;
+  return embedded;
+}
+
+/** How many nodes are still waiting for a vector. */
+export async function unembeddedCount(): Promise<number> {
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    "SELECT count(*) AS n FROM nodes WHERE embedding IS NULL AND summary != ''",
+  );
+  return Number((reader.getRowObjectsJson()[0] as any)?.n ?? 0);
+}
+
+export async function personalRecall(query: string, cwd: string, limit = 10): Promise<NodeRow[]> {
+  const conn = await getConn();
+  const projectId = normalizeName(cwd);
+  const queryVec = await embedText(query);
+
+  if (queryVec) {
+    const reader = await conn.runAndReadAll(
+      `SELECT * EXCLUDE (sim) FROM (
+         SELECT *, array_cosine_similarity(embedding, $q) AS sim FROM nodes WHERE embedding IS NOT NULL
+       ) n
+       WHERE sim > 0.3 AND ${SOFT_SCOPE("n")}
+       ORDER BY sim * confidence * ${SCOPE_BONUS("n")} DESC
+       LIMIT $limit`,
+      { q: arrayValue(queryVec), projectId, limit },
+      { q: ARRAY(FLOAT, EMBEDDING_DIM) },
+    );
+    const hits = reader.getRowObjectsJson() as unknown as NodeRow[];
+    if (hits.length) return hits;
+  }
+
+  await ensureFtsIndex(conn);
+  const reader = await conn.runAndReadAll(
+    `SELECT * EXCLUDE (score) FROM (
+       SELECT *, fts_main_nodes.match_bm25(id, $query) AS score FROM nodes
+     ) n
+     WHERE score IS NOT NULL AND ${SOFT_SCOPE("n")}
+     ORDER BY score * confidence * ${SCOPE_BONUS("n")} DESC
+     LIMIT $limit`,
+    { query, projectId, limit },
+  );
+  return reader.getRowObjectsJson() as unknown as NodeRow[];
+}
+
 /** searchNodes, fenced to `cwd`'s project plus whatever is unscoped. */
 export async function scopedSearch(query: string, cwd: string, limit = 10): Promise<NodeRow[]> {
   const conn = await getConn();

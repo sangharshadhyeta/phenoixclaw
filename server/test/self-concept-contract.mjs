@@ -117,14 +117,21 @@ ok("and the template still does not", !after.includes("section headers"));
 {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/pi/sdk-client.ts", import.meta.url), "utf8");
-  const fn = src.slice(src.indexOf("async function extraContextFiles"), src.indexOf("async function framing"));
 
-  ok("context files are not labelled with a resolvable path",
-     !/path\.join\("identity"/.test(fn));
-  ok("the label is self-describing instead",
-     /`<your \$\{name/.test(fn));
+  // Stronger than the label fix that preceded it: identity does not travel
+  // through pi's agentsFiles at all. pi renders each of those as
+  // `<project_instructions path="…">`, and the word `path` was enough on its
+  // own to send the agent hunting the filesystem for documents that live in
+  // the graph — its own visible reasoning was "if they are files, they should
+  // be on disk".
+  // Matched against code, not the comments that explain why it was removed.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok("identity never goes through agentsFiles", !/agentsFilesOverride\s*:/.test(code));
+  ok("and the helper that did that is gone", !/extraContextFiles\s*\(/.test(code));
 
   const framing = src.slice(src.indexOf("async function framing"), src.indexOf("export function builtinSkillsDir"));
+  ok("every identity document is delivered in the system prompt instead",
+     /HEADINGS\[name\]/.test(framing) && /YOUR IDENTITY/.test(framing) && /WHAT YOU HAVE LEARNED/.test(framing));
   ok("the framing anchor no longer lists filenames", !/\$\{present\.join\(", "\)\} are yours/.test(framing));
   ok("and says the content is already present, with nothing to open",
      /nothing\s*" \+\s*"to open|nothing to open/.test(framing) || /no path to look for/.test(framing));
