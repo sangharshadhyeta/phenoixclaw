@@ -40,6 +40,15 @@ alternative wants a commercial API key, and an agent that searches on a loop is
 exactly the workload those meter — this way the queries stay on your machine
 and cost nothing. It listens on the loopback interface only.
 
+On a host with no container runtime, install it directly instead:
+
+```bash
+sudo ./scripts/install-searxng.sh    # then set SEARXNG_URL=http://127.0.0.1:8888
+```
+
+It fetches its own Python — most distributions still ship 3.9 and SearXNG needs
+3.10 or newer — and leaves a systemd service behind.
+
 Then open `http://<host>:4100`.
 
 The container uses host networking, so pi and its extensions reach services on

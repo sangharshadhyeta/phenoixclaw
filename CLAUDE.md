@@ -26,6 +26,7 @@ npm run docs               # VitePress dev server
 npm run docs:build
 
 docker compose up -d --build   # the deployed path; needs .env (see .env.example)
+sudo ./scripts/install-searxng.sh  # web search on a host with no container runtime
 ```
 
 `npm test` runs three contracts — the knowledge graph's (`server/test/graph-contract.mjs`, ported
