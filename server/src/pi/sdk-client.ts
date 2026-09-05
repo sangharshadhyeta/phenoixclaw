@@ -178,6 +178,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     whoNow?: () => { role: string; key?: string };
     /** Lowest role this conversation serves, deciding which context files load. */
     role?: string;
+    /** What kind of session this is — decides which tools are worth their schema. */
+    kind?: "task" | "agent" | "routine";
     /** The portal's session id, for tools that record against it. */
     sessionId?: string;
     /** False lets a run act on what it read — see guardExtension. */
@@ -211,11 +213,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.
-        { name: "graph", factory: graphTools(opts.cwd) },
-        // Every session too: MEMORY.md/SELF_CONCEPT.md/INNER_LIFE.md are
-        // graph-backed now (identity.ts) — this is how any session, not just
-        // the self-reflection routine, writes to them.
-        { name: "identity", factory: identityTools() },
+        { name: "graph", factory: graphTools(opts.cwd, opts.kind !== "task") },
+
         // Overrides read/ls with graph-backed memoization of their results.
         // Registered after the tool-bearing factories above and before any
         // below for no reason but legibility — an override is resolved by
@@ -230,6 +229,26 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // are the same shape, and neither is a routine.
       if (opts.sessionId) {
         factories.push({ name: "tasks", factory: taskTools(opts.sessionId) });
+      }
+      /**
+       * Tools about the agent *itself* go to conversations with the agent —
+       * not to a session working in somebody's repository.
+       *
+       * Every tool's schema is in the prompt from the first token, whether or
+       * not it is ever called, and this set had grown to where a fresh session
+       * started at 6.9k tokens against the 3.8k the README claims. A task
+       * session opened against a checkout has no business rewriting
+       * SELF_CONCEPT.md; paying for the option on every turn of every coding
+       * session is the cost of pretending otherwise.
+       *
+       * The line is what the tool is *about*, not what it can reach: reading
+       * and writing the agent's identity, and reflecting over its own memory.
+       * `graph_remember`/`graph_recall` stay everywhere, because remembering
+       * a fact you just learned is an ordinary thing to do in any session.
+       */
+      const aboutItself = opts.kind !== "task";
+      if (aboutItself) {
+        factories.push({ name: "identity", factory: identityTools() });
       }
       // Notes about the primary user, so only their own conversations may
       // write them — see user-tools.ts.

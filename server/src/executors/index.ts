@@ -21,6 +21,8 @@ export interface LaunchOptions {
   routineSlug?: string | null;
   /** Lowest role the conversation serves; decides which context files load. */
   role?: string;
+  /** What kind of session this is — decides which tools are worth their schema. */
+  kind?: "task" | "agent" | "routine";
   /** Whoever is speaking, read at each tool call. */
   whoNow?: () => { role: string; key?: string };
   /** False turns off the guard's taint rules for this session. */
@@ -76,6 +78,7 @@ export class HostExecutor implements Executor {
       routineTools: opts.routineTools,
       routineSlug: opts.routineSlug,
       role: opts.role,
+      kind: opts.kind,
       sessionId: opts.sessionId,
       whoNow: opts.whoNow,
       enforceTaint: opts.enforceTaint,

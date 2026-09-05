@@ -21,11 +21,14 @@
 Runs are owned by the server, not by your tab. Every event pi emits is appended to a log, so
 reconnecting replays exactly what you missed and then continues live.
 
-A fresh agent session starts at **roughly 3.8k tokens** of system context — the agent's
-identity and memory, its tool schemas, and a one-line listing of every installed skill. Skill
-bodies are read when the agent reaches for one, not loaded up front. Measured rather than
-budgeted, and it grows with what you install: each MCP server registered as direct tools
-adds 150–300 tokens per tool.
+A fresh session starts at **roughly 6.2k tokens** of system context — the agent's identity and
+memory, its tool schemas, and a one-line listing of every installed skill. Skill bodies are read
+when the agent reaches for one, not loaded up front. Measured rather than budgeted: it was 3.8k
+before the memory, planning and web tools landed, and every tool's schema is in the prompt from
+the first token whether or not it is ever called. Which is why tools that are *about the agent
+itself* — reading and rewriting its identity, reflecting over its own memory — are given to
+conversations with the agent and not to a session opened against your repository. It grows with
+what you install, too: each MCP server registered as direct tools adds 150–300 tokens per tool.
 
 ## Quick start
 

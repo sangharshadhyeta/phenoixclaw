@@ -28,7 +28,12 @@ const logKey = (kind: string) => `${kind}:${Date.now()}:${Math.random().toString
  * recalling facts is a normal-conversation thing, the same role Birdclaw's
  * `save_memory` played, not something limited to a routine.
  */
-export function graphTools(cwd: string) {
+/**
+ * `reflective` adds the tools that look back over memory as a whole rather
+ * than answering a question in front of you — see sdk-client.ts for why a
+ * session working in somebody's repository does not get them.
+ */
+export function graphTools(cwd: string, reflective = true) {
   return (pi: any): void => {
     pi.registerTool({
       name: "graph_remember",
@@ -122,7 +127,7 @@ export function graphTools(cwd: string) {
       },
     });
 
-    pi.registerTool({
+    if (reflective) pi.registerTool({
       name: "graph_reflect",
       label: "Reflect",
       description:

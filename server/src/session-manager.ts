@@ -244,6 +244,7 @@ class SessionManager extends EventEmitter {
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,
+      kind: session.kind,
       // "autonomous" is not a person's role and no row in `people` ever holds
       // it — it is the answer to "who is asking for this", when the answer is
       // nobody. It outranks the speaker because an autonomous run has no
