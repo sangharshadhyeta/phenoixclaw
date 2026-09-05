@@ -268,17 +268,66 @@ export async function checkpoint(conn: DuckDBConnection): Promise<void> {
   }
 }
 
+/**
+ * One statement at a time on the shared connection.
+ *
+ * `@duckdb/node-api` cannot run two statements concurrently on a single
+ * connection, and this module has exactly one. That was survivable while the
+ * only callers were graph tools — the model calls those one at a time — and
+ * stopped being survivable the moment the memory injector began searching at
+ * the start of a turn while the previous turn's extraction was still writing.
+ * The failure is not a wrong answer:
+ *
+ *     [Error: Failed to execute prepared statement]
+ *
+ * as an *uncaught rejection*, which takes the whole portal down mid-conversation.
+ *
+ * Serialised per statement rather than per function, deliberately. These
+ * functions call each other — upsertEdge calls getNode and upsertNode,
+ * scopedRecall falls back to scopedSearch — so a lock taken at function level
+ * would deadlock on the first nested call. Statements are the level at which
+ * the constraint actually exists.
+ *
+ * This is not transaction isolation and does not pretend to be: a read-then-
+ * write pair can still interleave with another. That race predates this and is
+ * benign here, because upsertNode's rule is corroboration — the loser of a race
+ * raises confidence rather than losing data.
+ */
+export function serialiseStatements(conn: DuckDBConnection): DuckDBConnection {
+  let gate: Promise<unknown> = Promise.resolve();
+  const queue = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = gate.then(work, work);
+    // The gate must survive a failed statement, or one error would wedge every
+    // later query behind a rejected promise.
+    gate = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
+
+  return new Proxy(conn, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if ((prop === "run" || prop === "runAndReadAll") && typeof value === "function") {
+        return (...args: unknown[]) => queue(() => (value as Function).apply(target, args));
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as DuckDBConnection;
+}
+
 async function getConn(): Promise<DuckDBConnection> {
   if (!connPromise) {
     connPromise = (async () => {
       mkdirSync(DATA_DIR, { recursive: true });
       const instance = await openDuckDB(path.join(DATA_DIR, "graph.duckdb"));
-      const conn = await instance.connect();
-      await ensureSchema(conn);
+      const raw = await instance.connect();
+      await ensureSchema(raw);
       // Immediately, while nothing else is using the connection: this is the
       // half that stops the next unclean shutdown bricking the file.
-      await checkpoint(conn);
-      return conn;
+      await checkpoint(raw);
+      return serialiseStatements(raw);
     })();
   }
   return connPromise;

@@ -17,6 +17,7 @@ import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
+import { contextAssembler } from "./context-assembler.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -344,6 +345,12 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // where it matters most — see memory-injector.ts for the session that
         // went looking through the filesystem for something already in memory.
         { name: "memory-injector", factory: memoryInjector(opts.cwd, opts.role) },
+        // Assembles each request from the system prompt, what the injector
+        // just retrieved, and the recent window — rather than sending the
+        // whole accumulated conversation. See context-assembler.ts; it runs on
+        // every provider call and passes through anything it does not
+        // recognise.
+        { name: "context-assembler", factory: contextAssembler(opts.sessionId) },
       ];
       // The agent's own checklist for the work in hand. Every session: a task
       // session breaking down a change and the learning loop working a plan

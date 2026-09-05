@@ -1,7 +1,7 @@
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { piSetting } from "./pi-settings.js";
 import { mkdirSync } from "node:fs";
-import { checkpoint, openDuckDB } from "./graph.js";
+import { checkpoint, openDuckDB, serialiseStatements } from "./graph.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -423,7 +423,10 @@ async function getConn(): Promise<DuckDBConnection> {
       // Same WAL-replay hazard as the graph — this schema has now() defaults
       // and ALTER TABLE migrations too. See openDuckDB in graph.ts.
       const instance = await openDuckDB(path.join(DATA_DIR, "portal.duckdb"));
-      const conn = await instance.connect();
+      // Same single-connection constraint as the graph, and the same reason:
+      // the harvest reads a session's events while the session manager is
+      // still appending to it. See serialiseStatements.
+      const conn = serialiseStatements(await instance.connect());
       await ensureSchema(conn);
       await checkpoint(conn);
       await seedSelfReflectionRoutine(conn);
