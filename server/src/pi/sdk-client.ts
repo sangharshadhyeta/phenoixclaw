@@ -16,6 +16,7 @@ import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
+import { memoryInjector } from "./memory-injector.js";
 import { cachedTools } from "./cached-tools.js";
 import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
@@ -337,6 +338,12 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // defined. Both are ordinary in any session — a coding task wants the
         // second as much as the loop wants the first.
         { name: "knowledge", factory: knowledgeTools(opts.cwd) },
+        // Searches the graph with whatever was just said and attaches the hits
+        // to this turn's system prompt. Every session: recall left to the
+        // model's own initiative is recall that does not happen on the turns
+        // where it matters most — see memory-injector.ts for the session that
+        // went looking through the filesystem for something already in memory.
+        { name: "memory-injector", factory: memoryInjector(opts.cwd, opts.role) },
       ];
       // The agent's own checklist for the work in hand. Every session: a task
       // session breaking down a change and the learning loop working a plan

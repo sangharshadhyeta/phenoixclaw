@@ -98,7 +98,42 @@ const asString = (v: unknown): string => (typeof v === "string" ? v.trim() : "")
  * reason to believe. Corroboration will raise it if the same thing turns up
  * again, which is the right way for an extracted claim to earn standing.
  */
-export async function ingestText(text: string, source: string): Promise<IngestResult> {
+/**
+ * Link what was extracted back to where it came from.
+ *
+ * Without this the graph is a pile rather than a web. Two conversations about
+ * the same subject both upsert the same entity — which is the shared node that
+ * *should* connect them — but neither conversation was attached to it, so
+ * nothing joined them and `graph_recall`'s one-hop expansion had nothing to
+ * expand. Asked "did we discuss this before", the graph could find the topic
+ * and could find the conversations, and could not tell you they were about each
+ * other.
+ *
+ * This is the mechanism Sisyphean's connectedness actually rests on: not the
+ * per-session node, but the entities it shares with every other session that
+ * mentioned them. It doubles as provenance — an entity now says which
+ * conversation produced it, which is what makes a wrong belief correctable
+ * rather than merely deletable.
+ */
+async function linkToSource(sourceNode: string | undefined, entity: string): Promise<void> {
+  if (!sourceNode) return;
+  try {
+    await upsertEdge(sourceNode, "mentions", entity);
+  } catch {
+    // A missing link costs connectedness, not the fact itself.
+  }
+}
+
+export async function ingestText(
+  text: string,
+  source: string,
+  /**
+   * The node this text came from — a conversation, a page. Extracted entities
+   * are linked to it, so everything that mentioned a subject is one hop from
+   * that subject.
+   */
+  sourceNode?: string,
+): Promise<IngestResult> {
   const empty: IngestResult = { chunks: 0, propositions: 0, entities: 0, relations: 0 };
   if (!localModelConfigured()) return { ...empty, skipped: "no local model configured" };
   if (!text.trim()) return { ...empty, skipped: "nothing to read" };
@@ -126,6 +161,7 @@ export async function ingestText(text: string, source: string): Promise<IngestRe
       const type = TYPE_MAP[asString(e.type).toLowerCase()] ?? "concept";
       const summary = asString(e.summary) || name;
       await upsertNode(name, type, summary, 0.4);
+      await linkToSource(sourceNode, name);
       entityCount++;
 
       for (const rel of Array.isArray(e.relations) ? e.relations : []) {

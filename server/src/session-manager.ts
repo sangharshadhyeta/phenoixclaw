@@ -6,8 +6,10 @@ import type { PiClient } from "./pi/types.js";
 import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
 import { buildExecutor, type Executor, type ExecutorKind } from "./executors/index.js";
 import { isMirrorable, mirror } from "./mirror.js";
+import { harvestTurn } from "./harvest.js";
 import {
   appendEvent,
+  eventsSince,
   getSession,
   getSettings,
   markOrphanedSessionsInterrupted,
@@ -230,6 +232,58 @@ class SessionManager extends EventEmitter {
     return corrected;
   }
 
+  /**
+   * How far *extraction* has read. Tier 1 needs no watermark — it re-composes
+   * one node per session from a bounded window, so running it again is a no-op
+   * on content. Tier 2 writes facts, and reading the same span twice would
+   * corroborate a passing remark into a belief purely by re-reading it.
+   *
+   * In memory rather than on the row: the cost of a restart is re-extracting
+   * one turn, which corroborates rather than duplicates. The Dream Cycle's
+   * watermark is persistent because its re-read is far more expensive.
+   */
+  private harvested = new Map<string, number>();
+
+  /**
+   * Fold a finished turn into the graph.
+   *
+   * Fire-and-forget, after the reply has already gone out: this is bookkeeping,
+   * and the person waiting for an answer must never wait for it. Chained per
+   * session so two fast turns cannot harvest the same span twice — which would
+   * corroborate a passing remark into an established fact purely by re-reading
+   * it.
+   */
+  private harvesting = new Map<string, Promise<void>>();
+
+  private harvest(sessionId: string): Promise<void> {
+    const next = (this.harvesting.get(sessionId) ?? Promise.resolve())
+      .then(async () => {
+        const session = await getSession(sessionId);
+        if (!session) return;
+        // Routine sessions are excluded: the learning loop already records what
+        // it concluded with graph_episode, and harvesting it as well would fill
+        // the graph with the agent talking to itself — which is exactly the
+        // pollution the loop had to be stopped from causing once already.
+        if (session.kind === "routine") return;
+        const since = this.harvested.get(sessionId) ?? 0;
+        const { harvest, seq } = await harvestTurn(session, since);
+        this.harvested.set(sessionId, seq);
+        if (!harvest.node) return;
+        await this.record(sessionId, "portal_memory", { node: harvest.node });
+        // Not awaited here: the chained promise this sits in is what the next
+        // turn waits on, and extraction is a model call. It reports itself when
+        // it lands, and enriches the turn after.
+        void harvest.extraction.then((facts) => {
+          if (facts > 0) void this.record(sessionId, "portal_memory", { node: harvest.node, facts });
+        });
+      })
+      .catch((e) => {
+        console.warn(`[portal] harvest failed for ${sessionId}:`, (e as Error).message);
+      });
+    this.harvesting.set(sessionId, next);
+    return next;
+  }
+
   /** Record a portal-generated event on a session — used for run bookends. */
   async note(sessionId: string, type: string, payload: unknown): Promise<void> {
     await this.record(sessionId, type, payload);
@@ -242,6 +296,12 @@ class SessionManager extends EventEmitter {
     const session = await getSession(sessionId);
     if (!session) throw new Error(`Unknown session ${sessionId}`);
     this.settled.set(sessionId, { role: session.role as Role, key: session.last_person_key ?? undefined });
+    // Start extraction at the end of what already exists, so a restart does not
+    // re-extract the whole conversation. Tier 1 is unaffected either way.
+    if (!this.harvested.has(sessionId)) {
+      const seen = await eventsSince(sessionId, 0, 1_000_000);
+      this.harvested.set(sessionId, seen.length ? seen[seen.length - 1].seq : 0);
+    }
 
     const executor = buildExecutor(EXECUTOR_KIND, SESSION_ROOT);
     mkdirSync(path.join(SESSION_ROOT, sessionId), { recursive: true });
@@ -331,6 +391,7 @@ class SessionManager extends EventEmitter {
       if (msg.type === "agent_end") {
         void updateSession(sessionId, { status: "idle" });
         void this.record(sessionId, "portal_status", { status: "idle" });
+        void this.harvest(sessionId);
       }
     });
 
@@ -370,6 +431,24 @@ class SessionManager extends EventEmitter {
     // routine's own scheduler kicking itself off is not "real activity".
     const kind = (await getSession(sessionId))?.kind;
     if (kind && kind !== "routine") this.pauseIdleDreaming(sessionId);
+
+    /**
+     * Wait for the previous turn to be in the graph before this one starts.
+     *
+     * The harvest is fire-and-forget so an answer is never held up by
+     * bookkeeping — but the whole point of harvesting is that the next turn can
+     * search what the last one said. The memory injector runs at
+     * before_agent_start, so without this the two race: reply quickly enough
+     * and the context is assembled from a graph that does not yet contain the
+     * exchange it should be recalling.
+     *
+     * Only the previous turn's write is waited on, and only its first tier —
+     * which does no model call. Extraction runs on in the background and
+     * arrives for the turn after, which is the right trade: the guaranteed
+     * record is synchronous with the conversation, the expensive enrichment is
+     * not.
+     */
+    await this.harvesting.get(sessionId)?.catch(() => {});
 
     const client = await this.ensureClient(sessionId);
 

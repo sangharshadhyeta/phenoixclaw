@@ -615,6 +615,25 @@ const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`  workspaces: ${WORKSPACE_ROOT}`);
   console.log(`  auth:     ${authEnabled ? "password" : "DISABLED"}`);
 
+  /**
+   * Say plainly when a dependency is missing, at the one moment somebody is
+   * looking at the output.
+   *
+   * Both of these degrade silently by design — a failed embedding falls back to
+   * keyword search, a missing local model skips extraction — and that is right
+   * for a request in flight and wrong for a deployment. Conversation harvesting
+   * ran for a full day writing no entities at all because LLAMA_BASE_URL was
+   * never set, and nothing anywhere said so: the feature looked like it worked
+   * and the graph simply stayed empty.
+   */
+  for (const [env, effect] of [
+    ["LLAMA_BASE_URL", "no fact extraction from conversations or pages"],
+    ["EMBEDDING_BASE_URL", "memory search is keyword-only, no semantic recall"],
+    ["SEARXNG_URL", "web search unavailable"],
+  ] as const) {
+    if (!process.env[env]) console.warn(`  degraded: ${env} unset — ${effect}`);
+  }
+
   // Enabled channels come up with the server, so a restart does not silently
   // leave the agent unreachable.
   // Schedules resume with the server; a routine due while it was down does not
