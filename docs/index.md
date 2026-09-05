@@ -4,14 +4,14 @@ layout: home
 hero:
   image:
     src: /logo.png
-    alt: Pithagoras
-  name: Pithagoras
+    alt: Phenoixclaw
+  name: Phenoixclaw
   text: A web portal for the pi coding agent
   tagline: Give it a task, close the browser, come back later and find it finished.
   actions:
     - theme: brand
-      text: What is Pithagoras
-      link: /guide/what-is-pithagoras
+      text: What is Phenoixclaw
+      link: /guide/what-is-phenoixclaw
     - theme: alt
       text: Deploy it
       link: /guide/deploying

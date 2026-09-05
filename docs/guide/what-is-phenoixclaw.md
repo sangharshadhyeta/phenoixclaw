@@ -1,6 +1,6 @@
-# What is Pithagoras
+# What is Phenoixclaw
 
-Pithagoras is a web front end for the [pi coding agent](https://pi.dev). You
+Phenoixclaw is a web front end for the [pi coding agent](https://pi.dev). You
 point it at a directory, describe a task, and close the tab. The work carries on
 without you, and the transcript is waiting when you come back.
 

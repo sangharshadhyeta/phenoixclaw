@@ -1,14 +1,14 @@
 # Deploying
 
-Pithagoras ships as a container. It expects to run somewhere private — there is
+Phenoixclaw ships as a container. It expects to run somewhere private — there is
 a single password and no per-user separation, so put it behind Tailscale or a
 VPN rather than on a public address.
 
 ## Docker Compose
 
 ```bash
-git clone https://github.com/thecodacus/Pithagoras.git
-cd Pithagoras
+git clone https://github.com/thecodacus/Phenoixclaw.git
+cd Phenoixclaw
 ```
 
 Create a `.env` next to `docker-compose.yml`:

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="Phenoixclaw" width="620">
+  <img src="assets/logo.png" alt="Phenoixclaw" width="140">
 </p>
 
 <h1 align="center">🐦‍🔥 Phenoixclaw</h1>

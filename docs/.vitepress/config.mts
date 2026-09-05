@@ -1,20 +1,20 @@
 import { defineConfig } from "vitepress";
 
 export default defineConfig({
-  title: "Pithagoras",
+  title: "Phenoixclaw",
   // Project pages serve from /<repo>/, so every asset and link needs the
   // prefix. Overridable for a custom domain, where the site is at the root.
-  base: process.env.DOCS_BASE ?? "/pithagoras/",
+  base: process.env.DOCS_BASE ?? "/phenoixclaw/",
   description: "A hosted web portal for the pi coding agent",
   lastUpdated: true,
   cleanUrls: true,
 
-  head: [["link", { rel: "icon", type: "image/png", href: "/pithagoras/favicon.png" }]],
+  head: [["link", { rel: "icon", type: "image/png", href: "/phenoixclaw/favicon.png" }]],
 
   themeConfig: {
     logo: "/logo.png",
     nav: [
-      { text: "Guide", link: "/guide/what-is-pithagoras" },
+      { text: "Guide", link: "/guide/what-is-phenoixclaw" },
       { text: "People", link: "/people/" },
       { text: "Channels", link: "/channels/" },
       { text: "Reference", link: "/reference/api" },
@@ -24,7 +24,7 @@ export default defineConfig({
       {
         text: "Guide",
         items: [
-          { text: "What is Pithagoras", link: "/guide/what-is-pithagoras" },
+          { text: "What is Phenoixclaw", link: "/guide/what-is-phenoixclaw" },
           { text: "Deploying", link: "/guide/deploying" },
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Slash commands", link: "/guide/commands" },
@@ -63,13 +63,13 @@ export default defineConfig({
       },
     ],
 
-    socialLinks: [{ icon: "github", link: "https://github.com/thecodacus/pithagoras" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/sangharshadhyeta/phenoixclaw" }],
 
     search: { provider: "local" },
 
     footer: {
       message: "Give it a task, close the browser, come back later.",
-      copyright: "Pithagoras",
+      copyright: "Phenoixclaw",
     },
   },
 });

@@ -607,7 +607,7 @@ mkdirSync(BIN_DIR, { recursive: true });
 await migrateIdentityFromDisk();
 
 const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`pithagoras listening on :${PORT}`);
+  console.log(`phenoixclaw listening on :${PORT}`);
   console.log(`  local bin: ${BIN_DIR}`);
   console.log(`  executor: ${EXECUTOR_KIND}`);
   console.log(`  workspaces: ${WORKSPACE_ROOT}`);
