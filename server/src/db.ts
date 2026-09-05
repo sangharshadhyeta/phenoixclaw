@@ -386,6 +386,7 @@ async function getConn(): Promise<DuckDBConnection> {
       await seedSelfReflectionRoutine(conn);
       await seedLearningLoopRoutine(conn);
       await seedSelfUpdateRoutines(conn);
+      await migrateSelfConceptInstructions(conn);
       return conn;
     })();
   }
@@ -1031,6 +1032,28 @@ export async function clearTasks(sessionId: string): Promise<void> {
 }
 
 /**
+ * The two places the seeded routines meet the agent's self-concept.
+ *
+ * Named rather than inlined because `migrateSelfConceptInstructions` below has
+ * to recognise the text it replaces, and a copy that drifted from the seed
+ * would silently stop matching — leaving an existing deployment on
+ * instructions that name a document nothing reads any more.
+ */
+const PHASE5_SELF_CONCEPT =
+  "Reflect on your identity, nature, and capabilities. Call `self_review` to see what you have " +
+  "already concluded about yourself, strongest first. Then record what this cycle actually taught " +
+  "you with `self_conclude` — one conclusion per call, in a sentence. Restate the ones you still " +
+  "believe: reaching a conclusion again strengthens it rather than filing it twice. Do not rewrite " +
+  "SELF_CONCEPT.md — that is the template you started from, and your self-concept is now the " +
+  "conclusions themselves, assembled best-established-first into every conversation you have.";
+
+const ORIENT_SELF_REVIEW =
+  "Call `self_review`. What you choose to pursue should follow from what you have concluded you " +
+  "are and what you are for — not from whatever is nearest. If it says nothing you can act on, " +
+  "that is itself worth noticing — and so is a conclusion near the top that you only reached once, " +
+  "on a thin day.";
+
+/**
  * High-water mark for the self-reflection routine: the last `events.seq`
  * already folded into SELF_CONCEPT.md / INNER_LIFE.md, so a run only digests
  * what happened since the previous one instead of rescanning everything.
@@ -1073,7 +1096,7 @@ async function seedSelfReflectionRoutine(conn: DuckDBConnection): Promise<void> 
     "Reflect on the work and recent experiences. Call `identity_read` on `INNER_LIFE.md` to see what's there, then `identity_update` with the complete file rewritten to add a first-person, present-tense prose narrative. Add only what is genuinely new; preserve everything already concluded.",
     "",
     "PHASE 5: SELF-CONCEPT",
-    "Reflect on your identity, nature, and capabilities. Call `identity_read` on `SELF_CONCEPT.md` to see what's there, then `identity_update` with the complete file rewritten to fold in your reasoned conclusions and any new identity-flagged material. Keep existing conclusions unless directly contradicted.",
+    PHASE5_SELF_CONCEPT,
     "",
     "PHASE 6: SKILL SYNTHESIS",
     "If the digest reveals a reusable pattern — steps you would take again — write it down. Follow your `skill-creator` skill: it covers what makes a description work, what belongs in the body, and to check `$HOME/.pi/agent/skills` for one that already covers this and extend it rather than adding a second. Use `skill_write` to do the writing. Skip this phase entirely if nothing genuinely reusable came up; a skill nobody needs is noise every future session reads past.",
@@ -1133,7 +1156,7 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
     "You are not answering anybody. This is your own time, and it continues: whatever you do not finish now, the next iteration picks up. Do one step well rather than rushing a whole plan.",
     "",
     "ORIENT",
-    "Call `identity_read` on `SELF_CONCEPT.md`. What you choose to pursue should follow from what you have concluded you are and what you are for — not from whatever is nearest. If it says nothing you can act on, that is itself worth noticing.",
+    ORIENT_SELF_REVIEW,
     "",
     "PLAN",
     "Call `task_list` to see the plan you are already working through. If it has unfinished steps, continue it — do not start something new because starting is easier than continuing.",
@@ -1266,6 +1289,62 @@ async function seedSelfUpdateRoutines(conn: DuckDBConnection): Promise<void> {
       WHERE slug IN ('self-update-phoenixclaw', 'self-update-pi')
         AND enabled = 0 AND last_run IS NULL`,
   );
+}
+
+
+/**
+ * Repoint the two seeded routines at `self_review`/`self_conclude`.
+ *
+ * The seeds are guarded by slug so a restart never recreates them — which is
+ * right, and also means a database seeded before self-concept.ts existed keeps
+ * instructions telling the agent to `identity_read` and rewrite
+ * SELF_CONCEPT.md. Those calls now go nowhere useful: once anything has been
+ * concluded, `selfConceptExcerpt()` serves the graph and the file is never
+ * read into a prompt again. The Dream Cycle would go on rewriting a document
+ * nobody reads, and the learning loop would go on orienting by it — which is
+ * the stale-sentence-steering-the-loop failure the whole change set out to
+ * end, just relocated.
+ *
+ * Replaces only the one exact sentence in each, and only where it is still
+ * verbatim. Anything a person has edited does not match, and is left alone —
+ * the same rule seedSelfUpdateRoutines follows when it retires the routines it
+ * replaced. Idempotent: after the first pass the old text is gone and there is
+ * nothing to match.
+ */
+const SELF_CONCEPT_INSTRUCTION_REWRITES: { slug: string; from: string; to: string }[] = [
+  {
+    slug: "self-reflection",
+    from:
+      "Reflect on your identity, nature, and capabilities. Call `identity_read` on `SELF_CONCEPT.md` " +
+      "to see what's there, then `identity_update` with the complete file rewritten to fold in your " +
+      "reasoned conclusions and any new identity-flagged material. Keep existing conclusions unless " +
+      "directly contradicted.",
+    to: PHASE5_SELF_CONCEPT,
+  },
+  {
+    slug: "learning-loop",
+    from:
+      "Call `identity_read` on `SELF_CONCEPT.md`. What you choose to pursue should follow from what " +
+      "you have concluded you are and what you are for — not from whatever is nearest. If it says " +
+      "nothing you can act on, that is itself worth noticing.",
+    to: ORIENT_SELF_REVIEW,
+  },
+];
+
+async function migrateSelfConceptInstructions(conn: DuckDBConnection): Promise<void> {
+  for (const { slug, from, to } of SELF_CONCEPT_INSTRUCTION_REWRITES) {
+    const row = await one<{ instructions: string }>(
+      conn,
+      "SELECT instructions FROM routines WHERE slug = $slug",
+      { slug },
+    );
+    if (!row?.instructions.includes(from)) continue;
+    await conn.run(
+      "UPDATE routines SET instructions = $instructions WHERE slug = $slug",
+      { instructions: row.instructions.replace(from, to), slug },
+    );
+    console.log(`[portal] ${slug}: self-concept instructions repointed at self_review/self_conclude`);
+  }
 }
 
 /** Is anything running right now? Any kind — a dream shouldn't start mid-turn of something else. */

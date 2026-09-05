@@ -76,6 +76,18 @@ export const AUTONOMOUS_TOOLS = new Set([
   "identity_read",
   "identity_update",
   "remember_user",
+  // What it has concluded about itself, one conclusion at a time. These are
+  // the reason an autonomous turn exists at all — a run nobody asked for,
+  // reflecting on what it is, is the only kind that ever calls them. Left off
+  // this list they were refused with "nobody asked for this" in exactly the
+  // sessions they were written for, which left the feature reachable only
+  // from a chat with the primary user.
+  //
+  // `self_conclude` writes identity, so it sits behind the `self-rewrite`
+  // taint rule alongside identity_update (guard.ts). `self_review` only
+  // reads, so it does not.
+  "self_conclude",
+  "self_review",
   // Its own housekeeping, and the plan for the work in hand. Planning is not
   // scheduling: these write a checklist inside this session, which is why they
   // are here while routine_create/update/run are refused below.

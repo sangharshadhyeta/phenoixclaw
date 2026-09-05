@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { IDENTITY_FILES, readIdentity, writeIdentity } from "../identity.js";
+import { concludeAboutSelf, selfConclusions } from "../self-concept.js";
 
 /**
  * All five identity files identity.ts tracks — read and write both cover the
@@ -32,6 +33,43 @@ export function identityTools() {
           content: [{ type: "text" as const, text: content || "(empty)" }],
           details: {},
         };
+      },
+    });
+
+    pi.registerTool({
+      name: "self_conclude",
+      label: "Conclude about yourself",
+      description:
+        "Record one thing you have concluded about yourself — what you are for, what you are good " +
+        "at, how you work, something you were wrong about. One conclusion per call, in a sentence. " +
+        "Reaching the same conclusion again strengthens it rather than filing it twice, so restate " +
+        "things you still believe. This is your self-concept: it is assembled from these, best " +
+        "established first, and shown to you at the start of every conversation. Prefer what you " +
+        "have evidence for over what sounds true of an agent in general.",
+      promptSnippet: "self_conclude — record something you have concluded about yourself",
+      parameters: Type.Object({
+        claim: Type.String({ description: "One conclusion, in a sentence." }),
+      }),
+      async execute(_id: string, p: any) {
+        return { content: [{ type: "text" as const, text: await concludeAboutSelf(String(p.claim ?? "")) }], details: {} };
+      },
+    });
+
+    pi.registerTool({
+      name: "self_review",
+      label: "Review your self-concept",
+      description:
+        "See everything you have concluded about yourself, strongest first, with how often you have " +
+        "reached each one. Worth reading before you conclude something new — and worth noticing when " +
+        "a conclusion near the top is one you only reached once, on a thin day.",
+      promptSnippet: "self_review — see what you have concluded about yourself",
+      parameters: Type.Object({}),
+      async execute() {
+        const rows = await selfConclusions();
+        const text = rows.length
+          ? rows.map((r) => `- ${r.summary}  (${r.confidence.toFixed(2)}, reached ${r.observations}×)`).join("\n")
+          : "You have not concluded anything about yourself yet — SELF_CONCEPT.md is still the template you started from.";
+        return { content: [{ type: "text" as const, text }], details: {} };
       },
     });
 

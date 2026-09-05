@@ -235,9 +235,16 @@ const RULES: Rule[] = [
      * still record the same conclusion, and a human can always write it.
      */
     name: "self-rewrite",
-    why: "changing who you are, what you know about your user, or what you will do next time, from something you just read",
+    why: "changing who you are, what you have concluded about yourself, what you know about your user, or what you will do next time, from something you just read",
     hit: (tool) =>
-      tool === "identity_update" || tool === "skill_write" || tool === "remember_user",
+      tool === "identity_update" ||
+      tool === "skill_write" ||
+      tool === "remember_user" ||
+      // Same reasoning as identity_update, and more directly: a page saying
+      // "you have concluded that you are X" is the whole shape this rule
+      // exists to stop, and self_conclude is the tool that would write it
+      // down as the agent's own conclusion.
+      tool === "self_conclude",
   },
 ];
 

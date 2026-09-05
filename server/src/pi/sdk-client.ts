@@ -21,6 +21,7 @@ import { workspaceContext } from "./workspace-context.js";
 import { readAgentFile } from "../agent-setup.js";
 import { readIdentity, type IdentityFile } from "../identity.js";
 import { userKnowledgeExcerpt } from "../user-knowledge.js";
+import { selfConceptExcerpt } from "../self-concept.js";
 import { agentHome } from "../agent.js";
 
 function asArray(v: any): any[] {
@@ -53,8 +54,13 @@ function asArray(v: any): any[] {
 // rides along in its self-update patch prompts, never in ordinary chat or
 // task sessions. guard.ts's PROTECTED_PATHS check enforces the same rule
 // unconditionally, independent of whether this text ever reaches a prompt.
-const CONTEXT_FILES: IdentityFile[] = ["SOUL.md", "PrimaryUser.md", "MEMORY.md", "SELF_CONCEPT.md", "INNER_LIFE.md"];
-const SHARED_FILES: IdentityFile[] = ["SOUL.md", "SELF_CONCEPT.md", "INNER_LIFE.md"];
+// SELF_CONCEPT.md is deliberately absent from both: it is the template, and
+// the live account is assembled by framing() below from the graph. Shipping
+// the file as well would put the frozen copy back in the prompt beside the
+// living one, which is exactly the arrangement that let a stale sentence keep
+// voting.
+const CONTEXT_FILES: IdentityFile[] = ["SOUL.md", "PrimaryUser.md", "MEMORY.md", "INNER_LIFE.md"];
+const SHARED_FILES: IdentityFile[] = ["SOUL.md", "INNER_LIFE.md"];
 
 const filesFor = (role?: string) => (!role || role === "primary" ? CONTEXT_FILES : SHARED_FILES);
 
@@ -84,15 +90,30 @@ async function framing(role?: string): Promise<string> {
   const names = filesFor(role);
   const contents = await Promise.all(names.map((name) => readIdentity(name)));
   const present = names.filter((_, i) => contents[i]);
-  if (!present.length) return "";
 
-  const lines = [`${present.join(", ")} are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`];
+  // Assembled from what it has concluded, not read from the file — see
+  // self-concept.ts for why one rewritable document turned an idle hour's
+  // conclusion into permanent identity. The file is the template it started
+  // from, and selfConceptExcerpt falls back to it until there is something
+  // better.
+  //
+  // Resolved before the emptiness check below, not after. This block no
+  // longer comes from `names` — SELF_CONCEPT.md left CONTEXT_FILES when the
+  // graph took over — so gating it on those files being present meant a fresh
+  // agent whose SOUL.md was still empty got no self-concept at all, however
+  // much it had concluded. The old arrangement hid that: SELF_CONCEPT.md was
+  // itself in the list and kept `present` non-empty.
+  const selfConcept = await selfConceptExcerpt();
+  if (!present.length && !selfConcept) return "";
+
+  const lines = present.length
+    ? [`${present.join(", ")} are yours, not reference material about someone else. Each opens with a block saying what it is for; follow it.`]
+    : [];
 
   // Deep identity injection for core files
   const soul = contents[names.indexOf("SOUL.md")];
   if (soul) lines.push(`\n# YOUR IDENTITY\n${soul}`);
-  const selfConcept = contents[names.indexOf("SELF_CONCEPT.md")];
-  if (selfConcept) lines.push(`\n# YOUR SELF-CONCEPT\n${selfConcept}`);
+  if (selfConcept) lines.push(`\n# WHAT YOU HAVE CONCLUDED ABOUT YOURSELF\n${selfConcept}`);
 
   // Notes about the primary user — private to their own conversations, the
   // same rule PrimaryUser.md and MEMORY.md follow above. `filesFor` already
