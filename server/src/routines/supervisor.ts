@@ -51,6 +51,23 @@ export interface RoutineRow {
 /** How long a single run may take before it is abandoned. */
 const RUN_TIMEOUT_MS = 60 * 60_000;
 
+/**
+ * Most tool calls a run nobody asked for may make.
+ *
+ * The timeout above bounds a run that hangs. It bounds nothing about a run that
+ * is busy: the learning loop is instructed to do one step and stop, and a model
+ * that keeps finding one more thing to check instead will spend the hour doing
+ * it and report success. BirdClaw force-advanced its loop on budget exhaustion
+ * for the same reason (`agent/budget.py`).
+ *
+ * Generous on purpose — the Dream Cycle's eight phases each call several tools,
+ * and a ceiling that fires in normal operation would be worse than none,
+ * because the first thing anyone would do is raise it and stop reading it.
+ * Applied only to `autonomous` routines: a run somebody asked for has somebody
+ * waiting, and they can stop it themselves.
+ */
+const AUTONOMOUS_TOOL_CEILING = Number(process.env.AUTONOMOUS_TOOL_CEILING || 120);
+
 /** Enough of the outcome to see what happened without storing a transcript. */
 const MAX_OUTPUT = 4000;
 
@@ -266,6 +283,7 @@ class RoutineSupervisor {
       await sessions.note(session.id, "portal_routine", { routine: row.name, slug: row.slug, phase: "start" });
       const output = await sessions.ask(session.id, await prompt(row, trigger), {
         timeoutMs: RUN_TIMEOUT_MS,
+        ...(row.autonomous ? { maxToolCalls: AUTONOMOUS_TOOL_CEILING } : {}),
       });
       await sessions.note(session.id, "portal_routine", {
         routine: row.name,

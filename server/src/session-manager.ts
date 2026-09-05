@@ -460,6 +460,20 @@ class SessionManager extends EventEmitter {
        * next message, so it needs to know one is open.
        */
       onUi?: (request: any) => void;
+      /**
+       * Most tool calls this run may make before it is stopped.
+       *
+       * A ceiling on work rather than on wall-clock: `timeoutMs` catches a run
+       * that hangs, and catches nothing at all about a run that is busy going
+       * nowhere. An unattended `@continuous` or `@idle` routine has nobody
+       * watching it, so a loop that keeps finding one more thing to grep runs
+       * until the hour is up and reports as a success.
+       *
+       * Counted from tool_execution_start, which is the honest unit here: it is
+       * what the run actually does, it arrives whatever the model streams, and
+       * it needs no polling.
+       */
+      maxToolCalls?: number;
     } = {}
   ): Promise<string> {
     const previous = this.asking.get(sessionId) ?? Promise.resolve("");
@@ -472,7 +486,8 @@ class SessionManager extends EventEmitter {
           opts.timeoutMs ?? 15 * 60_000,
           opts.onReply,
           opts.streamText,
-          opts.onUi
+          opts.onUi,
+          opts.maxToolCalls
         )
       );
     // Kept only while it is the newest, so a finished chain is not held forever.
@@ -489,9 +504,12 @@ class SessionManager extends EventEmitter {
     timeoutMs: number,
     onReply?: (text: string) => void | Promise<void>,
     streamText = true,
-    onUi?: (request: any) => void
+    onUi?: (request: any) => void,
+    maxToolCalls?: number
   ): Promise<string> {
     await this.ensureClient(sessionId);
+    let toolCalls = 0;
+    let exhausted = false;
 
     // pi emits one assistant message per stretch of talking, broken up by tool
     // calls. Each is flushed as it closes so a channel can relay progress
@@ -534,6 +552,15 @@ class SessionManager extends EventEmitter {
           break;
 
         case "tool_execution_start": {
+          toolCalls++;
+          if (maxToolCalls && toolCalls > maxToolCalls && !exhausted) {
+            // Abort rather than reject: the run has done real work and its
+            // partial output is worth keeping, and abort() settles the session
+            // to idle, which is what releases the quiet schedules. The reason
+            // is carried out through `exhausted` so finish() can record it.
+            exhausted = true;
+            void this.abort(sessionId).catch(() => {});
+          }
           if (!onReply) break;
           // Prose first: a tool line landing mid-sentence reads badly.
           flush();
@@ -599,6 +626,12 @@ class SessionManager extends EventEmitter {
       });
       await this.prompt(sessionId, message);
       await finished;
+      if (exhausted) {
+        throw new Error(
+          `The run was stopped after ${maxToolCalls} tool calls — a ceiling, not a crash. ` +
+            `Whatever it had done is kept; nothing was reverted.`,
+        );
+      }
       // Already relayed piece by piece; handing it back would post it twice.
       // Streamed already, so handing it back would post it twice.
       return onReply && streamText ? "" : all.join("\n\n").trim();
