@@ -189,6 +189,55 @@ async function framing(role?: string): Promise<string> {
 }
 
 /**
+ * The tools a task session would get, without starting one.
+ *
+ * Counted by running the tool factories against a stub that records what they
+ * register — no model, no pi session, no cost. The health check needs an answer
+ * when nothing is running, which is exactly when nobody would otherwise notice.
+ *
+ * This exists because a session silently losing two thirds of its tools is a
+ * failure with no error attached to it. Passing pi's `tools` option (rather
+ * than `defaultTools`) left every session with seven built-ins and none of the
+ * portal's own, and the only symptom was the learning loop going quiet — which
+ * looks exactly like a loop with nothing to do. It was found by noticing the
+ * audit log had gone flat.
+ *
+ * The built-ins are pi's and are not counted here: they come from the model
+ * runtime rather than these factories, and the health check reports the two
+ * separately for that reason.
+ */
+export function portalToolNames(): string[] {
+  const names = new Set<string>();
+  const stub = {
+    on() {},
+    registerTool(tool: { name?: string }) {
+      if (tool?.name) names.add(tool.name);
+    },
+  };
+
+  // The same set a task session gets — the narrowest kind, so a shortfall here
+  // means a shortfall everywhere.
+  const cwd = process.cwd();
+  for (const factory of [
+    graphTools(cwd, false, "health"),
+    cachedTools(cwd),
+    webTools(),
+    knowledgeTools(cwd),
+    taskTools("health"),
+    historyTools("health", "primary"),
+    userTools(),
+  ]) {
+    try {
+      factory(stub);
+    } catch {
+      // A factory that throws registers nothing, which is what the count is
+      // meant to catch — so this is deliberately not rethrown.
+    }
+  }
+  return [...names];
+}
+
+/**
  * Skills shipped with the portal, loaded from the image rather than installed.
  *
  * Resolved relative to the compiled file so it works from dist and from source,

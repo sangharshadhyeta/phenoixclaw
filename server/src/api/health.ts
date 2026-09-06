@@ -2,6 +2,7 @@ import { Router } from "express";
 import { nodeCount } from "../graph.js";
 import { getDb, totalUsage } from "../db.js";
 import { localModelConfigured } from "../llm.js";
+import { portalToolNames } from "../pi/sdk-client.js";
 
 /**
  * What this deployment can actually do right now.
@@ -133,12 +134,62 @@ async function storageHealth(): Promise<Dependency[]> {
   return out;
 }
 
+/**
+ * The tools a session would actually be given.
+ *
+ * Every other check here asks whether a *dependency* is reachable. This one
+ * asks whether the portal is still itself: whether the agent, right now, would
+ * be handed the tools it is written to use.
+ *
+ * It exists because that failed once with no error attached. Passing pi's
+ * `tools` option instead of `defaultTools` left every session with seven
+ * built-ins and none of the portal's own, and the only visible symptom was the
+ * learning loop going quiet — which looks exactly like a loop with nothing to
+ * do. It was found by noticing the audit log had gone flat, hours later.
+ *
+ * The floor is a count rather than a list on purpose. A named list would have
+ * to be edited every time a tool is added, and a check nobody updates is a
+ * check that eventually gets deleted. What this catches is the shape of the
+ * failure — most of them missing at once — not the loss of any single one.
+ */
+const TOOL_FLOOR = 15;
+
+function toolHealth(): Dependency {
+  let names: string[];
+  try {
+    names = portalToolNames();
+  } catch (e) {
+    return {
+      name: "agent tools",
+      status: "down",
+      detail: `could not be built: ${(e as Error).message}`,
+      costs: "the agent has no memory, no plan and no web — it can only read files",
+    };
+  }
+
+  const missing = ["graph_remember", "graph_recall", "task_plan", "web_fetch"].filter(
+    (t) => !names.includes(t),
+  );
+  if (names.length < TOOL_FLOOR || missing.length) {
+    return {
+      name: "agent tools",
+      status: "down",
+      detail:
+        `${names.length} registered` +
+        (missing.length ? `, missing ${missing.join(", ")}` : `, expected at least ${TOOL_FLOOR}`),
+      costs: "sessions are missing tools they are written to use, and will work around it silently",
+    };
+  }
+  return { name: "agent tools", status: "ok", detail: `${names.length} registered` };
+}
+
 export function healthRouter(): Router {
   const router = Router();
 
   router.get("/health", async (_req, res) => {
     const dependencies = [
       ...(await storageHealth()),
+      toolHealth(),
       await extractionHealth(),
       await embeddingHealth(),
       await searchHealth(),
