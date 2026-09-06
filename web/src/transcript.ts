@@ -189,10 +189,25 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
         closeCurrent();
         const brief = String(p.message ?? "");
         const step = /^# THIS STEP\n+(.+)$/m.exec(brief)?.[1]?.trim();
+        /**
+         * A routine's own prompt comes through here too, and it is framing
+         * written for the model — the `<routine>` block, then the whole
+         * instruction set. Rendering it verbatim put a page of prompt in the
+         * transcript as though somebody had typed it. One line is what a
+         * reader wants: this woke up.
+         */
+        const routine = /<routine name="([^"]+)"/.exec(brief)?.[1];
+        const checked = /<portal-check>/.test(brief);
         items.push({
           kind: "notice",
           id: `s${ev.seq}`,
-          text: step ? `Working on: ${step}` : "Working the plan",
+          text: routine
+            ? `${routine} — woken by its schedule.`
+            : checked
+              ? "Checking the last answer."
+              : step
+                ? `Working on: ${step}`
+                : "Working the plan",
           tone: "info",
         });
         break;

@@ -359,7 +359,17 @@ class RoutineSupervisor {
       // "it started this, then it did these things, then it finished" rather
       // than as loose output appearing from nowhere.
       await sessions.note(session.id, "portal_routine", { routine: row.name, slug: row.slug, phase: "start" });
+      /**
+       * `internal`, because a schedule is not a person typing.
+       *
+       * A routine's prompt is framing written for the model — the `<routine>`
+       * block saying nobody is waiting on a reply, then the instructions — and
+       * it was recorded as `portal_prompt`, so the transcript rendered the
+       * whole thing as though somebody had typed it. What a reader wants there
+       * is one line: this routine woke up.
+       */
       const output = await sessions.ask(session.id, await prompt(row, trigger), {
+        internal: true,
         timeoutMs: RUN_TIMEOUT_MS,
         ...(row.autonomous ? { maxToolCalls: AUTONOMOUS_TOOL_CEILING } : {}),
       });
