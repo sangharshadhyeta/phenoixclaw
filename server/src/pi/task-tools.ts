@@ -30,6 +30,46 @@ const render = (tasks: TaskRow[]): string =>
     ? tasks.map((t) => `${MARK[t.status] ?? "·"} [${t.seq}] ${t.description}${t.result ? ` — ${t.result}` : ""}`).join("\n")
     : "No plan yet.";
 
+/**
+ * Pull the step text out of whatever shape arrived.
+ *
+ * Three live runs sent three different wrong shapes, each a reasonable reading
+ * of "one short line per step": an array of `{step, description}` objects, the
+ * same with every key double-quoted (JSON written inside JSON), and — seven
+ * times in a row, unchanged by an error message showing the correct call —
+ * the whole argument object nested inside itself, `{"steps": [{"steps":
+ * [...]}]}`.
+ *
+ * Being strict here has now cost more turns than any other single thing in the
+ * portal. A tool that knows what was meant should take it: the shape is not
+ * the point, the plan is. So this walks whatever it is given and collects the
+ * strings, in order.
+ *
+ * The floor is that a step must be text. Numbers are indices, not
+ * descriptions — `{"step": 1, "description": 1}` has no step in it at all, and
+ * inventing one called "1" would put a garbage line in the plan rather than
+ * admit the call could not be read.
+ */
+export function collectSteps(input: unknown, depth = 0): string[] {
+  if (depth > 4) return [];
+  if (typeof input === "string") {
+    const text = input.trim();
+    return text ? [text] : [];
+  }
+  if (Array.isArray(input)) return input.flatMap((item) => collectSteps(item, depth + 1));
+  if (input && typeof input === "object") {
+    const out: string[] = [];
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      const name = key.replace(/^"+|"+$/g, "").toLowerCase();
+      // A field that is plainly not step text: an index, a kind, a flag.
+      if (["type", "kind", "status", "done", "index", "id", "seq", "n"].includes(name)) continue;
+      out.push(...collectSteps(value, depth + 1));
+    }
+    return out;
+  }
+  return [];
+}
+
 /** An ExtensionFactory — see pi's InlineExtension. One per session, bound to it. */
 export function taskTools(sessionId: string) {
   return (pi: any): void => {
@@ -77,28 +117,7 @@ export function taskTools(sessionId: string) {
         ),
       }),
       async execute(_id: string, p: any) {
-        const steps = (Array.isArray(p.steps) ? p.steps : [])
-          .map((raw: unknown) => {
-            if (typeof raw === "string") return raw;
-            if (raw && typeof raw === "object") {
-              // Whatever it called the field — and however many layers of
-              // quoting it arrived under.
-              for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-                const name = key.replace(/^"+|"+$/g, "").toLowerCase();
-                // Strings only. A step is a sentence, and the numbers in
-                // these objects are indices — `{"step": 1, "description": 1}`
-                // has no step text in it at all, and inventing one called "1"
-                // would put a garbage line in the plan rather than admit the
-                // call could not be read.
-                if (["description", "step", "text", "title", "name", "task"].includes(name) && typeof value === "string") {
-                  return value;
-                }
-              }
-            }
-            return "";
-          })
-          .map((x: string) => x.trim())
-          .filter(Boolean);
+        const steps = collectSteps(p.steps);
         if (!steps.length) {
           /**
            * Show the call, do not describe it.

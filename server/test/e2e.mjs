@@ -15,6 +15,7 @@
  *     PORTAL_PASSWORD=... node server/test/e2e.mjs [http://127.0.0.1:8101]
  */
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const BASE = process.argv[2] || process.env.PORTAL_URL || "http://127.0.0.1:8101";
@@ -78,7 +79,26 @@ async function run(title, message) {
     if (e.type === "tool_execution_start") tools.push(e.payload?.toolName);
     if (e.type === "message_end" && e.payload?.message?.role === "assistant") assistantTurns++;
   }
-  return { id: session.id, status, tools, assistantTurns, workspace: `/workspaces/session-${session.id}` };
+  return {
+    id: session.id,
+    status,
+    tools,
+    assistantTurns,
+    workspace: `/workspaces/session-${session.id}`,
+    /**
+     * A planned document does not live in the session's workspace.
+     *
+     * It goes to the shared artefact store, so a second run at the same
+     * request finds the first (artefacts.ts). This harness looked in the
+     * workspace and reported every planned file missing while the work was
+     * sitting, correct and complete, one directory away.
+     */
+    artefact: (name) => {
+      const store = process.env.ARTEFACTS_DIR || path.join(process.cwd(), "data", "artefacts");
+      const stem = path.basename(name).replace(/\.[^.]+$/, "");
+      return path.join(store, stem, path.basename(name));
+    },
+  };
 }
 
 // --- a module written a section at a time ----------------------------------
@@ -88,7 +108,7 @@ async function run(title, message) {
 {
   console.log("\n  writing a module incrementally");
   const r = await run("e2e-code", "Write stats.mjs — a module exporting mean, median, stddev, and a summary function that uses all three. Each properly documented.");
-  const file = `${r.workspace}/stats.mjs`;
+  const file = r.artefact("stats.mjs");
   console.log(`      ${r.status}, ${r.assistantTurns} assistant turns, tools: ${r.tools.join(" → ") || "none"}`);
 
   ok("the run settles rather than hanging", r.status !== "running", `status was ${r.status}`);

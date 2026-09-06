@@ -407,6 +407,29 @@ const long = (s) => `${s} `.repeat(60);
   const mixed = await tt.task_plan.execute("id", { steps: [{ step: 1 }, { description: "Fix it" }] });
   ok("a step with text is kept and a bare index is not",
      /\[1\] Fix it/.test(mixed.content[0].text) && !/\[2\]/.test(mixed.content[0].text));
+
+  /**
+   * The whole argument object, nested inside itself.
+   *
+   * A live run sent `{"steps": [{"steps": [...]}]}` seven times in a row,
+   * unchanged by an error message showing the correct call. Being strict here
+   * has cost more turns than anything else in the portal: the shape is not the
+   * point, the plan is.
+   */
+  const { collectSteps } = await import(dist("pi/task-tools.js"));
+  ok("the argument object nested inside itself is understood",
+     JSON.stringify(collectSteps([{ '"steps"': [{ '"description"': "read the file", '"type"': null }] }])) ===
+       '["read the file"]');
+  ok("and plain strings still pass straight through",
+     JSON.stringify(collectSteps(["one", "two"])) === '["one","two"]');
+  ok("fields that are plainly not step text are skipped",
+     JSON.stringify(collectSteps([{ kind: "section", status: "pending", description: "the real one" }])) ===
+       '["the real one"]');
+  ok("an empty nest yields nothing rather than a blank step",
+     collectSteps([{ '"steps"': [] }]).length === 0);
+  // Depth-bounded, so a self-referential shape cannot spin.
+  const deep = { a: { b: { c: { d: { e: ["too deep"] } } } } };
+  ok("it does not descend forever", collectSteps([deep]).length === 0);
 }
 
 // --- write_next writes the section that is actually in hand ----------------

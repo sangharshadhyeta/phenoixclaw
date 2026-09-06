@@ -430,6 +430,15 @@ class SessionManager extends EventEmitter {
    * three more steps.
    */
   private async afterTurn(sessionId: string): Promise<void> {
+    /**
+     * Every step of a plan ends with an `agent_end`, so this runs between them
+     * too — and `workPlan` declines when one is already in flight, which sent
+     * the fall-through straight to "idle" after each step. The session then
+     * reported itself finished several times mid-plan, which is what the whole
+     * `afterTurn` restructure was meant to stop. The driver owns the status
+     * while it is driving.
+     */
+    if (this.working.has(sessionId)) return;
     try {
       const outcome = await this.workPlan(sessionId);
       if (outcome !== undefined) return; // workPlan settles the session itself.
