@@ -17,6 +17,7 @@ import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
+import { temporalContext } from "./temporal-context.js";
 import { contextAssembler } from "./context-assembler.js";
 import { historyTools } from "./history-tools.js";
 import { cachedTools } from "./cached-tools.js";
@@ -324,7 +325,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.
-        { name: "graph", factory: graphTools(opts.cwd, opts.kind !== "task") },
+        { name: "graph", factory: graphTools(opts.cwd, opts.kind !== "task", opts.sessionId) },
 
         // Overrides read/ls with graph-backed memoization of their results.
         // Registered after the tool-bearing factories above and before any
@@ -343,6 +344,9 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // model's own initiative is recall that does not happen on the turns
         // where it matters most — see memory-injector.ts for the session that
         // went looking through the filesystem for something already in memory.
+        // What day it is, every turn. Registered before the memory injector so
+        // "today" is established before anything recalled is dated against it.
+        { name: "temporal", factory: temporalContext() },
         { name: "memory-injector", factory: memoryInjector(opts.cwd, opts.role, opts.sessionId) },
         // Assembles each request from the system prompt, what the injector
         // just retrieved, and the recent window — rather than sending the

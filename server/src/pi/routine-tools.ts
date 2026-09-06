@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { nanoid } from "nanoid";
 import { pruneOldRecords } from "../db.js";
-import { pruneByAge, pruneExpired } from "../graph.js";
+import { decayStaleBeliefs, pruneByAge, pruneExpired } from "../graph.js";
 import { getDb, type SessionRow } from "../db.js";
 import { unscopeKey } from "../agent.js";
 import { channelSupervisor } from "../channels/supervisor.js";
@@ -385,15 +385,27 @@ export function selfMaintenanceTools() {
       label: "Cleanup",
       description:
         "Prune stale sessions, old tasks, and expired or aged-out memory (cached tool results, page " +
-        "captures, old episodes and workspace notes) to keep the system efficient. anchor/user/project " +
-        "nodes are never touched, regardless of age. Neither are routines, pinned sessions, or the " +
-        "session a routine works in — none of those go stale, and none are yours to remove.",
+        "captures, old episodes and workspace notes), and let beliefs nobody has re-observed lose " +
+        "confidence so mistakes fade instead of hardening. anchor/user/project nodes are never " +
+        "touched, regardless of age. Neither are routines, pinned sessions, or the session a routine " +
+        "works in — none of those go stale, and none are yours to remove.",
       parameters: Type.Object({
         days: Type.Optional(Type.Number({ description: "How many days of history to keep. Defaults to 30." })),
       }),
       async execute(_id: string, p: any) {
         const days = typeof p.days === "number" ? p.days : 30;
         const { sessions } = await pruneOldRecords(days);
+        /**
+         * Beliefs nobody has re-observed lose standing.
+         *
+         * This is the half that makes the graph self-correcting rather than
+         * something a person has to keep weeding. A wrong belief used to be
+         * permanent — confidence only ever rose — so every mistake had to be
+         * found and deleted by hand, which does not scale past the first few.
+         * Decay means an unrepeated claim fades on its own while a real one,
+         * re-observed even occasionally, stays where it is.
+         */
+        const decayed = await decayStaleBeliefs(days);
         const expired = await pruneExpired();
         const aged = (
           await Promise.all(
@@ -401,8 +413,8 @@ export function selfMaintenanceTools() {
           )
         ).reduce((a, b) => a + b, 0);
         return ok(
-          `Cleanup complete. Pruned ${sessions} sessions, ${expired} expired and ` +
-            `${aged} aged-out memory nodes.`,
+          `Cleanup complete. Pruned ${sessions} sessions, ${expired} expired and ${aged} ` +
+            `aged-out memory nodes, and let ${decayed} unrepeated belief(s) lose confidence.`,
         );
       },
     });

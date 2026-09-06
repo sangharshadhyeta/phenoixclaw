@@ -2,6 +2,8 @@ import { upsertNode, upsertEdge, neighbors, getNode } from "./graph.js";
 import { ingestText } from "./ingest.js";
 import { reconstructAssistantText } from "./transcript.js";
 import { eventsSince, type SessionRow } from "./db.js";
+import { rememberUser, type UserCategory } from "./user-knowledge.js";
+import { nextWeekday } from "./pi/temporal-context.js";
 
 /**
  * Harvest a conversation into the graph as it happens.
@@ -72,6 +74,43 @@ const MAX_SUMMARY = 700;
 const HARVEST_CONFIDENCE = 0.3;
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/**
+ * Pin relative dates to real ones, while they are still unambiguous.
+ *
+ * "I have a meeting on Thursday" is perfectly clear when said and meaningless
+ * a fortnight later: recalled in isolation it cannot say whether that Thursday
+ * is coming or long gone, and the agent will happily repeat it as though it
+ * were still ahead. The conversation's own timestamp is what disambiguates it,
+ * and that is only to hand at the moment of recording.
+ *
+ * So the resolution happens here rather than at recall. This is the whole
+ * answer to whether a separate calendar is needed: it is not, provided the
+ * graph stores what a relative reference *resolved to* rather than the words
+ * that produced it. A date is a fact; "Thursday" is a fact plus the day it was
+ * uttered.
+ *
+ * Annotated rather than substituted — "Thursday (2026-09-10)" — because the
+ * original wording is what a later search will match on, and a bare date would
+ * lose it. A bare weekday is read as the *next* one, which is what it almost
+ * always means in speech; the annotation makes that reading visible so it can
+ * be contradicted rather than silently assumed.
+ */
+export function pinDates(text: string, said: Date): string {
+  return text.replace(
+    /\b(last |next |this |on |by |before |after )?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
+    (match, lead: string | undefined, day: string) => {
+      const index = WEEKDAYS.indexOf(day.toLowerCase());
+      if (index < 0) return match;
+      const prefix = (lead ?? "").trim().toLowerCase();
+      const target = nextWeekday(said, index);
+      if (prefix === "last") target.setDate(target.getDate() - 7);
+      return `${match} (${target.toISOString().slice(0, 10)})`;
+    },
+  );
+}
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** What the person asked, from the session's own portal_prompt events. */
@@ -90,9 +129,24 @@ async function prompts(sessionId: string, sinceSeq = 0): Promise<string[]> {
   return out;
 }
 
-/** `conversation:<date>:<session>` — date-scoped so a long-lived chat still rolls over daily. */
-const nodeNameFor = (session: SessionRow): string =>
-  `conversation:${new Date().toISOString().slice(0, 10)}:${session.id}`;
+/**
+ * `conversation:<date>:<session>`, or `iteration:<date>:<routine>` for a run
+ * nobody asked for.
+ *
+ * Named apart because they are different things and are read differently: a
+ * conversation is something the person was part of, an iteration is the agent
+ * working alone. Recalling one as the other would have the agent tell you
+ * "you asked me to read pi's README", which nobody did.
+ *
+ * Date-scoped either way, so a long-lived session rolls over daily rather than
+ * growing one node forever.
+ */
+const nodeNameFor = (session: SessionRow): string => {
+  const day = new Date().toISOString().slice(0, 10);
+  return session.kind === "routine" && session.routine_slug
+    ? `iteration:${day}:${session.routine_slug}`
+    : `conversation:${day}:${session.id}`;
+};
 
 /**
  * Attach this conversation to the one before it in the same workspace.
@@ -112,9 +166,67 @@ async function linkToPrevious(name: string, workspace: string): Promise<void> {
   if (previous) await upsertEdge(previous.name, "precedes", name);
 }
 
+/**
+ * First-person statements about the person, and which drawer they belong in.
+ *
+ * Two things go wrong without this. "My favourite colour is vermilion" was
+ * stored only inside a conversation episode, so answering "what colour tie
+ * should I wear" required the model to *search* for it — and searching is
+ * something it has to think of doing. It did not, and asked what colour the
+ * shirt was instead. Meanwhile `remember_user` sat unused, because it too is a
+ * tool the model must choose to call while it is busy answering.
+ *
+ * What the person says about themselves belongs in the block that is injected
+ * every turn regardless of the question (userKnowledgeExcerpt, in the system
+ * prompt), not in the tier that has to be found. A preference is not something
+ * to look up; it is something to know.
+ *
+ * Matched on the shape of the sentence rather than by asking a model: "I
+ * prefer", "my favourite", "I always", "I hate". Cheap, no call, and it fails
+ * by not matching rather than by inventing — a sentence that is not obviously
+ * about the speaker simply goes to the ordinary extractor instead.
+ */
+const PERSONAL: { pattern: RegExp; category: UserCategory }[] = [
+  { pattern: /\bI (?:prefer|like|love|hate|dislike|want|need|would rather)\b/i, category: "preferences" },
+  { pattern: /\bmy (?:favourite|favorite|preferred)\b/i, category: "preferences" },
+  { pattern: /\bI (?:always|never|usually|tend to|generally)\b/i, category: "behaviors" },
+  { pattern: /\bI(?:'m| am) (?:interested in|working on|learning|into)\b/i, category: "interests" },
+  { pattern: /\b(?:I am|I'm|my name is|I work|I run|I use|I have)\b/i, category: "facts" },
+];
+
+/** Sentences, so one aside does not drag a whole paragraph into user knowledge. */
+const sentences = (text: string): string[] =>
+  text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 10 && x.length < 300);
+
+/**
+ * File what the person said about themselves where it will always be read.
+ *
+ * Returns how many landed. Failures are swallowed per sentence: this is an
+ * improvement on the record, and the episode already holds the words verbatim.
+ */
+async function harvestPersonalFacts(asked: string[]): Promise<number> {
+  let kept = 0;
+  for (const sentence of asked.flatMap(sentences)) {
+    const match = PERSONAL.find((p) => p.pattern.test(sentence));
+    if (!match) continue;
+    try {
+      await rememberUser(sentence, match.category);
+      kept++;
+    } catch {
+      /* the verbatim record already has it */
+    }
+  }
+  return kept;
+}
+
 export interface Harvest {
   node?: string;
   skipped?: string;
+  /** How many first-person statements were filed as user knowledge. */
+  personal?: number;
   /**
    * Tier 2, still running.
    *
@@ -140,10 +252,13 @@ export async function harvestTurn(
   ]);
   const seq = saidAll.length ? saidAll[saidAll.length - 1].seq : extractedTo;
 
-  const recentAsked = asked.slice(-MAX_REQUESTS).map((a) => clip(a, MAX_REQ_CHARS));
+  // Dates pinned against the moment the conversation happened, which is the
+  // only time they are unambiguous — see pinDates.
+  const now = new Date();
+  const recentAsked = asked.slice(-MAX_REQUESTS).map((a) => clip(pinDates(a, now), MAX_REQ_CHARS));
   const recentSaid = saidAll
     .slice(-MAX_OUTCOMES)
-    .map((c) => clip(squash(c.text), MAX_OUTCOME_CHARS));
+    .map((c) => clip(pinDates(squash(c.text), now), MAX_OUTCOME_CHARS));
 
   if (!recentAsked.length && !recentSaid.length) {
     return { harvest: { skipped: "nothing said yet", extraction: nothing }, seq };
@@ -153,8 +268,11 @@ export async function harvestTurn(
   // question about order, and a date alone cannot order two conversations that
   // happened an hour apart — which is most of them.
   const parts = [`when: ${new Date().toISOString().slice(0, 16).replace("T", " ")}`];
-  if (recentAsked.length) parts.push(`they asked: ${recentAsked.join("; ")}`);
-  if (recentSaid.length) parts.push(`you said: ${recentSaid.join("; ")}`);
+  const alone = session.kind === "routine";
+  // A routine's "prompt" is its own standing instructions, identical every
+  // run. Recording it would say nothing and crowd out what actually happened.
+  if (!alone && recentAsked.length) parts.push(`they asked: ${recentAsked.join("; ")}`);
+  if (recentSaid.length) parts.push(`${alone ? "you did" : "you said"}: ${recentSaid.join("; ")}`);
   const summary = clip(parts.join(" | "), MAX_SUMMARY);
 
   if (summary.length < MIN_HARVEST_CHARS) {
@@ -184,6 +302,14 @@ export async function harvestTurn(
   const name = nodeNameFor(session);
   await upsertNode(name, "episode", summary, HARVEST_CONFIDENCE);
 
+  // What they said about themselves goes where it is always read, not only
+  // where it can be searched — see harvestPersonalFacts.
+  // Only from a real conversation: a routine's "I" is the agent talking to
+  // itself, and filing that as something the person told you about themselves
+  // is how the user-knowledge block fills up with the agent's own voice.
+  const personal =
+    session.kind === "routine" ? 0 : await harvestPersonalFacts(asked.slice(-MAX_REQUESTS)).catch(() => 0);
+
   // Scoped to the workspace it happened in, so a recall from that project finds
   // it and an unrelated one does not — the same `scoped_to` edge graph-tools
   // uses. A failure here costs scoping, not the memory.
@@ -211,10 +337,32 @@ export async function harvestTurn(
     /* the spine is a convenience; the node itself is the record */
   }
 
-  // --- tier 2: only the new material, started but not awaited ---
-  const fresh = saidNew.map((c) => c.text).join("\n\n");
-  const newAsked = (await prompts(session.id, extractedTo)).join("\n");
-  const material = [newAsked, fresh].filter(Boolean).join("\n\n");
+  /**
+   * Tier 2 reads what the *person* said, and not what the agent answered.
+   *
+   * Mining its own output turned a mistake into a belief. Asked what day it
+   * was — before anything told it — the agent guessed "Friday, September 5,
+   * 2026", and the extractor dutifully filed `September 5, 2026 (fact): "The
+   * current date."`. From then on every turn carried a memory contradicting
+   * the real date, and the model had to reason its way out of the conflict
+   * before answering anything:
+   *
+   *     "This is contradictory. However, the TODAY section is usually the most
+   *      reliable source... I will go with the TODAY block."
+   *
+   * It got there, and it should never have had to. An agent that harvests its
+   * own answers as evidence corroborates itself: the second telling is not
+   * confirmation, it is the same claim heard twice, and confidence rises
+   * anyway. That is the entrenchment loop the self-concept work already had to
+   * break for identity, arriving again for facts.
+   *
+   * So the person is the source. What they say about themselves and their work
+   * is evidence; what the agent concluded is a conclusion, and it has
+   * `graph_remember` to record one deliberately when it is worth keeping. The
+   * verbatim record above is unaffected — tier 1 still holds both halves of the
+   * exchange, because what was *said* is a record either way.
+   */
+  const material = (await prompts(session.id, extractedTo)).join("\n");
   const extraction =
     material.length >= MIN_HARVEST_CHARS
       ? ingestText(material, `conversation:${session.id}`, name)
@@ -224,5 +372,5 @@ export async function harvestTurn(
           .catch(() => 0)
       : nothing;
 
-  return { harvest: { node: name, extraction }, seq };
+  return { harvest: { node: name, personal, extraction }, seq };
 }

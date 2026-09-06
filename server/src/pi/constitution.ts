@@ -60,6 +60,11 @@ export const AUTONOMOUS_TOOLS = new Set([
   // Its own memory.
   "graph_remember",
   "graph_recall",
+  // Retracting a belief it has found to be wrong. On the list because the
+  // alternative is an autonomous run that notices a contradiction and can do
+  // nothing about it — and because forgetting is bounded: anchors, user notes
+  // and projects refuse it, so it cannot reach identity.
+  "graph_forget",
   "graph_reflect",
   "graph_episode",
   "workspace_note",

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { agentHome } from "./agent.js";
 import { getNode, upsertNode } from "./graph.js";
@@ -43,18 +43,74 @@ const KEY: Record<IdentityFile, string> = {
 const isIdentityFile = (name: string): name is IdentityFile =>
   (IDENTITY_FILES as readonly string[]).includes(name);
 
-const diskPath = (name: string) => path.join(agentHome(), name);
+/**
+ * Where the human-readable mirror lives.
+ *
+ * A dot-directory, and not agentHome() itself, because agentHome() *is* the
+ * working directory of every agent and routine session. Sitting there, the
+ * mirrors were the first thing `ls .` returned, so the learning loop read them
+ * — 22 times in one afternoon of the audit log, alongside 21 reads of pi's own
+ * README. It was not told to: the instructions name `self_review` and never
+ * mention a file. It simply saw SELF_CONCEPT.md in its own folder and did the
+ * obvious thing.
+ *
+ * And the obvious thing was wrong. The graph copy of SELF_CONCEPT.md is the
+ * *template*; the live self-concept is assembled from separate conclusions
+ * (self-concept.ts). Reading the file returns exactly the monolith that work
+ * existed to remove, and does it convincingly, because a file in your own
+ * directory looks authoritative.
+ *
+ * The mirror is still worth having — human-readable, git-diffable, and
+ * something to recover from if the graph is lost. It just should not be
+ * underfoot. CONSTITUTION.md stays where it is: it is disk-only by design,
+ * genuinely the source rather than a copy, and PROTECTED_PATHS guards it there.
+ */
+const MIRROR_DIR = ".identity";
+const mirrorDir = () => path.join(agentHome(), MIRROR_DIR);
+const diskPath = (name: string) => path.join(mirrorDir(), name);
+/** Where the mirrors used to be, so an existing install can be moved once. */
+const legacyDiskPath = (name: string) => path.join(agentHome(), name);
 
 function readDisk(name: string): string {
   try {
-    return existsSync(diskPath(name)) ? readFileSync(diskPath(name), "utf8") : "";
+    if (existsSync(diskPath(name))) return readFileSync(diskPath(name), "utf8");
+    // An install from before the mirrors moved: still readable, so a graph
+    // wipe can still be recovered from, and relocated below on next write.
+    return existsSync(legacyDiskPath(name)) ? readFileSync(legacyDiskPath(name), "utf8") : "";
   } catch {
     return "";
   }
 }
 
+/**
+ * Move the mirrors out of the agent's working directory, once.
+ *
+ * Idempotent, and it reads before it removes: if writing the new copy fails,
+ * the old one is left alone rather than the content being lost between two
+ * places.
+ */
+export function relocateMirrors(): number {
+  let moved = 0;
+  for (const name of IDENTITY_FILES) {
+    const from = legacyDiskPath(name);
+    if (!existsSync(from)) continue;
+    try {
+      const content = readFileSync(from, "utf8");
+      mkdirSync(mirrorDir(), { recursive: true });
+      writeFileSync(diskPath(name), content, "utf8");
+      rmSync(from);
+      moved++;
+    } catch {
+      // Best effort: the graph is the source, and a mirror that fails to move
+      // is a tidiness problem rather than a loss.
+    }
+  }
+  return moved;
+}
+
 function writeDisk(name: string, content: string): void {
   try {
+    mkdirSync(mirrorDir(), { recursive: true });
     writeFileSync(diskPath(name), content, "utf8");
   } catch {
     // Best effort — the graph write already happened and is what every

@@ -28,10 +28,27 @@ const CHUNK_CHARS = 500;
 /** A page yields plenty; past this the returns fall off and the latency does not. */
 const MAX_CHUNKS = 6;
 
+/**
+ * The last two sentences exist because of a specific piece of pollution.
+ *
+ * "Today is Friday, September 5, 2026" produced the proposition "The current
+ * date is September 5, 2026", which was filed as a durable fact and then
+ * contradicted the real date on every subsequent turn. A fact that is true for
+ * one day is not knowledge; it is a reading, and a graph that has no way to
+ * un-know it will assert yesterday forever.
+ *
+ * The distinction to keep is between a claim about the world and a claim about
+ * this moment. "The build takes ninety seconds" survives being read next
+ * month. "It is 4pm" does not.
+ */
 const PROPOSITION_SYSTEM =
   "Break the text into atomic propositions: standalone factual statements, each understandable " +
   "on its own with no pronouns left dangling. Keep only what the text actually asserts — never " +
-  "add, infer or embellish. Reply with a JSON array of strings and nothing else.";
+  "add, infer or embellish. " +
+  "Skip anything true only at the moment of writing: the current date or time, what day of the " +
+  "week it is, what is happening right now, how long ago something was. Keep the event, not the " +
+  "reading of the clock — \"a meeting on Thursday\" is worth recording, \"today is Friday\" is not. " +
+  "Reply with a JSON array of strings and nothing else.";
 
 const ENTITY_SYSTEM =
   "Extract the named entities and their relationships from these facts. Reply with a JSON array " +
@@ -49,8 +66,24 @@ const ENTITY_SYSTEM =
  * `concept`, which is what they are to a knowledge graph: a named thing the
  * agent can hold an opinion about.
  */
+/**
+ * `person` maps to `concept`, not to `user`.
+ *
+ * `user` is the most expensive type in the graph: those nodes are assembled
+ * into `userKnowledgeExcerpt` and put in the system prompt of every single turn
+ * with the primary user, regardless of what was asked. It is reserved for
+ * things the person actually said about themselves — recorded deliberately by
+ * `remember_user`, or by harvest.ts matching a first-person statement.
+ *
+ * An extractor writing there filled it with the shape of its own paraphrase:
+ * "The individual who has a meeting and is seeking advice on attire", "The
+ * individual receiving information from the speaker". Both are true, useless,
+ * and were about to be read on every turn forever. A person mentioned in text
+ * is a concept like any other; the person the agent works for is not something
+ * to be inferred from a pronoun.
+ */
 const TYPE_MAP: Record<string, NodeType> = {
-  person: "user",
+  person: "concept",
   org: "concept",
   place: "concept",
   concept: "concept",
@@ -158,7 +191,10 @@ export async function ingestText(
       const e = raw as Record<string, unknown>;
       const name = asString(e.name);
       if (!name) continue;
-      const type = TYPE_MAP[asString(e.type).toLowerCase()] ?? "concept";
+      // Never `user`, whatever the map says — see TYPE_MAP. That type is
+      // written deliberately or not at all.
+      const mapped = TYPE_MAP[asString(e.type).toLowerCase()] ?? "concept";
+      const type: NodeType = mapped === "user" ? "concept" : mapped;
       const summary = asString(e.summary) || name;
       await upsertNode(name, type, summary, 0.4);
       await linkToSource(sourceNode, name);

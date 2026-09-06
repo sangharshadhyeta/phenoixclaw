@@ -18,7 +18,7 @@ import {
 import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
-import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles } from "./identity.js";
+import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors } from "./identity.js";
 import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
@@ -634,6 +634,14 @@ if (process.env.EMBEDDING_BASE_URL) {
     }
     if (done) console.log(`[portal] embedded ${done} memory node(s); semantic recall now covers them`);
   })();
+}
+
+// The mirrors used to sit in agentHome(), which is every agent session's own
+// working directory — so `ls .` showed them and the learning loop read them
+// instead of using its tools. See relocateMirrors.
+const relocated = relocateMirrors();
+if (relocated > 0) {
+  console.log(`[portal] moved ${relocated} identity mirror(s) out of the agent's working directory`);
 }
 
 const renamed = await stopIdentityNamingFiles();

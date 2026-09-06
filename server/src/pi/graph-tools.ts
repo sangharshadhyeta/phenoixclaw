@@ -1,8 +1,11 @@
 import { Type } from "typebox";
 import { keywordPrune } from "../prune.js";
+import { recordAudit } from "../db.js";
 import {
+  getNode,
   neighbors,
   recentNodes,
+  removeNode,
   scopedRecall,
   scopeToProject,
   upsertEdge,
@@ -33,7 +36,7 @@ const logKey = (kind: string) => `${kind}:${Date.now()}:${Math.random().toString
  * than answering a question in front of you — see sdk-client.ts for why a
  * session working in somebody's repository does not get them.
  */
-export function graphTools(cwd: string, reflective = true) {
+export function graphTools(cwd: string, reflective = true, sessionId?: string) {
   return (pi: any): void => {
     pi.registerTool({
       name: "graph_remember",
@@ -73,6 +76,65 @@ export function graphTools(cwd: string, reflective = true) {
           content: [{ type: "text" as const, text: `Remembered "${name}".` }],
           details: {},
         };
+      },
+    });
+
+    /**
+     * The correction path.
+     *
+     * Without one, a wrong belief could only be removed by a person editing
+     * the database, which does not scale past the first few — and the agent
+     * would go on asserting it in the meantime, because confidence only ever
+     * rose. Decay (decayStaleBeliefs) lets a mistake fade quietly; this lets
+     * the agent retract one the moment it *notices*, which is both faster and
+     * the only response that makes sense when it can see the contradiction.
+     */
+    pi.registerTool({
+      name: "graph_forget",
+      label: "Correct something you believed",
+      description:
+        "Remove something from your memory that you have found to be wrong: a fact that has since " +
+        "changed, something you recorded from a page that turned out to be untrue, a claim you now " +
+        "have better evidence against. Use it as soon as you notice the contradiction rather than " +
+        "answering around it, and record what is actually true with graph_remember afterwards so " +
+        "the correction itself is kept. Your identity, what you know about the person you work for, " +
+        "and project anchors cannot be removed this way — those are corrected by rewriting them.",
+      promptSnippet: "graph_forget — remove a belief you have found to be wrong",
+      parameters: Type.Object({
+        name: Type.String({ description: "The exact name of the node, as graph_recall shows it." }),
+        why: Type.String({ description: "What makes it wrong. Kept in the audit log." }),
+      }),
+      async execute(_id: string, p: any) {
+        const name = String(p?.name ?? "").trim();
+        const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+        if (!name) return said("Nothing named to forget.");
+
+        const node = await getNode(name);
+        if (!node) return said(`Nothing in your memory is called "${name}".`);
+
+        // anchor is identity, user is what the person told you about
+        // themselves, project is where work happens. None of them is a claim
+        // about the world that could turn out false, and each has its own edit
+        // path — deleting one here would be a way round those, not a correction.
+        if (["anchor", "user", "project"].includes(node.type)) {
+          const instead =
+            node.type === "anchor"
+              ? "Use identity_update to rewrite it."
+              : node.type === "user"
+                ? "Use remember_user to record what is actually true."
+                : "A project is where work happens, not a claim about the world.";
+          return said(`"${name}" is a ${node.type}, not a belief that can be wrong. ${instead}`);
+        }
+
+        await removeNode(name);
+        void recordAudit({
+          kind: "graph-forget",
+          tool: "graph_forget",
+          subject: name,
+          reason: String(p?.why ?? "").slice(0, 500),
+          sessionId,
+        });
+        return said(`Forgotten: "${name}". Record what is true instead, so the correction is kept.`);
       },
     });
 

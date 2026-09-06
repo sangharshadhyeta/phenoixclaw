@@ -3,6 +3,7 @@ import {
   arrayValue,
   DuckDBInstance,
   FLOAT,
+  listValue,
   TIMESTAMPTZ,
   timestampTZValue,
   type DuckDBConnection,
@@ -53,6 +54,8 @@ export interface NodeRow {
   category?: string | null;
   /** TTL for `tool_cache`/`page` nodes — null means "doesn't expire." */
   expires_at?: string | null;
+  /** Where this came from — a tool name, a URL, a conversation, `primary-user`. */
+  sources?: string[] | null;
 }
 
 /**
@@ -184,6 +187,23 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   }
   // category: sub-typing for `user` nodes (facts/preferences/interests/behaviors).
   // expires_at: TTL for `tool_cache`/`page` nodes — null means "doesn't expire."
+  /**
+   * Where each belief came from.
+   *
+   * Under "verify, don't recall" this is the foundation, not bookkeeping: a
+   * claim whose source was not kept can only be trusted, never re-checked, and
+   * a wrong one can only be deleted rather than corrected at its origin. It
+   * also separates what the person you work for told you from what a web page
+   * said, which the guard's taint model already treats as different in kind and
+   * the graph did not.
+   *
+   * A list rather than one value, unioned on upsert — corroboration is the
+   * whole point of the confidence rule, and two sources agreeing is worth more
+   * than one asserting twice.
+   */
+  if (!names.has("sources")) {
+    await conn.run("ALTER TABLE nodes ADD COLUMN sources TEXT[]");
+  }
   if (!names.has("category")) {
     await conn.run("ALTER TABLE nodes ADD COLUMN category TEXT");
   }
@@ -409,22 +429,93 @@ export async function getNode(name: string): Promise<NodeRow | undefined> {
  * confidence >= 1.0 write updates their summary, everything else is a no-op
  * on content — the one piece of Sisyphean's logic worth keeping verbatim.
  */
+/**
+ * How alike two labels must be before they are the same thing.
+ *
+ * High on purpose. Merging is not reversible without provenance, and the cost
+ * of missing a duplicate is a slightly noisier graph, where the cost of a wrong
+ * merge is two unrelated facts fused into one that is now wrong about both.
+ */
+const DEDUP_SIMILARITY = 0.93;
+
+/** Types where near-duplicate labels are worth merging. Caches are keyed, not named. */
+const DEDUP_TYPES = "('concept', 'fact', 'skill')";
+
+/**
+ * The node an incoming label is really about, if one already exists.
+ *
+ * Deduplication was exact-name-only, so "Gemma model" and "the Gemma model"
+ * accumulated as two nodes that would never merge and — before decay existed —
+ * never fade either. Both then corroborated separately, so the graph grew more
+ * confident about a thing it could not tell was one thing.
+ *
+ * Needs embeddings, and returns nothing without them rather than guessing from
+ * string overlap: "Qdrant client" and "Qdrant server" are close as text and are
+ * not the same subject.
+ */
+async function existingSynonym(name: string, type: NodeType): Promise<string | undefined> {
+  if (!DEDUP_TYPES.includes(`'${type}'`)) return undefined;
+  const vec = await embedText(name);
+  if (!vec) return undefined;
+
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    `SELECT id, array_cosine_similarity(embedding, $q) AS sim
+       FROM nodes
+      WHERE embedding IS NOT NULL AND type IN ${DEDUP_TYPES} AND id != $id
+      ORDER BY sim DESC LIMIT 1`,
+    { q: arrayValue(vec), id: normalizeName(name) },
+    { q: ARRAY(FLOAT, EMBEDDING_DIM) },
+  );
+  const top = reader.getRowObjectsJson()[0] as any;
+  return top && Number(top.sim) >= DEDUP_SIMILARITY ? String(top.id) : undefined;
+}
+
 export async function upsertNode(
   name: string,
   type: NodeType,
   summary = "",
   confidence?: number,
-  /** category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page` nodes. Both optional, both only meaningful for the new node types. */
-  extra?: { category?: string; expiresAt?: Date | string },
+  /** category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page` nodes. source: where this came from, unioned across observations. */
+  extra?: { category?: string; expiresAt?: Date | string; source?: string },
 ): Promise<string> {
   const conn = await getConn();
-  const id = normalizeName(name);
-  const existing = await getNode(name);
+  let id = normalizeName(name);
+  let existing = await getNode(name);
+
+  /**
+   * Before creating a node, check whether it is one we already have under a
+   * slightly different label — see existingSynonym. Only for genuinely new
+   * names: an exact hit is already the same node, and re-checking would spend
+   * an embedding call on every corroboration.
+   */
+  if (!existing) {
+    const synonym = await existingSynonym(name, type);
+    if (synonym) {
+      const reader = await conn.runAndReadAll("SELECT * FROM nodes WHERE id = $id", { id: synonym });
+      const row = (reader.getRowObjectsJson() as unknown as NodeRow[])[0];
+      if (row) {
+        id = row.id;
+        existing = row;
+      }
+    }
+  }
   // Only worth re-embedding when the summary actually changes — same text
   // embedded twice wastes a round trip to the embedding server for nothing.
   const embedding = summary ? await embedText(`${name}: ${summary}`) : undefined;
   const embeddingParam = embedding ? arrayValue(embedding) : null;
   const category = extra?.category ?? null;
+  // Unioned rather than replaced: two sources agreeing is the evidence the
+  // confidence rule is already built on, and overwriting would throw away the
+  // one that came first.
+  const source = extra?.source?.trim() || null;
+  // listValue, not arrayValue: sources is a variable-length TEXT[] (a LIST),
+  // where `embedding` is a fixed-width FLOAT[768] (an ARRAY). DuckDB treats
+  // them as different types and a plain JS array is neither.
+  const merged = source
+    ? Array.from(new Set([...(existing?.sources ?? []), source]))
+    : null;
+  const sources = merged ? listValue(merged) : null;
   // TIMESTAMPTZ, bound as an absolute instant (microseconds since epoch) —
   // not a formatted string. A naive TIMESTAMP column previously took this as
   // literal wall-clock text, and DuckDB's now() (also TIMESTAMPTZ) runs in
@@ -459,19 +550,20 @@ export async function upsertNode(
                           confidence = $confidence,
                           observations = observations + 1,
                           category = COALESCE($category, category),
+                          sources = COALESCE($sources, sources),
                           expires_at = COALESCE($expiresAt, expires_at),
                           last_seen = now()
          WHERE id = $id`,
-        { type, summary, embedding: embeddingParam, confidence: nextConfidence, category, expiresAt, id },
+        { type, summary, embedding: embeddingParam, confidence: nextConfidence, category, sources, expiresAt, id },
         bindTypes,
       );
     }
   } else {
     const initConfidence = confidence !== undefined ? Math.min(Math.max(confidence, 0), 1) : 0.5;
     await conn.run(
-      `INSERT INTO nodes (id, type, name, summary, confidence, observations, embedding, category, expires_at)
-       VALUES ($id, $type, $name, $summary, $confidence, 1, $embedding, $category, $expiresAt)`,
-      { id, type, name, summary, confidence: initConfidence, embedding: embeddingParam, category, expiresAt },
+      `INSERT INTO nodes (id, type, name, summary, confidence, observations, embedding, category, sources, expires_at)
+       VALUES ($id, $type, $name, $summary, $confidence, 1, $embedding, $category, $sources, $expiresAt)`,
+      { id, type, name, summary, confidence: initConfidence, embedding: embeddingParam, category, sources, expiresAt },
       bindTypes,
     );
   }
@@ -908,6 +1000,50 @@ async function deleteNodesWhere(conn: DuckDBConnection, where: string, params: R
 export async function pruneExpired(): Promise<number> {
   const conn = await getConn();
   return deleteNodesWhere(conn, "expires_at IS NOT NULL AND expires_at < now()", {});
+}
+
+/**
+ * Let unrepeated beliefs lose standing.
+ *
+ * Confidence only ever rose. `upsertNode` nudges it toward
+ * `min(max(existing, incoming) + 0.08, 0.95)` on every re-observation and
+ * nothing ever moved it the other way, while `routine_cleanup` ages out only
+ * caches and episodes — never `fact` or `concept`. So a belief recorded once,
+ * wrongly, on a thin afternoon outranked fresher knowledge forever, and an
+ * autonomous loop writing into that graph made the problem worse the longer it
+ * ran.
+ *
+ * Under "verify, don't recall" this is not hygiene, it is correctness: a claim
+ * nobody has seen again in a month should not be asserted with the same force
+ * as one confirmed yesterday. Decay is what makes an unverified belief fade
+ * instead of harden.
+ *
+ * Deliberately gentle, and deliberately floored. ×0.9 a month is slow enough
+ * that a genuinely settled fact re-observed even occasionally stays high, and
+ * the floor at 0.1 means nothing is ever silently erased — a decayed belief is
+ * still findable, still correctable, and still says when it was last seen. It
+ * is demotion, not deletion, and `anchor`/`user`/`project` are exempt entirely
+ * for the same reason they are exempt from pruning: identity and the person
+ * are not claims that go stale.
+ */
+export async function decayStaleBeliefs(
+  olderThanDays = 30,
+  factor = 0.9,
+  floor = 0.1,
+): Promise<number> {
+  const conn = await getConn();
+  const reader = await conn.runAndReadAll(
+    `UPDATE nodes
+        SET confidence = greatest($floor, confidence * $factor)
+      WHERE type NOT IN ('anchor', 'user', 'project')
+        AND last_seen < now() - to_days($days)
+        AND confidence > $floor
+      RETURNING id`,
+    { floor, factor, days: Math.max(1, Math.trunc(olderThanDays)) },
+  );
+  const decayed = reader.getRowObjectsJson().length;
+  if (decayed) dirty = true;
+  return decayed;
 }
 
 /** Deletes nodes of `type` older (by last_seen) than `maxAgeDays`. No-op for a permanent type. */

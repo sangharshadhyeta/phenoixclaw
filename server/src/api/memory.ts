@@ -1,6 +1,8 @@
 import { Router } from "express";
 import {
+  getNode,
   neighbors,
+  removeNode,
   nodeCount,
   nodesByType,
   recentNodes,
@@ -67,6 +69,49 @@ export function memoryRouter(): Router {
   });
 
   /** What one thing is connected to — the part a flat list cannot show. */
+  /**
+   * Remove a belief.
+   *
+   * Reading the graph without being able to correct it is only half a window:
+   * the learning loop writes unattended, and until now a wrong belief could be
+   * *seen* and not touched — the only recourse was editing DuckDB by hand,
+   * which nobody should have to do and which does not scale past the first few
+   * mistakes. The agent has `graph_forget` for the same job; this is the
+   * person's version of it.
+   *
+   * Bounded, but not identically to the tool — and the difference matters.
+   *
+   * `graph_forget` refuses `user` nodes because the *agent* should not unsay
+   * what the person told it about themselves. This endpoint allows them,
+   * because the person should: it is their own knowledge, they are the
+   * authority on it, and `remember_user` can only add a correction beside a
+   * wrong entry, never remove one. Refusing here left a mistaken preference
+   * being read into every single prompt with no way to take it out short of
+   * editing DuckDB by hand.
+   *
+   * `anchor` and `project` still refuse. Identity is rewritten through
+   * identity_update rather than deleted — an agent with no SOUL.md is not a
+   * corrected agent — and a project is where work happens rather than a claim
+   * that could be wrong.
+   */
+  router.delete("/memory/:name", async (req, res) => {
+    const name = String(req.params.name ?? "").trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+
+    const node = await getNode(name);
+    if (!node) return res.status(404).json({ error: `Nothing in memory is called "${name}"` });
+    if (node.type === "anchor" || node.type === "project") {
+      return res.status(400).json({
+        error:
+          node.type === "anchor"
+            ? `"${name}" is one of the agent's identity documents — rewrite it rather than deleting it.`
+            : `"${name}" is a project, not a belief about the world.`,
+      });
+    }
+    await removeNode(name);
+    res.json({ ok: true, forgotten: name, type: node.type });
+  });
+
   router.get("/memory/neighbors", async (req, res) => {
     const name = String(req.query.name ?? "").trim();
     if (!name) return res.status(400).json({ error: "name required" });

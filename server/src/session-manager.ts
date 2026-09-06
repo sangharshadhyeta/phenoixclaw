@@ -260,11 +260,28 @@ class SessionManager extends EventEmitter {
       .then(async () => {
         const session = await getSession(sessionId);
         if (!session) return;
-        // Routine sessions are excluded: the learning loop already records what
-        // it concluded with graph_episode, and harvesting it as well would fill
-        // the graph with the agent talking to itself — which is exactly the
-        // pollution the loop had to be stopped from causing once already.
-        if (session.kind === "routine") return;
+        /**
+         * Routine sessions are harvested too, and the exclusion that used to
+         * be here was wrong on its facts.
+         *
+         * It reasoned that the learning loop "already records what it
+         * concluded with graph_episode". It does not. Across sixty consecutive
+         * autonomous calls in the audit log there is not one `graph_episode` —
+         * there are seventeen reads of pi's own README, twenty-one of
+         * SELF_CONCEPT.md, and greps for the names of its own tools. The loop
+         * had no record of its previous iterations, so every one began blind
+         * and reached for the nearest thing, which is always its own machinery.
+         * Its instructions warn about exactly that trap — "the easiest place to
+         * get stuck" — and warning was not enough, the same way it is never
+         * enough.
+         *
+         * Recording an iteration is what lets the next one see it has been
+         * here. The memory injector runs for routine sessions like any other,
+         * so the loop's own recent history now comes back to it when it
+         * orients, and "I have read this three times already" becomes
+         * something it can notice rather than something only the audit log
+         * knows.
+         */
         const since = this.harvested.get(sessionId) ?? 0;
         const { harvest, seq } = await harvestTurn(session, since);
         this.harvested.set(sessionId, seq);

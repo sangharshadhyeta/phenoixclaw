@@ -164,7 +164,13 @@ const PROTECTED_PATHS = new Set<string>([
  * (changing an identity file) is legitimate.
  */
 const IDENTITY_PATHS = new Map<string, string>(
-  IDENTITY_FILES.map((name) => [path.join(agentHome(), name), name]),
+  IDENTITY_FILES.flatMap((name) => [
+    // The mirror's home, and where it used to live. Both are redirected: an
+    // install that has not been relocated yet still has files at the old path,
+    // and a write to either changes nothing real.
+    [path.join(agentHome(), ".identity", name), name] as [string, string],
+    [path.join(agentHome(), name), name] as [string, string],
+  ]),
 );
 
 /**
