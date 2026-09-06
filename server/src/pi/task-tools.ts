@@ -216,7 +216,7 @@ export function taskTools(sessionId: string) {
       }),
       async execute(_id: string, p: any) {
         const outcome = String(p?.outcome ?? "").trim();
-        if (!outcome) return say("Nothing given — what would you check to know this worked?");
+        if (!outcome) throw new Error("Nothing given — say what you would check to know this worked.");
         await updateSession(sessionId, { expected_outcome: outcome.slice(0, 1000) });
         return say(
           `Recorded. This work is done when: ${outcome}\n\n` +
@@ -246,7 +246,40 @@ export function taskTools(sessionId: string) {
       parameters: Type.Object({}),
       async execute() {
         const next = await nextTask(sessionId);
-        if (!next) return say("Nothing pending — the plan is finished, or there is no plan yet.");
+        if (!next) {
+          /**
+           * A dead end that says so.
+           *
+           * This used to answer "Nothing pending — the plan is finished, or
+           * there is no plan yet", which is true, reads as a success, and
+           * suggests nothing. A learning-loop iteration read it and called
+           * `task_start` about a hundred times in one turn: the answer never
+           * changed, and nothing in it said that calling again could not help.
+           */
+          const plan = await listTasks(sessionId);
+          /**
+           * An error, not a polite success.
+           *
+           * This is the call that looped a hundred times in one turn. It
+           * returned a *success* saying "nothing pending", which is true and
+           * changes nothing — and the instruction to call it was still in the
+           * prompt, unchanged, on the next generation. A tool that succeeds
+           * without changing anything is a fixed point: the model's best next
+           * action is the same call, forever.
+           *
+           * Thrown, so pi marks it `isError` and the model reads a failure it
+           * has to route around rather than a result it can sit on.
+           */
+          throw new Error(
+            plan.length
+              ? `Every step of this plan is finished. Calling \`task_start\` again cannot change ` +
+                `that — there is nothing left to start. Either write a new plan with \`task_plan\`, ` +
+                `or say what you have concluded and stop.\n\n${render(plan)}`
+              : `There is no plan, so there is no step to start. Calling \`task_start\` again will ` +
+                `say the same thing. Write one with \`task_plan\` first, or do the work directly and ` +
+                `say what came of it.`,
+          );
+        }
         await setTaskStatus(sessionId, next.seq, "running");
         return say(`Started [${next.seq}] ${next.description}`);
       },
@@ -292,9 +325,12 @@ export function taskTools(sessionId: string) {
           // sections without it being told, so "step 2" meant something to it
           // that it no longer meant here — and a refusal that did not say what
           // the plan now was left it retrying the same call.
-          return say(
-            `Step ${seq} ("${current.description}") was already written and recorded. Nothing to change.\n\n` +
-              `The plan as it now stands:\n${render(plan)}`,
+          // Also a fixed point if it succeeds: nothing changes, so the same
+          // call is as good a next action as any. See task_start above.
+          throw new Error(
+            `Step ${seq} ("${current.description}") was already written and recorded, so there is ` +
+              `nothing to change and calling this again will say the same. The plan as it stands:` +
+              `\n${render(plan)}`,
           );
         }
 

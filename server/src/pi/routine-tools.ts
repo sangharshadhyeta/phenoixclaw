@@ -377,6 +377,19 @@ export function selfMaintenanceTools() {
           );
         }
 
+        /**
+         * Advancing to the phase you are already on is a no-op, and a no-op
+         * that reports success is a fixed point — the same call is as good a
+         * next action as any, which is how two `dream_progress` calls in a row
+         * happen. See task_start in task-tools.ts for the same shape.
+         */
+        if (row.phase === p.phase) {
+          throw new Error(
+            `Already at "${p.phase}". Calling this again will not advance anything — do that ` +
+              `phase's work, then advance to the next one.`,
+          );
+        }
+
         const conn = await getDb();
         await conn.run("UPDATE routines SET phase = $phase, updated_at = now() WHERE id = $id", {
           phase: p.phase,

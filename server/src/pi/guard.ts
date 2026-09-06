@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { isArtefact } from "../artefacts.js";
 import { drivenDenial, isDriving } from "./driving.js";
 import { CHAT_BUDGET_REFUSAL, overChatBudget } from "./chat-budget.js";
+import { repeatRefusal, tooManyRepeats } from "./repeat-guard.js";
 
 /**
  * Things the agent's home is *for*.
@@ -745,6 +746,20 @@ export function guardExtension(
        * The moment that decides whether work happens in the chat is the moment
        * before the fifth call. See pi/chat-budget.ts.
        */
+      /**
+       * A loop is stopped, not noticed.
+       *
+       * The supervisor already reports repetition, and reporting runs in the
+       * background and lands on a later request — by which time a turn has
+       * made a hundred identical calls. This is one of the few things that
+       * needs no judgement from outside: same tool, same arguments, same
+       * answer. See pi/repeat-guard.ts.
+       */
+      if (sessionId && tooManyRepeats(sessionId, event.toolName, event.input)) {
+        note("refused", `Repeated ${event.toolName} with identical arguments`);
+        return { block: true, reason: repeatRefusal(event.toolName) };
+      }
+
       if (conversational && sessionId && overChatBudget(sessionId, event.toolName)) {
         note("refused", "Working in a conversation");
         return { block: true, reason: CHAT_BUDGET_REFUSAL };

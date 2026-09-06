@@ -429,8 +429,8 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         const sections = (Array.isArray(p?.sections) ? p.sections : [])
           .map((s: unknown) => String(s ?? "").trim())
           .filter(Boolean);
-        if (!file) return said("No file given.");
-        if (!sections.length) return said("No sections given — nothing to plan.");
+        if (!file) throw new Error("No file given — pass the path to write.");
+        if (!sections.length) throw new Error("No sections given — name the parts before planning them.");
 
         /**
          * Resolved against the *session's* workspace, not the server's cwd.
@@ -717,7 +717,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       async execute(_id: string, p: any) {
         const session = await getSession(sessionId);
         const file = session?.writing_file;
-        if (!file) return said("No document in progress. Start one with write_plan or write_project.");
+        if (!file) throw new Error("No document in progress. Start one with write_plan or write_project — calling this again will say the same.");
 
         const pending = currentSection(await listTasks(sessionId));
         if (!pending) {
@@ -833,7 +833,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       parameters: Type.Object({}),
       async execute() {
         const file = (await getSession(sessionId))?.writing_file;
-        if (!file) return said("No document in progress.");
+        if (!file) throw new Error("No document in progress — there is nothing to read back or revise.");
 
         const text = existsSync(file) ? readFileSync(file, "utf8") : "";
         const tasks = await listTasks(sessionId);
@@ -928,7 +928,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       }),
       async execute(_id: string, p: any) {
         const file = (await getSession(sessionId))?.writing_file;
-        if (!file) return said("No document in progress.");
+        if (!file) throw new Error("No document in progress — there is nothing to read back or revise.");
         const seq = Number(p?.section);
         const task = (await listTasks(sessionId)).find((t: TaskRow) => t.seq === seq);
         if (!task) return said(`There is no section ${seq} in this plan.`);
@@ -975,7 +975,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       }),
       async execute(_id: string, p: any) {
         const file = (await getSession(sessionId))?.writing_file;
-        if (!file) return said("No document in progress.");
+        if (!file) throw new Error("No document in progress — there is nothing to read back or revise.");
         const seq = Number(p?.section);
         const tasks = await listTasks(sessionId);
         const task = tasks.find((t: TaskRow) => t.seq === seq);
@@ -1038,7 +1038,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       }),
       async execute(_id: string, p: any) {
         const pending = currentSection(await listTasks(sessionId));
-        if (!pending) return said("Nothing left to skip.");
+        if (!pending) throw new Error("Nothing left to skip — every planned section is written or skipped.");
         await setTaskStatus(sessionId, pending.seq, "failed", String(p?.why ?? "skipped").slice(0, 300));
         const left = (await listTasks(sessionId)).filter(
           (t: TaskRow) => t.status === "pending" || t.status === "running",

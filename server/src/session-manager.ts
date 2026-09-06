@@ -13,6 +13,7 @@ import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
 import { resetChatBudget } from "./pi/chat-budget.js";
+import { resetRepeats } from "./pi/repeat-guard.js";
 import { failedCheck } from "./pi/after-turn.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
@@ -969,6 +970,28 @@ class SessionManager extends EventEmitter {
        * discarded. Only while the runner is driving — a person writing a
        * document by hand is not interrupted between sections.
        */
+      /**
+       * A turn that is looping is ended, not merely refused.
+       *
+       * Blocking the repeated call is not enough: the model still has the
+       * turn, and a hundred refusals read much like a hundred dead ends. The
+       * portal already ends a turn at a step boundary and after a plan is
+       * written; a loop is the same kind of moment — there is nothing further
+       * this turn can produce, and the next one starts with a clean context
+       * and the refusal in its history.
+       */
+      if (
+        msg.type === "tool_execution_end" &&
+        (msg as { result?: { content?: Array<{ text?: string }> } }).result?.content?.[0]?.text?.startsWith(
+          "Refused: you have called",
+        )
+      ) {
+        void this.record(sessionId, "portal_notice", {
+          text: "Stopped: the same call was being repeated with the same result.",
+        });
+        void client.abort().catch(() => {});
+      }
+
       if (
         msg.type === "tool_execution_end" &&
         (msg as { toolName?: string }).toolName === "write_next" &&

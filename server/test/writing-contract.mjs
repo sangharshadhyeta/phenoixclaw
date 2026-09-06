@@ -111,9 +111,16 @@ const long = (s) => `${s} `.repeat(60);
 {
   await createSession({ id: "w3", title: "w3", workspace, executor: "host" });
   const c3 = mount("w3", workspace);
-  ok("write_next without a plan says so", /No document in progress/.test(
-    await c3("write_next", { content: long("orphan") }),
-  ));
+  /**
+   * A no-op that reported success was a fixed point: nothing changed, so the
+   * same call remained the best next action. `task_start` looped a hundred
+   * times in one turn exactly that way. These throw now, so the model reads a
+   * failure it has to route around rather than a result it can sit on.
+   */
+  let noDoc = "";
+  try { await c3("write_next", { content: long("orphan") }); } catch (e) { noDoc = e.message; }
+  ok("write_next without a plan is an error, not a polite success", /No document in progress/.test(noDoc));
+  ok("and says another go will not help", /calling this again will say the same/.test(noDoc));
 }
 
 // --- the plan survives a restart -------------------------------------------
@@ -296,8 +303,12 @@ const long = (s) => `${s} `.repeat(60);
   await c11("write_next", { content: long("The first section.") });
   const before = (await listTasks("w11")).find((x) => x.seq === 1).result;
 
-  const out = await t("task_finish", { step: 1, result: "written and verified" });
-  ok("finishing an already-written section is refused politely", /already written and recorded/.test(out));
+  // Refused as an *error*: a refusal that reports success changes nothing, and
+  // the same call stays as good a next action as any — see task_start.
+  let out = "";
+  try { await t("task_finish", { step: 1, result: "written and verified" }); } catch (e) { out = e.message; }
+  ok("finishing an already-written section is refused", /already written and recorded/.test(out));
+  ok("and says another go will not help", /calling this again will say the same/.test(out));
   const after = (await listTasks("w11")).find((x) => x.seq === 1).result;
   ok("and the span survives", after === before && /@\d+-\d+$/.test(after));
   ok("so the section can still be read back", /The first section/.test(await c11("read_section", { section: 1 })));
@@ -321,7 +332,8 @@ const long = (s) => `${s} `.repeat(60);
   ok("and the old numbering is explicitly voided", /no longer mean anything/.test(replaced));
 
   await c12("write_next", { content: long("Section A.") });
-  const refused = await t("task_finish", { step: 1, result: "all done" });
+  let refused = "";
+  try { await t("task_finish", { step: 1, result: "all done" }); } catch (e) { refused = e.message; }
   ok("a refusal shows what the plan now is", /\[1\] A/.test(refused) && /\[3\] C/.test(refused));
 }
 

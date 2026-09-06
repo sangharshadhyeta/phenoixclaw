@@ -69,6 +69,9 @@ export const AUTONOMOUS_TOOLS = new Set([
   // it writes an ordinary concept node — nothing it could not already write
   // with graph_remember, just filed where self-update will look.
   "note_improvement",
+  // Recording a question it could not answer — the same category as
+  // note_improvement, and what a loop with nothing to be curious about lacks.
+  "wonder",
   "graph_reflect",
   "graph_episode",
   "workspace_note",

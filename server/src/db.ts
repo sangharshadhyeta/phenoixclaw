@@ -1663,18 +1663,35 @@ async function seedLearningLoopRoutine(conn: DuckDBConnection): Promise<void> {
     "PLAN",
     "Call `task_list` to see the plan you are already working through. If it has unfinished steps, continue it — do not start something new because starting is easier than continuing.",
     "But first check whether you are actually getting anywhere. Look at what the finished steps concluded. If the last few steps restate each other, or you have been circling the same subject for several iterations without a step that changed what you believe, then this thread is done whether or not it feels finished — say so in `task_finish` and pick a different one.",
-    "If there is no plan, or the last one is finished, make one. Call `graph_recall` for \"episode\" to see what recent iterations already pursued, and pick something else: a thread you have not tried, from a different part of what you do. Understanding your own machinery is a legitimate subject exactly once — it is the nearest thing to hand when you have nothing else, which is why it is also the easiest place to get stuck. Prefer a question about the work, the person you work for, or something you have read that you did not follow up.",
+    "If there is no plan, or the last one is finished, make one. **Start with your own questions**: call `graph_recall` for \"question\" to see what you wondered about while working and never chased. Those are worth more than anything you could think of now, because you noticed them at the moment the gap actually showed. Pick the one you would most like answered.",
+    "If there are none, call `graph_recall` for \"episode\" to see what recent iterations already pursued, and pick something else: a thread you have not tried, from a different part of what you do. Understanding your own machinery is a legitimate subject exactly once — it is the nearest thing to hand when you have nothing else, which is why it is also the easiest place to get stuck. Prefer a question about the work, the person you work for, or something you have read that you did not follow up.",
     "Break it into a few concrete steps with `task_plan`. Steps that differ from each other: if two of them could be finished by the same piece of reading, they are one step.",
     "The plan lives in `task_plan` and nowhere else. Do not also record it with `graph_remember` — the graph is for what you learned, not for what you are doing about it, and a plan written there is re-observed every iteration until your memory holds \"current plan: X\" as a well-established fact about the world. If you find plans in your memory from earlier, they are noise: do not corroborate them.",
     "",
     "WORK",
-    "Call `task_start`, then do that step. You have `read`, `grep`, `find`, `ls`, `graph_recall`, and `web_search`/`web_fetch` for anything you cannot answer from what is already here. Record how it went with `task_finish` — say what you actually found, not that you looked.",
+    /**
+     * No `task_start`.
+     *
+     * It was here, and it is the root of a loop that made 106 tool calls in
+     * one iteration. The chain: `task_plan` failed, so no plan existed;
+     * `task_start` then answered "nothing pending", which is true, reads as a
+     * success and suggests nothing; and the instruction to call it was still
+     * sitting in the prompt. So it called it again, about a hundred times.
+     *
+     * The tool is ceremony. Its only effect is to mark the next pending step
+     * as running for anyone watching, and the plan block in the prompt already
+     * shows which step that is. Removing the instruction removes a call that
+     * can only fail or succeed trivially — and a call like that is pure loop
+     * surface in a turn nobody is watching.
+     */
+    "Do the next step in the plan. You have `read`, `grep`, `find`, `ls`, `graph_recall`, and `web_search`/`web_fetch` for anything you cannot answer from what is already here. Record how it went with `task_finish`, giving the step number shown in the plan — say what you actually found, not that you looked.",
     "",
     "DEEPEN",
     "This is the part that matters. If the step turned up something you did not already know, do not carry on down the plan you wrote before you knew it — call `task_plan` again and rewrite the remaining steps from what you actually found. A plan written in ignorance is a guess, and the finding is better information than the guess was. Finished steps keep their results across a rewrite, so repeat them unchanged.",
     "If it turned up nothing, mark the step failed with what you tried. A dead end recorded is a dead end nobody has to walk twice.",
     "",
     "RECORD",
+    "If this iteration raised a question you could not answer, record it with `wonder` before you finish. A loop with nothing to be curious about reads whatever files are nearest and concludes something about them; the questions you notice while working are the only thing that stops that.",
     "Anything you concluded goes in the graph with `graph_remember` — a fact, a correction, a relation between two things. The plan tracks what you did; the graph is for what it taught you, which outlives the plan. Then call `graph_episode` with what you did this iteration.",
     "If you read anything from the web this iteration, note that you cannot update your identity or write a skill in the same turn — that is deliberate. Record it in the graph and it will still be there next time.",
     "",

@@ -170,6 +170,20 @@ function formatMs(ms: number): string {
   return `${Math.round(ms / 60_000)}m`;
 }
 
+/**
+ * The most useful line in a folded run.
+ *
+ * Prefer what it *said* — that is a conclusion. Failing that, the last tool it
+ * reached for, which at least says what kind of work it was.
+ */
+function summarise(lines: Array<{ mode?: string; text: string }>): string {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].mode === "said" && lines[i].text.trim()) return lines[i].text.trim();
+  }
+  const last = lines[lines.length - 1];
+  return last?.text?.trim() ?? "";
+}
+
 function Thread({ item }: { item: Extract<Item, { kind: "thread" }> }) {
   const asked = item.items.find((i) => i.mode === "asked");
   const long = item.items.length > 4;
@@ -185,8 +199,16 @@ function Thread({ item }: { item: Extract<Item, { kind: "thread" }> }) {
         <span className="shrink-0 font-medium">
           {open ? "▾" : "▸"} {item.source}
         </span>
+        {/*
+          * What it is doing, not how many things it did.
+          *
+          * A collapsed run showed "4 steps", which is the one fact about it
+          * that nobody needs — the count is already on the right. What a
+          * reader wants from a folded line is whether to unfold it, and that
+          * takes a subject: the last thing said, or the last tool used.
+          */}
         <span className="min-w-0 truncate text-fg-faint">
-          {asked ? asked.text : `${item.items.length} steps`}
+          {asked?.text || summarise(item.items) || `${item.items.length} steps`}
         </span>
         {!open && (
           <span className="ml-auto shrink-0 text-fg-faint">{item.items.length}</span>

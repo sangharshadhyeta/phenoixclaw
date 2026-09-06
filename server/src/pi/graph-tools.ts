@@ -101,6 +101,59 @@ export function graphTools(cwd: string, reflective = true, sessionId?: string) {
      * applies to it for free.
      */
     pi.registerTool({
+      /**
+       * A question the agent could not answer and did not chase.
+       *
+       * The learning loop is told to "prefer a question about the work, the
+       * person you work for, or something you have read that you did not
+       * follow up" — and there was nowhere those were written down. So an
+       * iteration with an empty graph had nothing to draw on and did the only
+       * thing available: read whatever files were lying about and conclude
+       * something about them. Asked what it wanted to know, it had no answer,
+       * because nothing had ever recorded wanting to know anything.
+       *
+       * This is `note_improvement`'s counterpart. That one is for a rough edge
+       * in the machinery; this is for a gap in what it knows — noticed in the
+       * moment it actually shows, which is while working, not when a loop wakes
+       * up and casts about for a subject.
+       *
+       * Deliberately not a task. A question is not work until something decides
+       * it is worth the time, and that decision belongs to the loop with the
+       * whole backlog in front of it.
+       */
+      name: "wonder",
+      label: "Note something worth finding out",
+      description:
+        "Record something you wanted to know and did not chase — a fact you assumed, a term you " +
+        "half-recognised, a claim you took on trust, a thing the person mentioned that you know " +
+        "nothing about. Write it the moment you notice, which is while you are working: your own " +
+        "background time reads these, and without them it has nothing to be curious about and " +
+        "will go poking at whatever files are nearest.\n\n" +
+        "Phrase it as a question with an answer — \"what does the portal do when two routines " +
+        "want the same session?\", not \"look into routines\".",
+      promptSnippet: "wonder — note a question worth finding out later",
+      parameters: Type.Object({
+        question: Type.String({ description: "The question, phrased so it has an answer." }),
+        why: Type.Optional(Type.String({ description: "What made it come up, if it is not obvious." })),
+      }),
+      async execute(_id: string, p: any) {
+        const question = String(p?.question ?? "").trim();
+        const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+        if (!question) throw new Error("Nothing to wonder about — pass the question.");
+
+        const why = String(p?.why ?? "").trim();
+        // Named by content, so wondering the same thing twice corroborates one
+        // node rather than filling the backlog with near-duplicates.
+        const name = `question: ${question.toLowerCase().replace(/\s+/g, " ").slice(0, 70)}`;
+        await upsertNode(name, "concept", why ? `${question} (came up: ${why})` : question, undefined, {
+          category: "question",
+          source: "agent-wondered",
+        });
+        return said("Noted. You will see it next time you have time of your own.");
+      },
+    });
+
+    pi.registerTool({
       name: "note_improvement",
       label: "Note something worth fixing",
       description:
@@ -121,7 +174,7 @@ export function graphTools(cwd: string, reflective = true, sessionId?: string) {
       async execute(_id: string, p: any) {
         const what = String(p?.what ?? "").trim();
         const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
-        if (!what) return said("Nothing to note.");
+        if (!what) throw new Error("Nothing to note — pass what you want recorded.");
 
         const priority = ["low", "normal", "high"].includes(String(p?.priority)) ? String(p.priority) : "normal";
         // Named by content so the same rough edge noticed twice lands on one
@@ -164,7 +217,7 @@ export function graphTools(cwd: string, reflective = true, sessionId?: string) {
       async execute(_id: string, p: any) {
         const name = String(p?.name ?? "").trim();
         const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
-        if (!name) return said("Nothing named to forget.");
+        if (!name) throw new Error("Nothing named to forget — pass the name of the belief.");
 
         const node = await getNode(name);
         if (!node) return said(`Nothing in your memory is called "${name}".`);

@@ -25,6 +25,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (f) => path.join(here, "..", "dist", f);
 
 const { guardExtension } = await import(dist("pi/guard.js"));
+const { resetRepeats } = await import(dist("pi/repeat-guard.js"));
 const { agentHome } = await import(dist("agent.js"));
 const { getDb, createSession, getSession } = await import(dist("db.js"));
 
@@ -32,8 +33,17 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
 
 /** A stand-in for pi: collects the handlers the extension registers. */
+/**
+ * Each mount is its own session, and each starts a fresh turn.
+ *
+ * The repeat guard counts identical calls within a turn, and a real session
+ * resets that on every prompt (session-manager.ts). A contract that makes
+ * twenty assertions against one mount is twenty turns' worth of calls in one,
+ * so without this the guard starts refusing calls the assertion was about.
+ */
 function mount(factory) {
   const handlers = {};
+  resetRepeats();
   factory({ on: (event, fn) => { handlers[event] = fn; }, registerTool() {} });
   return {
     call: (toolName, input) => handlers.tool_call({ toolName, input }),
