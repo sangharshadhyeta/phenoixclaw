@@ -109,5 +109,18 @@ ok("container refuses a routine", executorSupports("container", "routine") === f
      /--cap-drop/.test(code) && /no-new-privileges/.test(src) && /--pids-limit/.test(code));
 }
 
+// --- everything the session manager builds must actually be forwarded ------
+// `startTask` was built, spread into `launch()`, and silently dropped: it was
+// not declared on `LaunchOptions`, and an undeclared property is not an error,
+// it is just gone. The chat therefore never had `start_task` — while three
+// separate mechanisms were added to make it call the tool, and the model
+// eventually said so itself: "I don't see a start_task tool in the list."
+{
+  const { readFileSync } = await import("node:fs");
+  const ex = readFileSync(new URL("../src/executors/index.ts", import.meta.url), "utf8");
+  ok("startTask is declared on LaunchOptions", /startTask\?: \(pi: any\) => void;/.test(ex));
+  ok("and actually forwarded to the client", /startTask: opts\.startTask,/.test(ex));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

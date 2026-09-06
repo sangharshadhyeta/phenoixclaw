@@ -12,7 +12,8 @@ import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
-import { asksForWork } from "./pi/after-turn.js";
+import { needsSession } from "./pi/needs-session.js";
+import { agentHome } from "./agent.js";
 import { handOut } from "./pi/task-session-tools.js";
 import { resetChatBudget } from "./pi/chat-budget.js";
 import { resetRepeats } from "./pi/repeat-guard.js";
@@ -1258,12 +1259,15 @@ class SessionManager extends EventEmitter {
           worldQuestionNote(message, kind === "agent");
 
     /**
-     * A request to build something becomes a session before the turn starts.
-     * See handOutForRequest — the decision is the portal's, not the model's.
+     * Anything the graph cannot answer becomes a session before the turn
+     * starts. See needs-session.ts for the rule and handOutForRequest for what
+     * it does — the decision is the portal's, not the model's.
      */
     const handedOut =
-      kind === "agent" && !isCommand && !opts.internal && asksForWork(message)
-        ? await this.handOutForRequest(sessionId, message)
+      kind === "agent" && !isCommand && !opts.internal
+        ? (await needsSession(message, agentHome()))
+          ? await this.handOutForRequest(sessionId, message)
+          : ""
         : "";
     if (handedOut) this.handedOut.add(sessionId);
 

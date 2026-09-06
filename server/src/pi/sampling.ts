@@ -51,6 +51,7 @@ export interface Sampling {
   dry_multiplier: number;
   dry_base: number;
   dry_allowed_length: number;
+  dry_penalty_last_n: number;
 }
 
 /**
@@ -86,6 +87,28 @@ export const DEFAULT_SAMPLING: Sampling = {
    * protecting code; it was letting the model repeat itself into bloat.
    */
   dry_allowed_length: Number(process.env.PI_DRY_ALLOWED_LENGTH || 3),
+  /**
+   * The whole context, because the default is 64 tokens and that is why this
+   * file did not work.
+   *
+   * `dry_penalty_last_n` is how far back DRY looks for the sequence it is
+   * about to repeat. llama.cpp defaults it to 64 — read off this server's
+   * /props — and a paragraph is longer than 64 tokens. So the loop that
+   * prompted all of this, a whole "Actually, I'll provide the explanation in
+   * reverse order / Let's try / Wait…" block repeated dozens of times, was
+   * invisible to the sampler: by the time each cycle came round again, its own
+   * first token had fallen out of the window being checked.
+   *
+   * Everything else here was set correctly and had no effect for that one
+   * reason.
+   *
+   * A number rather than llama.cpp's documented -1 ("whole context"): this
+   * server rejects it outright — `Field 'dry_penalty_last_n': Value must be
+   * between 0 <= value <= 2147483647, but got -1` — which would have turned
+   * every request into a 400. 8192 is comfortably longer than any block a
+   * turn has looped on and well inside the 65536 window.
+   */
+  dry_penalty_last_n: Number(process.env.PI_DRY_PENALTY_LAST_N || 8192),
 };
 
 /** A loopback or private address — a server on this machine or this network. */

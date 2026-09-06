@@ -44,6 +44,18 @@ export interface LaunchOptions {
    * Only true where the agent owns the tree — see session-manager.ts.
    */
   projectTrusted?: boolean;
+  /**
+   * The tools that let a conversation hand work to a session of its own,
+   * built by the session manager because starting a child needs it.
+   *
+   * It was missing from this interface, and TypeScript does not complain about
+   * a property nobody declared — so `session-manager.ts` built it, spread it
+   * into `launch()`, and it was dropped here without a word. The chat has
+   * never had `start_task`. Every fix aimed at making it call the tool was
+   * aimed at a tool that was not in its prompt, and the model said so plainly
+   * in the end: "I don't see a `start_task` tool in the list."
+   */
+  startTask?: (pi: any) => void;
 }
 
 export interface Executor {
@@ -96,6 +108,7 @@ export class HostExecutor implements Executor {
       autonomous: opts.autonomous,
       tainted: opts.tainted,
       projectTrusted: opts.projectTrusted,
+      startTask: opts.startTask,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,
