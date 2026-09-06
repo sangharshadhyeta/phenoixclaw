@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Phenoixclaw" width="140">
-</p>
+<h1 align="center">Phenoixclaw</h1>
 
-<h1 align="center">🐦‍🔥 Phenoixclaw</h1>
+<p align="center"><strong>AGI is a harness problem, not a model one.</strong></p>
 
 <p align="center">
   A web front end for the <a href="https://github.com/earendil-works/pi">pi coding agent</a>, built to be
