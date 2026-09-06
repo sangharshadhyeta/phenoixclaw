@@ -70,6 +70,39 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("the response says the history was ignored", /history: "ignored/.test(src));
   ok("and which session answered", /session_id: sessionId/.test(src));
 
+  /**
+   * The other dialect, same agent.
+   *
+   * Tools are split between Anthropic's Messages shape and OpenAI's Chat
+   * Completions, and an OpenAI base-URL field is the commonest way a tool lets
+   * you point it somewhere. The mapping is identical, so what matters is that
+   * it did not drift: same auth, same refusal to stream, same session key.
+   */
+  ok("the OpenAI dialect exists too", /v1\/chat\/completions/.test(src));
+  ok("keyed on `user`, OpenAI's equivalent of metadata.user_id", /body\.user/.test(src));
+  ok("shaped as a chat.completion", /object: "chat\.completion"/.test(src));
+  ok("with a finish_reason", /finish_reason: "stop"/.test(src));
+  ok("it refuses to stream as well",
+     (src.match(/Streaming is not implemented/g) ?? []).length === 2);
+  ok("and says the history was ignored there too",
+     (src.match(/history: "ignored/g) ?? []).length === 2);
+
+  /**
+   * A session reached through the API needs a working directory that exists.
+   *
+   * This derived one by climbing out of SESSION_ROOT, which points at
+   * data/sessions rather than the workspace root, and never created it — so
+   * `bash` refused every call with "Working directory does not exist". Asked
+   * for 41 times 19, the model reported its tool was broken and answered from
+   * its head anyway, wrongly. The arithmetic guard is worth nothing if the
+   * tool it points at cannot run.
+   */
+  ok("the workspace comes from the workspace root", /WORKSPACE_ROOT, `session-/.test(src));
+  ok("and is created before the session is", /mkdirSync\(workspace/.test(src));
+  // The comment explaining the bug names SESSION_ROOT, so check the code
+  // rather than the prose: nothing may climb out of a directory to find it.
+  ok("not derived by climbing out of another root", !/path\.join\([^)]*"\.\."/.test(src));
+
   const idx = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   ok("it is mounted before the cookie gate",
      idx.indexOf("messagesRouter()") < idx.indexOf('app.use("/api", requireAuth)'));

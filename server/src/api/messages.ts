@@ -1,8 +1,12 @@
 import { Router, type Request, type Response } from "express";
 import { checkPassword } from "../auth.js";
 import { createSession, getSession, listSessions } from "../db.js";
-import { sessions, SESSION_ROOT } from "../session-manager.js";
+import { sessions } from "../session-manager.js";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
+
+/** The same root the portal's own session creation uses (see index.ts). */
+const WORKSPACE_ROOT = path.resolve(process.env.WORKSPACE_ROOT || "/workspaces");
 
 /**
  * The agent, reachable as a model.
@@ -73,12 +77,19 @@ async function sessionFor(userId: string | undefined): Promise<string> {
     if (existing) return existing.id;
   }
   const id = Math.random().toString(36).slice(2, 14);
-  await createSession({
-    id,
-    title: title || `api:${id}`,
-    workspace: path.join(SESSION_ROOT, "..", "..", "workspaces", `session-${id}`),
-    executor: "host",
-  });
+  /**
+   * The same workspace a session created through the UI gets.
+   *
+   * This derived the path by climbing out of SESSION_ROOT — which points at
+   * `data/sessions`, not the workspace root — and never made the directory. So
+   * every session reached through this endpoint had a working directory that
+   * did not exist, and `bash` refused every call with "Working directory does
+   * not exist". Asked for 41 times 19, the model reported that its tool was
+   * broken and then answered from its head anyway, wrongly.
+   */
+  const workspace = path.join(WORKSPACE_ROOT, `session-${id}`);
+  mkdirSync(workspace, { recursive: true });
+  await createSession({ id, title: title || `api:${id}`, workspace, executor: "host" });
   return id;
 }
 
@@ -147,6 +158,68 @@ export function messagesRouter(): Router {
         type: "error",
         error: { type: "api_error", message: (e as Error).message },
       });
+    }
+  });
+
+  /**
+   * The same agent, in the other dialect.
+   *
+   * Sisyphean exposed both because tools are split between them: Anthropic's
+   * Messages shape and OpenAI's Chat Completions. The mapping is identical —
+   * last user message becomes the prompt, `user` picks the session, the
+   * caller's transcript is ignored because this agent has its own — so this is
+   * a translation of the envelope and nothing else.
+   *
+   * Worth having rather than telling people to use the other one: an OpenAI
+   * base-URL field is the single most common way a tool lets you point it
+   * somewhere, and a portal reachable that way inherits its memory and guard
+   * to anything that has one.
+   */
+  router.post("/v1/chat/completions", async (req: Request, res: Response) => {
+    const key = req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? req.header("x-api-key");
+    if (!checkPassword(key)) {
+      return res.status(401).json({ error: { type: "invalid_request_error", message: "Invalid API key." } });
+    }
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    if (body.stream === true) {
+      return res.status(400).json({
+        error: {
+          type: "invalid_request_error",
+          message:
+            "Streaming is not implemented on this endpoint. Send stream:false, or subscribe to " +
+            "GET /api/sessions/:id/events for the portal's own stream.",
+        },
+      });
+    }
+
+    const prompt = lastUserText(body.messages);
+    if (!prompt.trim()) {
+      return res.status(400).json({
+        error: { type: "invalid_request_error", message: "No user message with any text in it." },
+      });
+    }
+
+    try {
+      // `user` is OpenAI's equivalent of `metadata.user_id`, and serves the
+      // same purpose here: same id, same session, same memory.
+      const sessionId = await sessionFor(typeof body.user === "string" ? body.user : undefined);
+      const text = await sessions.ask(sessionId, prompt, { timeoutMs: 15 * 60_000, streamText: false });
+      const row = await getSession(sessionId);
+      return res.json({
+        id: `chatcmpl-${sessionId}-${Date.now()}`,
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: row?.model ?? body.model ?? "phoenixclaw",
+        choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        phoenixclaw: {
+          session_id: sessionId,
+          history: "ignored — this agent keeps its own; only the last user message was used",
+        },
+      });
+    } catch (e) {
+      return res.status(500).json({ error: { type: "server_error", message: (e as Error).message } });
     }
   });
 
