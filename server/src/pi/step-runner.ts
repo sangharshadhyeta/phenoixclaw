@@ -302,6 +302,8 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
    * assembled from nothing and few enough that a session cannot spend its
    * afternoon being told to try harder.
    */
+  /** How many step briefs this run has issued — see the closing turn below. */
+  let briefsIssued = 0;
   let deepenings = 0;
   const MAX_DEEPENINGS = 2;
   /** Attempts at the same list of defects. A third would be the second again. */
@@ -354,6 +356,18 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
        * closing turn rather than being swallowed: an answer that says "done"
        * over a file that does not parse is the failure this whole loop is for.
        */
+      /**
+       * The closing turn earns its place, or is skipped.
+       *
+       * It exists because each isolated step saw only its own piece, so
+       * something has to put the whole in one place. When the run only ever
+       * issued one brief that is not true — that turn saw everything and has
+       * already answered — and synthesising again is a wasted call that
+       * produces a worse answer: the first run to do it re-read the file and
+       * pasted the whole module back.
+       */
+      const isolated = briefsIssued > 1;
+
       let problems = (await deps.verify?.()) ?? [];
       for (let fix = 0; fix < MAX_FIXES && problems.length; fix++) {
         await deps.note?.(`Checking the result: ${problems.length} problem(s) to fix.`);
@@ -368,6 +382,7 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
       // quiet on us. Prior work nobody can find is prior work that does not
       // exist.
       await deps.remember?.();
+      if (!isolated && !problems.length) return "finished";
       await deps.recycle();
       await deps.ask(synthesisBrief({ goal, tasks, file, supervision: done, problems }));
       return "finished";
@@ -376,6 +391,7 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
     const { file, written } = await deps.document();
     await deps.start?.(step.seq);
     await deps.recycle();
+    briefsIssued++;
     await deps.ask(briefFor({ goal, tasks, step, file, written, supervision }));
 
     const after = await deps.tasks();

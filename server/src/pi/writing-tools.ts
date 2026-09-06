@@ -527,12 +527,19 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
           // section landed, which is when you are most likely to look back at
           // what you wrote. Completion is already visible in the plan: every
           // step done, and write_next says so before it gets this far.
-          return said(`Wrote "${pending.description}". The document is complete: ${file}`);
+          return said(`Wrote "${pending.description}". The document is complete: ${file}`, {
+            wrote: pending.seq,
+          });
         }
 
         return said(
           `Wrote "${pending.description}" (${content.length} chars).\n\n` +
             `Next: "${left[0].description}". What is already there ends with:\n\n${tail(file, 600)}`,
+          // Which section this closed, so the portal can end the turn when the
+          // section it briefed is done — see session-manager.ts. Without it the
+          // model carried straight on through the remaining sections in the
+          // same context, which is the accumulation this exists to avoid.
+          { wrote: pending.seq },
         );
       },
     });

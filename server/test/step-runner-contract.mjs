@@ -202,6 +202,65 @@ const plan = [
   ok("and the reason is recorded", /stopped serving what was asked/.test(notes[0] ?? ""));
 }
 
+// --- the closing turn earns its place ---------------------------------------
+// It exists because each isolated step saw only its own piece. When only one
+// brief was ever issued that is not true — that turn saw everything and has
+// already answered — and the first run to synthesise anyway re-read the file
+// and pasted the whole module back.
+{
+  const state = [task(1, "one"), task(2, "two")];
+  const briefs = [];
+  await runPlan("g", {
+    // One brief, and the turn closes every step — which is what a model that
+    // ignores "only this step" actually does.
+    tasks: async () => state.map((t) => ({ ...t })),
+    document: async () => ({ file: "/w/out.md" }),
+    recycle: async () => {},
+    ask: async (m) => {
+      briefs.push(m);
+      for (const t of state) { t.status = "done"; t.result = "r"; }
+      return "";
+    },
+    verify: async () => [],
+  });
+  ok("one context that did everything is not asked to summarise itself", briefs.length === 1);
+  ok("and that one brief was a step, not a synthesis", /THIS STEP/.test(briefs[0]));
+
+  // But a run that really was split still gets its closing turn.
+  const split = [task(1, "one"), task(2, "two")];
+  const twoBriefs = [];
+  await runPlan("g", {
+    tasks: async () => split.map((t) => ({ ...t })),
+    document: async () => ({ file: "/w/out.md" }),
+    recycle: async () => {},
+    ask: async (m) => {
+      twoBriefs.push(m);
+      const next = split.find((t) => t.status === "pending");
+      if (next) { next.status = "done"; next.result = "r"; }
+      return "";
+    },
+    verify: async () => [],
+  });
+  ok("a genuinely split run is still assembled at the end", /NOW ANSWER/.test(twoBriefs[twoBriefs.length - 1]));
+
+  // And a defect always earns one, however few briefs there were: an answer
+  // that says "done" over a file that does not parse is the whole point.
+  const broken = [task(1, "one")];
+  const brokenBriefs = [];
+  await runPlan("g", {
+    tasks: async () => broken.map((t) => ({ ...t })),
+    document: async () => ({ file: "/w/out.mjs" }),
+    recycle: async () => {},
+    ask: async (m) => {
+      brokenBriefs.push(m);
+      for (const t of broken) { t.status = "done"; t.result = "r"; }
+      return "";
+    },
+    verify: async () => ["It does not parse: unexpected token"],
+  });
+  ok("a defect is always reported, however short the run", /does not parse/.test(brokenBriefs.join("\n")));
+}
+
 // --- the supervisor decides finished, or not yet ----------------------------
 {
   // "Not deep enough" sends work back — but only so far. There is no depth at

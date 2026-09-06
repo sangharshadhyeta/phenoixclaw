@@ -661,6 +661,29 @@ class SessionManager extends EventEmitter {
         void client.abort().catch(() => {});
       }
 
+      /**
+       * A step's turn ends when its section is written.
+       *
+       * The brief says "do this step and only this step" and a live run read
+       * it, wrote the first section, and carried straight on through the other
+       * three in the same context — so isolation happened once instead of four
+       * times, and the closing turn had nothing left to assemble because one
+       * conversation had seen all of it.
+       *
+       * Same shape as the write_plan abort, for the same reason: the turn is
+       * ended after the work it was asked for is safely on disk, so nothing is
+       * discarded. Only while the runner is driving — a person writing a
+       * document by hand is not interrupted between sections.
+       */
+      if (
+        msg.type === "tool_execution_end" &&
+        (msg as { toolName?: string }).toolName === "write_next" &&
+        typeof (msg as { result?: { details?: { wrote?: number } } }).result?.details?.wrote === "number" &&
+        this.working.has(sessionId)
+      ) {
+        void client.abort().catch(() => {});
+      }
+
       if (msg.type === "agent_end") {
         void updateSession(sessionId, { status: "idle" });
         void this.record(sessionId, "portal_status", { status: "idle" });
