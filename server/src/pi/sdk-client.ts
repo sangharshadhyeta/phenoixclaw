@@ -219,6 +219,18 @@ async function framing(role?: string): Promise<string> {
       "you are testing — it is not a check, it is a performance of one, and it will agree with " +
       "you every time including the times you are wrong. Ask something that has its own source: " +
       "the file, the command's real output, the page, the search.\n\n" +
+      /**
+       * What checking costs, so it does not read as "do it all again".
+       *
+       * A rule that sounds expensive gets skipped on exactly the work that
+       * most needs it. Checking is a small thing at the end, not a second pass
+       * — and for code there is usually one obvious small thing: run it.
+       */
+      "Checking is not doing it twice. It is one small thing at the end that could come out wrong: " +
+      "run the code you wrote and see what it prints, spot-check one value against the source, " +
+      "read back the section you just claimed to have written. If you have written code, run it — " +
+      "and if it has tests, run those. Code that has never been executed is a draft, whatever it " +
+      "looks like.\n\n" +
       "**Being unable to do something is a complete answer.** If a tool is broken or missing, or " +
       "you have looked and cannot find out, say that plainly and stop: what you tried, what " +
       "happened, and what it prevents. Do not call the same tool again hoping for a different " +

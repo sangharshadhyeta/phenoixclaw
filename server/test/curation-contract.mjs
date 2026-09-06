@@ -188,6 +188,15 @@ const age = async (name, days) => {
   ok("naming the shapes that cannot", /echoing your own answer/.test(framing));
   ok("and why that is worse than not checking", /agree with/.test(framing) && /every time including the times you are wrong/.test(framing));
 
+  /**
+   * A rule that sounds expensive gets skipped on exactly the work that most
+   * needs it, so what checking costs is stated: one small thing at the end,
+   * not a second pass.
+   */
+  ok("checking is not doing it twice", /Checking is not doing it twice/.test(framing));
+  ok("and code that has never run is called a draft", /never been executed is a draft/.test(framing));
+  ok("with tests named as the obvious check", /if it has tests, run those/.test(framing));
+
   ok("being unable is stated to be a complete answer", /complete answer/.test(framing));
   ok("with the three things to report", /what you tried/.test(framing) && /what it prevents/.test(framing));
   ok("retrying the same tool is closed off", /Do not call the same tool again/.test(framing));
