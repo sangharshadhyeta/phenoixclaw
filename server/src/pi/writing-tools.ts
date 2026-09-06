@@ -530,6 +530,8 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
           const history = artefactHistory(target, 5);
           return said(
             `This already exists — you wrote it before, and it is still here:\n\n${target}\n\n` +
+              `That is the full path; it is kept outside this session so it survives, so it is not in ` +
+              `your working directory and \`ls\` here will not show it.\n\n` +
               `${render(await listTasks(sessionId))}\n\n` +
               (history.length ? `Its history:\n${history.map((h) => `  ${h}`).join("\n")}\n\n` : "") +
               `Do not start it again. Read what is there with \`read_section\`, change what is wrong ` +

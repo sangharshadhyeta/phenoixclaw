@@ -195,6 +195,13 @@ export function briefFor(ctx: BriefContext): string {
       ? [
           `# WHAT IS ALREADY IN ${file}`,
           "",
+          // A planned document lives in the shared artefact store, not in the
+          // session's working directory, and a run given the absolute path
+          // still reached for the short one first: `ls shapes.mjs`, an error,
+          // then the full path. Wasteful, and the error alarms anyone watching.
+          "That is the full path. The file is not in your working directory — use the path as given,",
+          "and do not go looking for it with `ls`.",
+          "",
           writtenIndex(tasks, step) ? `Written so far: ${writtenIndex(tasks, step)}.` : undefined,
           ...(() => {
             const signatures = signaturesOf(written);

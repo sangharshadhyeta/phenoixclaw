@@ -71,6 +71,10 @@ const plan = [
   ok("it is shown the end of the file so the section follows on", /Some text that ends here/.test(brief));
   ok("not the whole of it", brief.length < written.length);
   ok("and told which tool appends", /write_next/.test(brief));
+  // A planned document lives in the shared store, not the session's working
+  // directory. A run given the absolute path still tried `ls shapes.mjs`
+  // first, got an error, and only then used the full path.
+  ok("and that the file is not in its working directory", /not in your working directory/.test(brief));
 
   const empty = briefFor({ goal: "g", tasks: plan, step: plan[1], file: "/w/guide.md", written: "" });
   ok("an empty file says so rather than showing nothing", /is empty so far/.test(empty));

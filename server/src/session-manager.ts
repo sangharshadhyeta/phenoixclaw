@@ -747,9 +747,18 @@ class SessionManager extends EventEmitter {
       this.live.delete(sessionId);
       void (async () => {
         const current = await getSession(sessionId);
-        // A clean exit after a finished run is normal; anything else is a failure
-        // worth surfacing in the UI rather than leaving as a silent stall.
-        if (current?.status === "running") {
+        /**
+         * A clean exit after a finished run is normal; anything else is a
+         * failure worth surfacing rather than leaving as a silent stall.
+         *
+         * "Running" stopped being enough to tell those apart once the portal
+         * began driving plans: `workPlan` holds the session running for the
+         * whole plan and `recycleConversation` stops pi deliberately between
+         * every step, so each recycle looked exactly like a crash and the run
+         * was marked errored while it was working perfectly. What separates
+         * them is not the status but whether *we* asked pi to stop.
+         */
+        if (current?.status === "running" && !this.stopping.has(sessionId)) {
           const message = `pi exited unexpectedly (code=${code} signal=${signal})`;
           await updateSession(sessionId, { status: "error", last_error: message });
           await this.record(sessionId, "portal_status", { status: "error", error: message });
@@ -1159,16 +1168,32 @@ class SessionManager extends EventEmitter {
     })();
   }
 
+  /**
+   * Sessions whose pi process we are deliberately ending.
+   *
+   * The exit handler cannot otherwise tell a crash from a recycle — see the
+   * comment there. Held only across the stop itself.
+   */
+  private stopping = new Set<string>();
+
   async stop(sessionId: string): Promise<void> {
-    // Let anything still queued reach the log before the client goes away,
-    // then drop the chain so the map does not grow for the life of the process.
-    await this.appends.get(sessionId)?.catch(() => {});
-    this.appends.delete(sessionId);
-    const live = this.live.get(sessionId);
-    if (!live) return;
-    live.client.dispose();
-    this.live.delete(sessionId);
-    await live.executor.cleanup?.(sessionId).catch(() => {});
+    this.stopping.add(sessionId);
+    try {
+      // Let anything still queued reach the log before the client goes away,
+      // then drop the chain so the map does not grow for the life of the process.
+      await this.appends.get(sessionId)?.catch(() => {});
+      this.appends.delete(sessionId);
+      const live = this.live.get(sessionId);
+      if (!live) return;
+      live.client.dispose();
+      this.live.delete(sessionId);
+      await live.executor.cleanup?.(sessionId).catch(() => {});
+    } finally {
+      // The exit event arrives asynchronously after dispose(), so the flag has
+      // to outlive this call by enough for the handler to see it. A stop that
+      // is never followed by an exit simply clears.
+      setTimeout(() => this.stopping.delete(sessionId), 5000).unref?.();
+    }
   }
 
   /**
