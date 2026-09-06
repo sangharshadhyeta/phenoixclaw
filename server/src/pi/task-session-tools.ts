@@ -42,6 +42,14 @@ export interface TaskSessionDeps {
   newId: () => string;
   /** Prompt the new session. Not awaited by the tool — see fire and forget. */
   start: (sessionId: string, instructions: string) => Promise<unknown>;
+  /**
+   * Say in the conversation that work was handed out.
+   *
+   * The tool's own result reaches the model, not the person — so whether the
+   * chat mentioned it at all depended on the model choosing to. A session
+   * starting is a thing that happened, and belongs in the transcript as one.
+   */
+  announce?: (event: { sessionId: string; title: string; workspace: string }) => Promise<void>;
 }
 
 /** A directory named from the id, which is unique, rather than the title, which is not. */
@@ -93,6 +101,8 @@ export function taskSessionTools(deps: TaskSessionDeps) {
           // and its answer is not relayed anywhere — they are looking at it.
           started_by: deps.parentSessionId,
         });
+
+        await deps.announce?.({ sessionId: id, title: title.slice(0, 120), workspace });
 
         // Not awaited: the tool returns when the work is accepted, not when it
         // is finished. Awaiting here would block this conversation for as long

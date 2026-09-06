@@ -94,8 +94,19 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
 
 // --- a check that cannot disagree -------------------------------------------
 {
-  ok("echoing a literal is self-confirming", selfConfirming('echo "Paris" | grep -v "Paris"'));
-  ok("even without the pipe", selfConfirming('echo "Paris"'));
+  ok("echoing a literal into a filter for it is self-confirming",
+     selfConfirming('echo "Paris" | grep -v "Paris"'));
+  /**
+   * A bare echo is not.
+   *
+   * Flagging one told a live session it had performed verification theatre
+   * when it had merely run a pointless command. It spent a whole turn agreeing
+   * with an accusation that did not fit and drew a wrong conclusion about its
+   * own behaviour — a false positive here costs more than what it watches for.
+   */
+  ok("a bare echo is only pointless, not a fake check",
+     !selfConfirming('echo "exponent of the second largest known Mersenne prime"'));
+  ok("nor is echoing into an unrelated filter", !selfConfirming('echo "x" | grep somethingelse'));
   // An arithmetic expansion computes something the model did not know.
   ok("an expansion is not", !selfConfirming("echo $((17*23))"));
   ok("nor a command substitution", !selfConfirming('echo "$(date)"'));
@@ -150,6 +161,40 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
 
   ok("a turn that claims nothing is left alone",
      failedCheck("what is the capital of Peru", [call("web_search", {})], said("It is Lima.")) === undefined);
+}
+
+// --- a conversation that worked instead of talking -------------------------
+// `work-not-handed-out` reads the request, and a live run walked past it:
+// asked to multiply the two largest known primes, it ran six web searches and
+// several bash calls in the chat and never started a session. The request was
+// phrased as a question, so nothing matched. Wording was the wrong signal.
+{
+  const chat = { conversational: true };
+  const task = { conversational: false };
+  const many = (n, tool = "bash") => Array.from({ length: n }, (_, i) => call(tool, { i }));
+
+  ok("a handful of calls is still a conversation", failedCheck("anything", many(3), chat) === undefined);
+  ok("six is work", failedCheck("anything", many(6), chat)?.name === "work-done-in-the-conversation");
+  ok("and it does not depend on how the request was worded",
+     failedCheck("tell me how many digits that has", many(6), chat)?.name === "work-done-in-the-conversation");
+
+  // Handing out is the right outcome however many calls it took.
+  ok("having handed it out satisfies the check",
+     failedCheck("anything", [...many(6), call("start_task", {})], chat) === undefined);
+  ok("so does sending it to work already running",
+     failedCheck("anything", [...many(6), call("tell_task", {})], chat) === undefined);
+
+  // A conversation answering a question about itself is not working.
+  ok("checking its own state is not work",
+     failedCheck("how is that going?", many(8, "tasks_running"), chat) === undefined);
+  ok("nor is reading its own memory", failedCheck("what do you know?", many(8, "graph_recall"), chat) === undefined);
+
+  // A task session *is* the work.
+  ok("a task doing many things is left alone", failedCheck("anything", many(20), task) === undefined);
+
+  const message = failedCheck("anything", many(6), chat).message;
+  ok("it says to give the answer anyway", /You have the answer now, so give it/.test(message));
+  ok("and what to do next time", /hand it out first/.test(message));
 }
 
 // --- shape ------------------------------------------------------------------

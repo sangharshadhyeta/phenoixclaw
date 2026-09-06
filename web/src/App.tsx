@@ -248,6 +248,7 @@ function Shell({
   }, [sessionId, listed]);
 
   const active = listed ?? (other?.id === sessionId ? other : null);
+  const runningCount = sessions.filter((s) => s.status === "running").length;
 
   return (
     <div className="flex h-screen bg-canvas">
@@ -303,14 +304,36 @@ function Shell({
         * with the first.
         */}
       {sidebarCollapsed && (
-        <button
-          onClick={toggleSidebar}
-          className="fixed left-2 top-2 z-40 rounded-lg bg-surface/90 p-1.5 text-fg-subtle shadow ring-1 ring-inset ring-line transition hover:text-fg"
-          title="Show the sidebar"
-          aria-label="Show the sidebar"
-        >
-          <LuPanelLeftOpen className="h-4 w-4" />
-        </button>
+        <div className="fixed left-2 top-2 z-40 flex flex-col items-center gap-1">
+          <button
+            onClick={toggleSidebar}
+            className="rounded-lg bg-surface/90 p-1.5 text-fg-subtle shadow ring-1 ring-inset ring-line transition hover:text-fg"
+            title="Show the sidebar"
+            aria-label="Show the sidebar"
+          >
+            <LuPanelLeftOpen className="h-4 w-4" />
+          </button>
+          {/*
+            * How much is going on, while the list of it is hidden.
+            *
+            * Hiding the sidebar hides the only sign that anything is running —
+            * and a run belongs to the server, so work carries on whether or
+            * not you can see it. A count is enough: it says "there is
+            * something to look at" without putting the list back.
+            *
+            * Only when there is something. A standing "0" is furniture.
+            */}
+          {runningCount > 0 && (
+            <button
+              onClick={toggleSidebar}
+              className="flex items-center gap-1 rounded-lg bg-surface/90 px-1.5 py-0.5 text-[10px] text-accent shadow ring-1 ring-inset ring-line transition hover:brightness-125"
+              title={`${runningCount} session${runningCount > 1 ? "s" : ""} running — show the sidebar`}
+            >
+              <span className="h-1 w-1 animate-pulse rounded-full bg-accent" />
+              {runningCount}
+            </button>
+          )}
+        </div>
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">

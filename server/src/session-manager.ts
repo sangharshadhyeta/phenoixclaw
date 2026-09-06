@@ -830,6 +830,8 @@ class SessionManager extends EventEmitter {
               executor: EXECUTOR_KIND,
               newId: () => nanoid(12),
               start: (childId, instructions) => this.prompt(childId, instructions),
+              announce: (started) =>
+                this.record(sessionId, "portal_task_started", started),
             }),
           }
         : {}),

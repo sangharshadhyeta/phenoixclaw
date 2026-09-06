@@ -76,10 +76,28 @@ export interface AfterTurnCheck {
  */
 export function selfConfirming(command: string): boolean {
   const text = command.trim();
-  // An echo of a literal, with nothing that consults anything.
-  if (!/^echo\s+["'][^"']+["']/.test(text)) return false;
-  if (/\$\(|\$\{|\$\(\(|`/.test(text)) return false;
-  return !/\b(curl|wget|cat|ls|find|grep\s+-r|python|node|date|uname)\b/.test(text.replace(/^echo\s+["'][^"']*["']/, ""));
+  const echoed = /^echo\s+(["'])([^"']+)\1/.exec(text);
+  if (!echoed) return false;
+  // An expansion computes something the model did not know.
+  if (/\$\(|\$\{|`/.test(text)) return false;
+
+  /**
+   * The echo has to be *fed to something that judges it*.
+   *
+   * The original failure was `echo "Paris" | grep -v "Paris"` — an answer put
+   * in and read back out, which can only ever agree. A bare `echo "some
+   * text"` is not that: it is a pointless command, and flagging it as a fake
+   * check told the model it had performed verification theatre when it had
+   * not. It spent a whole turn agreeing with an accusation that did not fit,
+   * and concluded something wrong about its own behaviour — a false positive
+   * here costs more than the thing it was watching for.
+   */
+  const rest = text.slice(echoed[0].length);
+  if (!/[|]/.test(rest)) return false;
+  const literal = echoed[2].trim();
+  if (!literal) return false;
+  // Piped into something that filters or matches on the same words.
+  return new RegExp(`\\b(?:grep|rg|awk|sed|test|match)\\b[^|]*${literal.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(rest);
 }
 
 /**
@@ -125,6 +143,27 @@ export function claimsImpossible(reply: string | undefined): boolean {
   return Boolean(reply && CLAIMS_IMPOSSIBLE.test(reply));
 }
 
+/**
+ * Tools that do not amount to working.
+ *
+ * Knowing what is running, reading back the plan, checking memory — a
+ * conversation does these to answer a question about itself, and counting them
+ * as work would push ordinary talk into a task session.
+ */
+const LIGHT_TOOLS = new Set([
+  "tasks_running",
+  "task_list",
+  "graph_recall",
+  "memory_digest",
+  "identity_read",
+  "self_review",
+  "conversation_history",
+  "search_conversations",
+]);
+
+/** Past this many real tool calls, a conversation was working rather than talking. */
+const WORK_IN_CHAT_LIMIT = 4;
+
 export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
   {
     name: "impossible-without-trying",
@@ -142,6 +181,45 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "",
       "Being unable is a complete answer when you have found the wall. It is not one when you have",
       "only imagined it.",
+    ].join("\n"),
+  },
+  {
+    /**
+     * A conversation that did a lot of work should have handed it out.
+     *
+     * `work-not-handed-out` reads the *request* — "build me a module" — and a
+     * live run walked straight past it: asked to multiply the two largest
+     * known primes, it ran six web searches and several `bash` calls in the
+     * chat and never started a session. The request was phrased as a question,
+     * so nothing matched.
+     *
+     * Wording was the wrong signal. This reads what the turn actually did: a
+     * conversation is for talking, and past a handful of tool calls it was not
+     * talking, it was working. That is true whether the request said "build"
+     * or "tell me".
+     *
+     * The threshold is deliberately generous. Answering a real question can
+     * take a search and a read and a second search; nobody should be pushed
+     * into a task session for that. Six calls is not that.
+     */
+    name: "work-done-in-the-conversation",
+    applies: (_request, context) => context.conversational,
+    satisfied: (calls) => {
+      // Handing out *is* the right outcome, however many calls it took.
+      if (calls.some((c) => c.toolName === "start_task" || c.toolName === "tell_task")) return true;
+      const working = calls.filter((c) => !LIGHT_TOOLS.has(c.toolName));
+      return working.length <= WORK_IN_CHAT_LIMIT;
+    },
+    message: [
+      "That was work, and you did it here.",
+      "",
+      "Several tool calls in a row is not a conversation — it is a piece of work, and work gets a",
+      "session of its own: `start_task` gives it an id, a workspace and a plan, it runs while you",
+      "carry on talking, and its answer comes back here.",
+      "",
+      "You have the answer now, so give it. But when something is going to take more than a couple",
+      "of steps, hand it out first rather than working through it in the chat — the chat is where",
+      "the result belongs, not the working.",
     ].join("\n"),
   },
   {

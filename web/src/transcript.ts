@@ -140,6 +140,27 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
        * a session of its own, and this is the reply. A notice would file the
        * answer under housekeeping.
        */
+      /**
+       * Work was handed out. Said here rather than left to the model.
+       *
+       * The tool's result reaches the model, not the person, so whether the
+       * chat mentioned a session had started depended on the model choosing
+       * to say so — and a session starting is a thing that happened, which
+       * belongs in the transcript as one. Named, so you know which of the
+       * sessions on the left it is.
+       */
+      case "portal_task_started": {
+        closeCurrent();
+        const title = String(p.title ?? "work");
+        items.push({
+          kind: "notice",
+          id: `ts${ev.seq}`,
+          text: `Started "${title}" as its own session — it runs on its own and answers here.`,
+          tone: "info",
+        });
+        break;
+      }
+
       case "portal_task_result": {
         closeCurrent();
         const text = String(p.text ?? "").trim();
