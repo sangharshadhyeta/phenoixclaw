@@ -243,6 +243,40 @@ export function withThinking(payload: unknown, thinkingLevel: string | undefined
   };
 }
 
+/**
+ * A ceiling on what one generation may spend, output and thinking together.
+ *
+ * Ported from Sisyphean's own default: its OpenAI-compatible endpoint
+ * (`engine/compat/openai_compat.py`) answers with `max_tokens=1024` whenever
+ * a caller does not ask for something else, and its Anthropic-compatible one
+ * (`engine/compat/anthropic.py`) clamps a caller's own request down to a
+ * fixed ceiling rather than trusting it — `if self.max_tokens > LIMIT:
+ * self.max_tokens = LIMIT`. Its step-driving loop (`translation/loop.py`)
+ * calls with exactly this figure: `max_tokens=1024, thinking=False`.
+ *
+ * pi asks with the model's own declared `maxTokens` by default — 8192 for
+ * this one — which is the ceiling that let the sqrt(144) turn spend its
+ * entire budget on one tool-call argument before anything else could stop
+ * it. Thinking suppression (`withThinking`, above) and this are two different
+ * defences against the same failure: one asks the model not to reason at
+ * length, this one bounds what happens if it does anyway — a stalled or
+ * runaway generation now fails in 1024 tokens rather than 8192, which is a
+ * cheaper mistake to recover from and a faster one to notice.
+ *
+ * A ceiling, not a floor: an explicit request for *less* is left alone, the
+ * same as everywhere else in this file. Only a request for more than this —
+ * which today is every ordinary turn, since pi's own default is the model's
+ * full budget — gets pulled down to it.
+ */
+const MAX_GENERATION_TOKENS = Number(process.env.PI_MAX_GENERATION_TOKENS || 1024);
+
+export function withMaxTokens(payload: unknown, limit = MAX_GENERATION_TOKENS): unknown {
+  if (!isChatBody(payload)) return undefined;
+  const existing = (payload as { max_tokens?: unknown }).max_tokens;
+  if (typeof existing === "number" && existing <= limit) return undefined;
+  return { ...payload, max_tokens: limit };
+}
+
 /** True when this payload looks like a chat-completions body we can add to. */
 function isChatBody(payload: unknown): payload is Record<string, unknown> {
   if (typeof payload !== "object" || payload === null) return false;
@@ -278,7 +312,8 @@ export function samplingDefaults(
         : thinkingLevel;
     pi.on("before_provider_request", async (event: any) => {
       const withDry = withSampling(event?.payload) ?? event?.payload;
-      return withThinking(withDry, effectiveLevel) ?? withDry;
+      const withThink = withThinking(withDry, effectiveLevel) ?? withDry;
+      return withMaxTokens(withThink) ?? withThink;
     });
   };
 }

@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { isLocalUrl, providerIsLocal, withSampling, withThinking, modelReasons, samplingDefaults, DEFAULT_SAMPLING } =
+const { isLocalUrl, providerIsLocal, withSampling, withThinking, withMaxTokens, modelReasons, samplingDefaults, DEFAULT_SAMPLING } =
   await import(
   path.join(here, "..", "dist", "pi", "sampling.js")
 );
@@ -127,6 +127,54 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   // near its request.
   ok("a cloud provider gets none at all", mount("anthropic") === undefined);
   ok("and neither does an unknown one", mount(undefined) === undefined);
+}
+
+// --- one generation may not spend the model's whole output budget ----------
+// Sisyphean's own default: its OpenAI-compatible endpoint answers 1024 unless
+// asked for something else, and its Anthropic-compatible one clamps a
+// caller's request down to a fixed ceiling rather than trusting it. pi asks
+// with the model's own declared maxTokens by default — 8192 here — which is
+// the ceiling that let one stalled tool-call argument spend the model's whole
+// budget before anything else could stop it.
+{
+  const body = { messages: [{ role: "user", content: "hi" }] };
+  ok("no max_tokens at all is given the ceiling",
+     withMaxTokens(body)?.max_tokens === 1024);
+  ok("pi's own default of the model's full budget is pulled down",
+     withMaxTokens({ ...body, max_tokens: 8192 })?.max_tokens === 1024);
+  ok("an explicit request for less is left alone — a ceiling, not a floor",
+     withMaxTokens({ ...body, max_tokens: 256 }) === undefined);
+  ok("exactly at the ceiling is left alone",
+     withMaxTokens({ ...body, max_tokens: 1024 }) === undefined);
+  ok("the rest of the payload survives",
+     withMaxTokens({ ...body, max_tokens: 8192, stream: true })?.stream === true);
+  ok("something that is not a chat body is left alone", withMaxTokens({ nope: 1 }) === undefined);
+  ok("a custom limit can be asked for", withMaxTokens({ ...body, max_tokens: 4000 }, 512)?.max_tokens === 512);
+
+  // What samplingDefaults actually sends: DRY, thinking off, AND the ceiling,
+  // all three on the one request that used to loop.
+  const dir = mkdtempSync(path.join(tmpdir(), "ceiling-"));
+  writeFileSync(
+    path.join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        "local-llama": {
+          baseUrl: "http://127.0.0.1:8099/v1",
+          api: "openai-completions",
+          models: [{ id: "no-reasoning-model", reasoning: false }],
+        },
+      },
+    }),
+  );
+  const calls = [];
+  const pi = { getAgentDir: () => dir, on: (_evt, fn) => calls.push(fn) };
+  samplingDefaults(dir, "local-llama", "medium", "no-reasoning-model")(pi);
+  const sent = await calls[0]({
+    payload: { messages: [{ role: "user", content: "sqrt(144)?" }], max_tokens: 8192 },
+  });
+  ok("thinking is off", sent?.chat_template_kwargs?.enable_thinking === false);
+  ok("DRY is set", sent?.dry_multiplier > 0);
+  ok("and the ceiling replaced pi's own 8192", sent?.max_tokens === 1024);
 }
 
 // --- the model's own declared capability, not the requested level -----------
