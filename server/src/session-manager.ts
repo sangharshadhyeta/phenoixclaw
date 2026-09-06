@@ -846,6 +846,56 @@ class SessionManager extends EventEmitter {
     await live.executor.cleanup?.(sessionId).catch(() => {});
   }
 
+  /**
+   * Start the conversation again, keeping the session.
+   *
+   * A routine that reuses its session — which is most of them, and right, since
+   * "nothing new since yesterday" needs yesterday — shares one pi conversation
+   * across every run it ever makes. The learning loop had been in a single one
+   * for ten and a half hours: 774 iterations, 765 turns, and **1504
+   * compactions**, one firing on almost every prompt.
+   *
+   * That is what made it read the same file over and over. It was not being
+   * stubborn and it was not failing — the reads returned fine. Compaction threw
+   * the tool results away to make room, so the next iteration genuinely did not
+   * remember reading pi's README, and read it again. Fifteen times in a row, in
+   * the audit log, while looking from the outside like a machine that had lost
+   * its mind.
+   *
+   * The fix is the principle this codebase already runs on, applied to the loop
+   * itself: assemble context rather than accumulating it. Continuity for a
+   * routine belongs in the graph — where its iterations are now recorded — and
+   * in `task_plan`, not in a transcript that grows forever. So the pi
+   * conversation is retired when it fills up, while the portal session, its
+   * event log and its history stay exactly where they are.
+   *
+   * Dropping `pi_session_file` is what does it: `ensureClient` reopens a stored
+   * file by path and calls `create()` when there is none.
+   */
+  async recycleConversation(sessionId: string): Promise<void> {
+    await this.stop(sessionId);
+    await updateSession(sessionId, { pi_session_file: null });
+    await this.record(sessionId, "portal_notice", {
+      text: "Starting a fresh conversation — the previous one had filled up. What was learned is in memory.",
+    });
+  }
+
+  /**
+   * How full this session's context is, 0–100, or undefined if it cannot say.
+   *
+   * Read from pi rather than counted here: it knows the model's real window and
+   * what it has actually sent.
+   */
+  async contextPercent(sessionId: string): Promise<number | undefined> {
+    try {
+      const stats = await this.live.get(sessionId)?.client.getStats();
+      const percent = stats?.contextUsage?.percent;
+      return typeof percent === "number" && Number.isFinite(percent) ? percent : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Drop the running process so the next turn rebuilds it — used when a
    * session's role changes and its context files must be reloaded. */
   async shutdownSession(sessionId: string): Promise<void> {

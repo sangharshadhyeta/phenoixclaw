@@ -68,6 +68,18 @@ const RUN_TIMEOUT_MS = 60 * 60_000;
  */
 const AUTONOMOUS_TOOL_CEILING = Number(process.env.AUTONOMOUS_TOOL_CEILING || 120);
 
+/**
+ * How full a routine's conversation may get before it is started again.
+ *
+ * Below the point where pi begins compacting, deliberately. Compaction is the
+ * symptom, not the remedy: it makes room by discarding what the run has just
+ * read, so an iteration that triggers it forgets its own work and repeats it —
+ * which is precisely what had the learning loop reading pi's README fifteen
+ * times in a row. Retiring the conversation a little early costs one cheap
+ * restart; letting it saturate costs every iteration after it.
+ */
+const CONTEXT_RECYCLE_PERCENT = Number(process.env.ROUTINE_CONTEXT_RECYCLE || 70);
+
 /** Enough of the outcome to see what happened without storing a transcript. */
 const MAX_OUTPUT = 4000;
 
@@ -136,8 +148,31 @@ class RoutineSupervisor {
     return reader.getRowObjectsJson() as unknown as RoutineRow[];
   }
 
+  /**
+   * A routine left marked `running` by a process that is no longer here.
+   *
+   * `last_status` is written before the work and rewritten after it, so a
+   * restart mid-run — or a run that never returned — leaves it saying
+   * `running` forever. Sessions already get this treatment
+   * (markOrphanedSessionsInterrupted); routines did not, so the Routines page
+   * showed the learning loop as having been running since half past midnight,
+   * five hours after the fact and well past its own timeout.
+   *
+   * Nothing was actually blocked by it — the tick guards on an in-memory set —
+   * which is exactly why it went unnoticed. It was purely a lie to whoever was
+   * reading the page, which is the kind of thing that makes a person stop
+   * trusting the page.
+   */
+  private async releaseStaleRuns(): Promise<void> {
+    const conn = await getDb();
+    await conn.run(
+      "UPDATE routines SET last_status = 'interrupted' WHERE last_status = 'running'",
+    );
+  }
+
   start(): void {
     if (this.timer) return;
+    void this.releaseStaleRuns().catch(() => {});
     void this.refreshSchedules();
     this.timer = setInterval(() => void this.tick(), TICK_MS);
     if (typeof this.timer.unref === "function") this.timer.unref();
@@ -277,6 +312,23 @@ class RoutineSupervisor {
 
     try {
       const session = await this.sessionFor(row);
+
+      /**
+       * Retire a conversation that has filled up before asking it to do more.
+       *
+       * Checked here rather than after the run, so the iteration about to
+       * start gets the clean context rather than the one after it. A routine
+       * that keeps its session — most of them — otherwise shares one pi
+       * conversation across every run it will ever make; see
+       * recycleConversation for what that did.
+       */
+      const used = await sessions.contextPercent(session.id);
+      if (used !== undefined && used >= CONTEXT_RECYCLE_PERCENT) {
+        console.log(
+          `[routine] ${row.slug}: conversation at ${Math.round(used)}% — starting a fresh one`,
+        );
+        await sessions.recycleConversation(session.id);
+      }
       // Bookends, so the mirrored stream in the main conversation reads as
       // "it started this, then it did these things, then it finished" rather
       // than as loose output appearing from nowhere.
