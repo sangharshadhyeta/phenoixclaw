@@ -654,7 +654,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
          */
         {
           name: "sampling",
-          factory: samplingDefaults(pi.getAgentDir(), opts.provider, opts.thinkingLevel),
+          factory: samplingDefaults(pi.getAgentDir(), opts.provider, opts.thinkingLevel, opts.modelId),
         },
         { name: "temporal", factory: temporalContext() },
         // Identity is assembled into the system prompt once, at session

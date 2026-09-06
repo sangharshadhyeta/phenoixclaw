@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { isLocalUrl, providerIsLocal, withSampling, withThinking, samplingDefaults, DEFAULT_SAMPLING } =
+const { isLocalUrl, providerIsLocal, withSampling, withThinking, modelReasons, samplingDefaults, DEFAULT_SAMPLING } =
   await import(
   path.join(here, "..", "dist", "pi", "sampling.js")
 );
@@ -127,6 +127,51 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   // near its request.
   ok("a cloud provider gets none at all", mount("anthropic") === undefined);
   ok("and neither does an unknown one", mount(undefined) === undefined);
+}
+
+// --- the model's own declared capability, not the requested level -----------
+// `thinkingLevel` passed around the portal is the *requested* level — the
+// global default, "medium", regardless of what any particular model can do.
+// pi clamps its own effective level to what the model supports, and this
+// server's model declares `"reasoning": false` in models.json: pi always
+// resolves it to "off" no matter what was requested, but a check against the
+// requested level saw "medium" and did nothing. That is the live failure this
+// contract is here to catch: the model reasoned unbounded through 8192 output
+// tokens computing a square root and produced no answer, because "medium" is
+// not the literal string "off".
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "reasoning-"));
+  writeFileSync(
+    path.join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        "local-llama": {
+          baseUrl: "http://127.0.0.1:8099/v1",
+          api: "openai-completions",
+          models: [
+            { id: "no-reasoning-model", reasoning: false },
+            { id: "reasoning-model", reasoning: true },
+          ],
+        },
+      },
+    }),
+  );
+  ok("a model marked reasoning:false has nothing to turn up",
+     !modelReasons(dir, "local-llama", "no-reasoning-model"));
+  ok("a model marked reasoning:true does",
+     modelReasons(dir, "local-llama", "reasoning-model"));
+  ok("a model not listed at all is assumed capable — the safe default",
+     modelReasons(dir, "local-llama", "unlisted-model"));
+  ok("no provider at all is assumed capable", modelReasons(dir, undefined, "no-reasoning-model"));
+
+  // What samplingDefaults actually sends, for the exact case that looped.
+  const calls = [];
+  const pi = { getAgentDir: () => dir, on: (_evt, fn) => calls.push(fn) };
+  samplingDefaults(dir, "local-llama", "medium", "no-reasoning-model")(pi);
+  const handler = calls[0];
+  const sent = await handler({ payload: { messages: [{ role: "user", content: "hi" }] } });
+  ok("the requested level was 'medium', and the flag was sent anyway",
+     sent?.chat_template_kwargs?.enable_thinking === false);
 }
 
 // --- the configured thinking level must reach the server ------------------

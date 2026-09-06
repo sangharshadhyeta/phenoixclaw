@@ -146,23 +146,53 @@ export function isLocalUrl(url: string | undefined): boolean {
  * "yes" ends every request with a 400, and a wrong "no" leaves things as they
  * are today.
  */
+interface ModelsFile {
+  providers?: Record<
+    string,
+    { baseUrl?: string; api?: string; models?: { id?: string; reasoning?: boolean }[] }
+  >;
+}
+
+function readModelsFile(agentDir: string): ModelsFile | undefined {
+  const file = path.join(agentDir, "models.json");
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as ModelsFile;
+  } catch {
+    return undefined;
+  }
+}
+
 export function providerIsLocal(agentDir: string, provider: string | undefined): boolean {
   if (!provider) return false;
-  const file = path.join(agentDir, "models.json");
-  if (!existsSync(file)) return false;
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-      providers?: Record<string, { baseUrl?: string; api?: string }>;
-    };
-    const config = parsed?.providers?.[provider];
-    if (!config) return false;
-    // OpenAI-compatible is what llama.cpp serves; a local Anthropic-shaped
-    // endpoint would not take these names either.
-    if (config.api && !/openai/i.test(config.api)) return false;
-    return isLocalUrl(config.baseUrl);
-  } catch {
-    return false;
-  }
+  const parsed = readModelsFile(agentDir);
+  const config = parsed?.providers?.[provider];
+  if (!config) return false;
+  // OpenAI-compatible is what llama.cpp serves; a local Anthropic-shaped
+  // endpoint would not take these names either.
+  if (config.api && !/openai/i.test(config.api)) return false;
+  return isLocalUrl(config.baseUrl);
+}
+
+/**
+ * Whether this model has any reasoning to turn up.
+ *
+ * Read from the same file that declares it, rather than trusting a level
+ * chosen for a different model: `models.json` marks this one
+ * `"reasoning": false`, which is why pi's own state always reports its
+ * effective thinking level as "off" regardless of the portal's global
+ * default. A model not listed is assumed capable — the safe default is not
+ * to suppress something that might be wanted.
+ */
+export function modelReasons(
+  agentDir: string,
+  provider: string | undefined,
+  modelId: string | undefined,
+): boolean {
+  if (!provider) return true;
+  const models = readModelsFile(agentDir)?.providers?.[provider]?.models;
+  const entry = models?.find((m) => m.id === modelId);
+  return entry?.reasoning !== false;
 }
 
 /**
@@ -188,6 +218,20 @@ export function providerIsLocal(agentDir: string, provider: string | undefined):
  */
 export function withThinking(payload: unknown, thinkingLevel: string | undefined): unknown {
   if (!isChatBody(payload)) return undefined;
+  /**
+   * `thinkingLevel` here was the wrong value: it is `session.thinking_level ||
+   * settings.thinkingLevel`, the *requested* level before pi clamps it to
+   * what the model can actually do — "medium" by default, since that is the
+   * portal's global default regardless of the model in use. This model's own
+   * entry in models.json declares `"reasoning": false`, so pi always resolves
+   * its *effective* level to "off" no matter what was requested — which is
+   * exactly the case this function needs to catch, and exactly the one the
+   * old check let through, because "medium" is not "off".
+   *
+   * The caller now passes whichever of the two already says "off": either the
+   * level actually requested, or `modelReasons(...)` saying the model has no
+   * reasoning to turn up in the first place. See samplingDefaults.
+   */
   if (thinkingLevel && thinkingLevel !== "off") return undefined;
   const existing = (payload as { chat_template_kwargs?: Record<string, unknown> })
     .chat_template_kwargs;
@@ -222,12 +266,19 @@ export function samplingDefaults(
   agentDir: string,
   provider: string | undefined,
   thinkingLevel?: string,
+  modelId?: string,
 ) {
   return (pi: any): void => {
     if (!providerIsLocal(agentDir, provider)) return;
+    // Whichever already says "off": the level actually requested, or the
+    // model having nothing to turn up regardless of what was requested.
+    const effectiveLevel =
+      thinkingLevel === "off" || !modelReasons(agentDir, provider, modelId)
+        ? "off"
+        : thinkingLevel;
     pi.on("before_provider_request", async (event: any) => {
       const withDry = withSampling(event?.payload) ?? event?.payload;
-      return withThinking(withDry, thinkingLevel) ?? withDry;
+      return withThinking(withDry, effectiveLevel) ?? withDry;
     });
   };
 }
