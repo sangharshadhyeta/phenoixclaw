@@ -329,7 +329,16 @@ async function attachDuckDB(file: string): Promise<DuckDBInstance> {
     // matched: "not a valid DuckDB database file", which is what a wrong path
     // gives you. Renaming somebody's notes.txt aside because we were pointed
     // at it is the one outcome worse than refusing to start.
-    if (/Failed to load metadata pointer|Corrupt database file|does not match stored checksum|INTERNAL Error.*[Cc]heckpoint/.test(message)) {
+    if (
+      /Failed to load metadata pointer|Corrupt database file|does not match stored checksum/.test(message) ||
+      /INTERNAL Error.*[Cc]heckpoint/.test(message) ||
+      // A block that deserialises into the wrong shape — "field id mismatch,
+      // expected: 100, got: 0" — is the same condition arriving through the
+      // serialiser rather than the checksum. Seen on a 1.1 GB portal.duckdb
+      // after a trim: the file is structurally intact enough to open and its
+      // contents are not what the catalog says they are.
+      /Serialization Error.*deserialize/.test(message)
+    ) {
       const aside = `${file}.corrupt-${Date.now()}`;
       renameSync(file, aside);
       if (existsSync(`${file}.wal`)) renameSync(`${file}.wal`, `${aside}.wal`);

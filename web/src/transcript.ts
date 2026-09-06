@@ -158,9 +158,34 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
         break;
       }
 
-      case "message_end":
-        closeCurrent();
+      /**
+       * The finished turn, for a reader who never saw it arrive.
+       *
+       * `message_update` is no longer stored — it was one row per token and it
+       * grew the database past a gigabyte (see EPHEMERAL_EVENTS in
+       * session-manager.ts). Live viewers still get the deltas and build the
+       * item from them, in which case `current` exists and this only closes
+       * it. A replay has no deltas at all, so the item has to be built here
+       * from the whole message, or a reloaded conversation shows tool calls
+       * with nothing said between them.
+       */
+      case "message_end": {
+        if (current) {
+          closeCurrent();
+          break;
+        }
+        const message = p.message as { role?: string; content?: unknown } | undefined;
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) break;
+        let text = "";
+        let thinking = "";
+        for (const part of message.content as any[]) {
+          if (part?.type === "text" && typeof part.text === "string") text += part.text;
+          else if (part?.type === "thinking" && typeof part.thinking === "string") thinking += part.thinking;
+        }
+        if (!text.trim() && !thinking.trim()) break;
+        items.push({ kind: "assistant", id: `a${ev.seq}`, text, thinking, done: true });
         break;
+      }
 
       case "tool_execution_start":
         closeCurrent();

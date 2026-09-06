@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { hasBareReferent, preflightNote } = await import(path.join(here, "..", "dist", "pi", "preflight.js"));
+const { hasBareReferent, preflightNote, hasArithmetic, arithmeticNote } = await import(path.join(here, "..", "dist", "pi", "preflight.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -68,6 +68,38 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("naming the failure it prevents", /the wrong thing to the wrong file/.test(note));
   ok("it offers asking or stating the assumption", /ask what is meant/.test(note) && /which thing you are assuming/.test(note));
   ok("and does not block a genuinely obvious case", /if it genuinely is obvious/i.test(note));
+}
+
+// --- arithmetic the model will otherwise do in its head ---------------------
+// BirdClaw's run_command route sent computation to a shell. This port claimed
+// the standing practice covered it — "Arithmetic ... put them through `bash`",
+// stated before the first token, with the reason attached. Asked "What is 17
+// times 23?", a session with that practice in its prompt and bash in its tools
+// answered 393, in one word, with no tool call. It is 391.
+{
+  ok("a bare product", hasArithmetic("What is 17 times 23?"));
+  ok("with symbols", hasArithmetic("compute 144 * 12"));
+  ok("division", hasArithmetic("what is 1024 / 16"));
+  ok("a percentage", hasArithmetic("what is 15% of 240"));
+  ok("addition in words", hasArithmetic("2 plus 2"));
+
+  // Numbers that are not sums. The rule is narrow on purpose: an operator
+  // *between* two numbers.
+  ok("a port number is not a sum", !hasArithmetic("start the portal on 8101"));
+  ok("nor a count of sections", !hasArithmetic("write three sections and 2 appendices"));
+  ok("nor a version", !hasArithmetic("check whether we are on 1.4.4 or later"));
+  ok("nor a date", !hasArithmetic("what happened on 2026-09-06"));
+  ok("nor a path", !hasArithmetic("read src/pi/guard.ts and summarise"));
+  ok("nor an ordinary question", !hasArithmetic("what is in the memory graph?"));
+
+  const note = arithmeticNote("What is 17 times 23?");
+  ok("the note names the tool", /`bash`/.test(note));
+  ok("closes off 'it is small enough'", /however small it looks/.test(note));
+  // The evidence, because a rule the model has already reasoned past needs to
+  // be shown that it did.
+  ok("and cites the failure that produced it", /393/.test(note) && /391/.test(note));
+  ok("saying why fluency is the problem", /confidence of a right one/.test(note));
+  ok("a request with no arithmetic says nothing", arithmeticNote("write the guide") === "");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

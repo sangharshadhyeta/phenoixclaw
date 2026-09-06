@@ -100,5 +100,22 @@ const dir = mkdtempSync(path.join(tmpdir(), "recovery-"));
      quarantined.length === 1 && existsSync(path.join(dir, quarantined[0])));
 }
 
+// --- the crash handlers must be registered before anything can throw --------
+// The first version sat beside the SIGTERM handlers at the bottom of the file,
+// after several top-level awaits — so a rejection during startup, which is
+// exactly when a damaged database announces itself, happened before there was
+// anything to catch it.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const handler = src.indexOf('process.on("unhandledRejection"');
+  ok("the process handlers exist", handler > 0);
+
+  const before = src.slice(0, handler);
+  // Comments and imports may precede them; an executed await may not.
+  const executable = before.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^import[\s\S]*?;$/gm, "");
+  ok("and nothing is awaited before them", !/\bawait\b/.test(executable));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

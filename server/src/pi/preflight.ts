@@ -82,3 +82,65 @@ export function preflightNote(message: string, hasHistory: boolean): string {
     "If it genuinely is obvious — one candidate, and no other reading — say so and carry on.",
   ].join("\n");
 }
+
+/**
+ * Arithmetic in the request, which the model will do in its head.
+ *
+ * BirdClaw's `run_command` route sent computation to a shell rather than
+ * answering from the model, and this port claimed the standing practice
+ * covered it — "Arithmetic, dates, unit conversions … put them through `bash`
+ * and read the answer", stated before the first token, with the reason
+ * attached.
+ *
+ * It does not cover it. Asked "What is 17 times 23?" through the Messages
+ * endpoint, a session with that practice in its prompt and `bash` in its tools
+ * answered **393**, in one word, with no thinking and no tool call. The answer
+ * is 391. Nothing about the wording is unclear; a small enough sum simply does
+ * not feel like the kind of thing the rule is about, and the model is fluent
+ * enough that a wrong answer arrives with exactly the confidence of a right
+ * one.
+ *
+ * So the request is checked. The same shape as the referent check above and
+ * for the same reason: this is a property of the text that the portal can see
+ * plainly, and leaving it to a judgement made mid-generation is what already
+ * failed.
+ *
+ * Deliberately narrow. It looks for two numbers joined by an operator, which
+ * is the case where the answer is exact and checkable and the model's
+ * arithmetic is not. It says nothing about "three sections" or "port 8101".
+ */
+const ARITHMETIC = [
+  /\d[\d,.]*\s*(?:[×x*/+\-^]|\*\*)\s*\d/,
+  /\d[\d,.]*\s*(?:times|multiplied by|divided by|plus|minus|over|to the power of|mod|modulo)\s+\d/i,
+  /\b(?:what(?:'s| is)|calculate|compute|work out)\b[^.?!]*\d[^.?!]*\b(?:times|plus|minus|divided|multiplied|percent|%)\b/i,
+  /\b\d[\d,.]*\s*(?:percent|%)\s*of\s*\d/i,
+];
+
+export function hasArithmetic(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  // A version, a port, a date or a path is not a sum. Requiring an operator
+  // *between* two numbers already excludes most of these; this excludes the
+  // rest by refusing anything that looks like a dotted or hyphenated literal.
+  if (/\b\d+\.\d+\.\d+\b/.test(text)) return false;
+  // A date is digits joined by hyphens or slashes, which is the subtraction
+  // and division pattern exactly. "What happened on 2026-09-06" is not a sum.
+  if (/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b/.test(text)) return false;
+  return ARITHMETIC.some((pattern) => pattern.test(text));
+}
+
+/** The note for a request with a sum in it. Empty when there is none. */
+export function arithmeticNote(message: string): string {
+  if (!hasArithmetic(message)) return "";
+  return [
+    "",
+    "# THERE IS ARITHMETIC IN THIS",
+    "",
+    "Work it out with `bash` and read the answer off. Do not do it in your head, however small it looks:",
+    "asked for 17 times 23, you have answered 393 in one word, with no working. It is 391.",
+    "",
+    "That is the whole problem with mental arithmetic here: you are fluent enough that a wrong",
+    "answer arrives with exactly the confidence of a right one, and neither you nor the person",
+    "reading it can tell them apart. `echo $((17*23))` can.",
+  ].join("\n");
+}

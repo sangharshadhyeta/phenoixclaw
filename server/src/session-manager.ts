@@ -10,7 +10,7 @@ import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
-import { preflightNote } from "./pi/preflight.js";
+import { arithmeticNote, preflightNote } from "./pi/preflight.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
@@ -67,11 +67,25 @@ const EXECUTOR_KIND = (process.env.EXECUTOR || "host") as ExecutorKind;
  * Beyond noise, extension dialogs are strictly live: a stored
  * extension_ui_request would be replayed to every future reader, so reloading
  * the page reopened a dialog whose extension had long since stopped waiting.
+ *
+ * `message_update` is here for a different and more expensive reason. It is one
+ * row per streamed token — thousands per turn, each a JSON blob wrapping a few
+ * characters — and it grew portal.duckdb from half a megabyte to 1.1 GB in two
+ * hours, corrupting it twice on the way. DuckDB never shrinks a file, so
+ * trimming rows did not help: the churn of deleting and checkpointing at that
+ * size is what the ART index failed under.
+ *
+ * Nothing needs them on disk. They exist so a watching browser sees text
+ * arrive, and a browser that *reconnects* wants the finished text, which
+ * `message_end` carries in full. They are still delivered live, with the
+ * negative seq every ephemeral event gets. web/src/transcript.ts rebuilds the
+ * assistant's turn from message_end when the deltas were never stored.
  */
 const EPHEMERAL_EVENTS = new Set([
   "queue_update",
   "extension_ui_request",
   "extension_ui_cancel",
+  "message_update",
 ]);
 
 interface LiveSession {
@@ -908,7 +922,9 @@ class SessionManager extends EventEmitter {
      * itself the earlier turn and the answer is always yes.
      */
     const note =
-      isCommand || opts.internal ? "" : preflightNote(message, await this.hasEarlierTurn(sessionId));
+      isCommand || opts.internal
+        ? ""
+        : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}${arithmeticNote(message)}`;
 
     // Recorded without the note: the transcript should show what was said, not
     // what the portal appended to it.
