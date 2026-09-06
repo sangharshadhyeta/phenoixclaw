@@ -945,10 +945,21 @@ class SessionManager extends EventEmitter {
 
     try {
       await client.prompt(outgoing);
-      // A slash command completes inside prompt() without starting an agent
-      // turn, so no agent_end arrives to clear the status. Settle it here
-      // rather than leaving "working" on screen forever.
-      const idle = (client as { isIdle?: () => boolean }).isIdle?.();
+      /**
+       * A slash command completes inside prompt() without starting an agent
+       * turn, so no agent_end arrives to clear the status. Settle it here
+       * rather than leaving "working" on screen forever.
+       *
+       * Not while the runner is driving a plan. `client.prompt()` resolves
+       * when the turn ends, and a step's turn is *deliberately* ended the
+       * moment its section is written — so this heuristic found an idle client
+       * and settled a session with three sections still to write. The status
+       * then flickered idle between every step, which is what the UI and the
+       * e2e harness both read as "finished".
+       */
+      const idle = this.working.has(sessionId)
+        ? false
+        : (client as { isIdle?: () => boolean }).isIdle?.();
       if (idle) {
         await updateSession(sessionId, { status: "idle" });
         await this.record(sessionId, "portal_status", { status: "idle" });

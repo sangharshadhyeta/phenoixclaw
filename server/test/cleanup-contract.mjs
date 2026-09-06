@@ -176,6 +176,22 @@ ok("sessions.tainted exists and defaults to 0",
      /DROP INDEX IF EXISTS idx_events_session/.test(src) &&
      /CREATE INDEX idx_events_session/.test(src));
 
+  /**
+   * A session must not report itself finished between the steps of its plan.
+   *
+   * Three separate places settled it: the agent_end handler, the fall-through
+   * in afterTurn when workPlan declined because one was already in flight, and
+   * prompt()'s slash-command heuristic — which sees an idle client because a
+   * step's turn is deliberately ended the moment its section is written. The
+   * UI showed a finished session that then started moving again, and the e2e
+   * harness gave up at the first step every time.
+   */
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("afterTurn leaves the status alone while a plan is being driven",
+     /private async afterTurn[\s\S]{0,900}this\.working\.has\(sessionId\)\) return;/.test(mgr));
+  ok("and the prompt heuristic does not settle mid-plan",
+     /this\.working\.has\(sessionId\)\s*\?\s*false/.test(mgr));
+
   // A rejected promise in any `void this.something()` path used to kill the
   // process, which ends every running session at once — the opposite of a run
   // belonging to the server.
