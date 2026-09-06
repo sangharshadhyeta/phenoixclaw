@@ -57,6 +57,40 @@ export function workspaceFor(root: string, id: string): string {
   return path.join(root, `session-${id}`);
 }
 
+/**
+ * Create the session, announce it, and set it running.
+ *
+ * Split out of the tool because the portal starts work on its own now, without
+ * waiting for the model to choose to — see `handOutForRequest` in
+ * session-manager.ts. Both paths must produce exactly the same thing: the same
+ * id scheme, the same workspace boundary, the same `started_by` so the answer
+ * knows which conversation to come back to.
+ */
+export async function handOut(
+  deps: TaskSessionDeps,
+  title: string,
+  instructions: string,
+): Promise<{ id: string; workspace: string }> {
+  const id = deps.newId();
+  const workspace = workspaceFor(deps.workspaceRoot, id);
+  mkdirSync(workspace, { recursive: true });
+  await createSession({
+    id,
+    title: title.slice(0, 120),
+    workspace,
+    executor: deps.executor,
+    // Which conversation to answer. A session a person created has none, and
+    // its answer is not relayed anywhere — they are looking at it.
+    started_by: deps.parentSessionId,
+  });
+  await deps.announce?.({ sessionId: id, title: title.slice(0, 120), workspace });
+  // Not awaited: this returns when the work is accepted, not when it is
+  // finished. Awaiting would block the conversation for as long as the task
+  // takes, which is the arrangement this exists to end.
+  void deps.start(id, instructions);
+  return { id, workspace };
+}
+
 export function taskSessionTools(deps: TaskSessionDeps) {
   return (pi: any): void => {
     pi.registerTool({
@@ -88,27 +122,7 @@ export function taskSessionTools(deps: TaskSessionDeps) {
               "conversation — say what to do and what counts as done.",
           );
         }
-
-        const id = deps.newId();
-        const workspace = workspaceFor(deps.workspaceRoot, id);
-        mkdirSync(workspace, { recursive: true });
-        await createSession({
-          id,
-          title: title.slice(0, 120),
-          workspace,
-          executor: deps.executor,
-          // Which conversation to answer. A session a person created has none,
-          // and its answer is not relayed anywhere — they are looking at it.
-          started_by: deps.parentSessionId,
-        });
-
-        await deps.announce?.({ sessionId: id, title: title.slice(0, 120), workspace });
-
-        // Not awaited: the tool returns when the work is accepted, not when it
-        // is finished. Awaiting here would block this conversation for as long
-        // as the task takes, which is the arrangement this exists to end.
-        void deps.start(id, instructions);
-
+        const { id, workspace } = await handOut(deps, title, instructions);
         return {
           content: [
             {

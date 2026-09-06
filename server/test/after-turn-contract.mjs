@@ -135,6 +135,7 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   const said = (reply) => ({ conversational: true, reply });
   const claim = "There is no way to display the actual decimal expansion of this number, as it " +
                 "would exceed the storage and processing limits of any digital system.";
+  const work = { conversational: false, reply: claim };
 
   ok("the claim is recognised", claimsImpossible(claim));
   ok("and its cousins", claimsImpossible("that is impossible") && claimsImpossible("it cannot be computed"));
@@ -147,12 +148,12 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   ok("claiming it without trying is handed back",
      failedCheck("multiply these two", [], said(claim))?.name === "impossible-without-trying");
   // Anything that reaches the world counts as having tried.
-  ok("having run something satisfies it",
-     failedCheck("multiply these two", [call("bash", { command: "python3 -c ..." })], said(claim)) === undefined);
+  ok("having run something satisfies it, in a session",
+     failedCheck("multiply these two", [call("bash", { command: "python3 -c ..." })], work) === undefined);
   ok("so does having searched",
-     failedCheck("x", [call("web_search", {})], said(claim)) === undefined);
+     failedCheck("x", [call("web_search", {})], work) === undefined);
 
-  const message = failedCheck("multiply these two", [], said(claim)).message;
+  const message = failedCheck("multiply these two", [], work).message;
   ok("it names the tool to try with", /`bash`/.test(message));
   ok("a failure is allowed, and counts", /that is a finding/.test(message));
   // The standing practice says being unable is a complete answer; this must
@@ -160,8 +161,25 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   ok("the distinction is the wall you found versus the one you imagined",
      /only imagined it/.test(message));
 
+  /**
+   * In a conversation the remedy is different, because the tools are.
+   *
+   * A chat has no bash and no web_search — see excludeTools in sdk-client.ts.
+   * Telling it to run one would be an instruction it can only fail, which is
+   * the shape of every loop this file exists to stop. Trying is a session's
+   * job, so handing out is what counts as having tried.
+   */
+  ok("in a conversation, handing it out is trying",
+     failedCheck("multiply these two", [call("start_task", {})], said(claim)) === undefined);
+  ok("and running something it cannot run does not count",
+     failedCheck("multiply these two", [call("bash", {})], said(claim))?.name ===
+       "impossible-without-trying");
+  const chatMessage = failedCheck("multiply these two", [], said(claim)).message;
+  ok("so the chat is told to start a session, not to open a shell",
+     /`start_task`/.test(chatMessage) && !/`bash`/.test(chatMessage));
+
   ok("a turn that claims nothing is left alone",
-     failedCheck("what is the capital of Peru", [call("web_search", {})], said("It is Lima.")) === undefined);
+     failedCheck("what is the capital of Peru", [call("graph_recall", {})], said("It is Lima.")) === undefined);
 }
 
 // --- a conversation that worked instead of talking -------------------------
@@ -244,6 +262,22 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
    */
   ok("a hand-back says who is talking", /<portal-check>/.test(mgr));
   ok("and that nobody asked it anything", /Nobody said this/.test(mgr));
+}
+
+// --- work the portal handed out is not work the model failed to hand out ----
+// The request that makes the portal start a session by itself is exactly the
+// request `work-not-handed-out` matches. Scolding the model for not doing what
+// has already been done is a demand it cannot satisfy, which is the shape
+// every loop in this file exists to stop.
+{
+  const asked = "write me a python script that prints the first 20 primes";
+  ok("a build request with nothing done is handed back",
+     failedCheck(asked, [], { conversational: true })?.name === "work-not-handed-out");
+  ok("but not when the portal started the session itself",
+     failedCheck(asked, [], { conversational: true, handedOut: true }) === undefined);
+  const busy = Array.from({ length: 6 }, (_, i) => call("bash", { i }));
+  ok("and the same holds for a chat that did a lot of work",
+     failedCheck(asked, busy, { conversational: true, handedOut: true }) === undefined);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

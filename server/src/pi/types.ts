@@ -38,7 +38,12 @@ export interface PiClient extends EventEmitter {
    */
   readonly sessionFile?: string;
 
-  prompt(message: string): Promise<void>;
+  /**
+   * `whileRunning` says what to do when a turn is already in flight. pi throws
+   * without it — "Agent is already processing" — which is what made a second
+   * message to a working session an error rather than a queued one.
+   */
+  prompt(message: string, whileRunning?: "steer" | "followUp"): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
 

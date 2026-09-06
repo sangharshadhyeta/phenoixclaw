@@ -112,8 +112,8 @@ export class PiRpcClient extends EventEmitter implements PiClient {
    * back as events, which is what lets a task keep running after the browser
    * that started it has gone away.
    */
-  async prompt(message: string): Promise<void> {
-    const res = await this.send("prompt", { message });
+  async prompt(message: string, whileRunning: "steer" | "followUp" = "steer"): Promise<void> {
+    const res = await this.send("prompt", { message, whileRunning });
     if (res.success === false) throw new Error(res.error || "pi rejected the prompt");
   }
 

@@ -76,7 +76,17 @@ ok("container refuses a routine", executorSupports("container", "routine") === f
   ok("built-ins are chosen via defaultTools, not an allowlist",
      /settings\.defaultTools =/.test(code) && !/^\s*tools,$/m.test(code));
   ok("an autonomous turn is restricted by denylist instead",
-     /excludeTools = opts\.autonomous \? \["bash", "edit", "write"\]/.test(code));
+     /opts\.autonomous\s*\?\s*\["bash", "edit", "write"\]/.test(code));
+  // A conversation starts sessions, answers from memory, and relays what came
+  // back. Holding a planner's tools is what had it answering "hi" with a
+  // task_start call.
+  ok("a conversation gets none of the built-ins",
+     /const conversational = opts\.kind === "agent"/.test(code) &&
+     /conversational\s*\?\s*\[\.\.\.BUILTIN_TOOLS\]/.test(code));
+  ok("nor the planning and writing tools",
+     /if \(opts\.sessionId && !conversational\)/.test(code));
+  ok("nor a way to reach the world itself",
+     /conversational \? \[\] : \[\{ name: "web"/.test(code));
   ok("and it is actually passed to the session", /excludeTools \? \{ excludeTools \}/.test(code));
   ok("grep, find and ls are registered so the role allowlist means something",
      /READ_TOOLS = \["read", "grep", "find", "ls"\]/.test(code));

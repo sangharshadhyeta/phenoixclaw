@@ -370,6 +370,8 @@ export function Chat({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [items.length, events.length]);
 
+  const [sendError, setSendError] = useState<string | null>(null);
+
   const send = async () => {
     const msg = input.trim();
     if (!msg || sending) return;
@@ -389,8 +391,23 @@ export function Chat({
 
     setSending(true);
     setInput("");
+    setSendError(null);
     try {
       await onSend(msg);
+    } catch (e) {
+      /**
+       * A send that fails must not swallow what was typed.
+       *
+       * The rejection had nothing catching it: the input was cleared on the
+       * way in, so a refused prompt left no message in the chat, no reply, and
+       * no error — the text was simply gone and the composer looked idle. The
+       * refusal that produced it was pi's "Agent is already processing", which
+       * is fixed at the source now (see PiClient.prompt), but any other
+       * failure would read exactly the same way. Put the text back so it can
+       * be sent again, and say what happened.
+       */
+      setInput(msg);
+      setSendError((e as Error)?.message || "The message was not sent.");
     } finally {
       setSending(false);
     }
@@ -721,9 +738,17 @@ export function Chat({
             ))}
           </div>
         )}
+        {sendError && (
+          <div className="mb-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+            {sendError}
+          </div>
+        )}
         <textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            if (sendError) setSendError(null);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

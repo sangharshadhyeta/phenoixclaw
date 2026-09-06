@@ -174,9 +174,21 @@ export function hasArithmetic(message: string): boolean {
   return ARITHMETIC.some((pattern) => pattern.test(text));
 }
 
-/** The note for a request with a sum in it. Empty when there is none. */
-export function arithmeticNote(message: string): string {
+/**
+ * The note for a request with a sum in it. Empty when there is none.
+ *
+ * `conversational` because a chat has no `bash` — see excludeTools in
+ * sdk-client.ts. Telling it to run one would be an instruction it can only
+ * fail, and an instruction that cannot be satisfied is where the turns start
+ * going round.
+ */
+export function arithmeticNote(message: string, conversational = false): string {
   if (!hasArithmetic(message)) return "";
+  if (conversational)
+    return [
+      "",
+      "Work it out in a session, not here — you have no shell.",
+    ].join("\n");
   return [
     "",
     "# THERE IS ARITHMETIC IN THIS",
@@ -235,8 +247,13 @@ export function isWorldQuestion(message: string): boolean {
 }
 
 /** The note for a question about the world. Empty when there is none. */
-export function worldQuestionNote(message: string): string {
+export function worldQuestionNote(message: string, conversational = false): string {
   if (!isWorldQuestion(message)) return "";
+  if (conversational)
+    return [
+      "",
+      "Try `graph_recall` first. If it is not there, `start_task` to go and find out.",
+    ].join("\n");
   return [
     "",
     "# THIS ASKS FOR A FACT ABOUT THE WORLD",

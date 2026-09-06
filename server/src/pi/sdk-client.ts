@@ -15,6 +15,7 @@ import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
+import { chatOnly } from "./chat-tools.js";
 import { planContext } from "./plan-context.js";
 import { loopSupervisor } from "./loop-supervisor.js";
 import { writingTools } from "./writing-tools.js";
@@ -559,7 +560,30 @@ export class SdkPiClient extends EventEmitter implements PiClient {
      * this changes no decision — it moves the refusal into the session's shape,
      * which keeps the schemas out of the prompt as well.
      */
-    const excludeTools = opts.autonomous ? ["bash", "edit", "write"] : undefined;
+    /**
+     * A conversation loses them all.
+     *
+     * The chat and a working session had been given the same toolset, and the
+     * transcript that showed it was a bare "hi" answered with a `task_start`
+     * call carrying an argument the tool does not accept. Nothing was wrong
+     * with that turn's reasoning: a conversation holding a planner's tools is
+     * a conversation being asked to plan, and the model did what the prompt
+     * put in front of it.
+     *
+     * The guard already refused the writes and capped the calls, but a refusal
+     * arrives after the model has spent the turn deciding to try — and the
+     * schemas are in the prompt either way. The chat's job is three things:
+     * start a session, answer from what it already knows (self and memory),
+     * and hand back what the session concluded. Reading a file, running a
+     * command, searching the web: session work, and the chat starts a session
+     * for it rather than reaching past one.
+     */
+    const conversational = opts.kind === "agent";
+    const excludeTools = conversational
+      ? [...BUILTIN_TOOLS]
+      : opts.autonomous
+        ? ["bash", "edit", "write"]
+        : undefined;
 
     // Without an explicit loader the SDK starts with no extensions, skills or
     // prompt templates — so installed packages contribute no commands at all.
@@ -602,14 +626,19 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // Registered after the tool-bearing factories above and before any
         // below for no reason but legibility — an override is resolved by
         // name at refresh time, not by registration order.
-        { name: "cached-tools", factory: cachedTools(opts.cwd) },
-        // Every session: looking something up is an ordinary thing to do, and
-        // the guard treats what comes back the same way for all of them.
-        { name: "web", factory: webTools() },
+        ...(conversational
+          ? []
+          : [{ name: "cached-tools", factory: cachedTools(opts.cwd) }]),
+        // Not a conversation: looking the world up is what a session is for,
+        // and a chat that can search is a chat that answers instead of
+        // handing out — see excludeTools above.
+        ...(conversational ? [] : [{ name: "web", factory: webTools() }]),
         // Reading something into memory, and finding where something is
-        // defined. Both are ordinary in any session — a coding task wants the
-        // second as much as the loop wants the first.
-        { name: "knowledge", factory: knowledgeTools(opts.cwd) },
+        // defined — a coding task wants the second as much as the loop wants
+        // the first, and neither is a thing a conversation does.
+        ...(conversational
+          ? []
+          : [{ name: "knowledge", factory: knowledgeTools(opts.cwd) }]),
         // Searches the graph with whatever was just said and attaches the hits
         // to this turn's system prompt. Every session: recall left to the
         // model's own initiative is recall that does not happen on the turns
@@ -642,11 +671,15 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // rather than the gist. See history-tools.ts.
         { name: "history", factory: historyTools(opts.sessionId, opts.role) },
       ];
-      // The agent's own checklist for the work in hand. Every session: a task
-      // session breaking down a change and the learning loop working a plan
-      // are the same shape, and neither is a routine.
-      if (opts.sessionId) {
-        factories.push({ name: "tasks", factory: taskTools(opts.sessionId) });
+      // The agent's own checklist for the work in hand: a task session breaking
+      // down a change and the learning loop working a plan are the same shape,
+      // and neither is a routine. Not the conversation, though — see
+      // excludeTools above for why a chat holding a planner's tools plans.
+      if (opts.sessionId && !conversational) {
+        factories.push({
+          name: "tasks",
+          factory: taskTools(opts.sessionId, { autonomous: opts.autonomous }),
+        });
         // And the plan itself, back in the prompt on every provider call.
         // Writing one is no use if the model then has to remember it wrote
         // one — see plan-context.ts. After the assembler, so the plan sits
@@ -782,7 +815,19 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // sits beside. Absent unless asked, so a task session never sees them.
         // Registered only where each belongs: routine management for sessions
         // reached through a channel, reporting for routine runs.
-        ...(factories.length ? { extensionFactories: factories } : {}),
+        /**
+         * A conversation keeps every extension but only the chat's tools —
+         * see chat-tools.ts. Applied here, at the last point before pi sees
+         * them, so a factory pushed anywhere above is covered whether or not
+         * whoever added it knew this rule existed.
+         */
+        ...(factories.length
+          ? {
+              extensionFactories: conversational
+                ? factories.map((f) => ({ ...f, factory: chatOnly(f.factory) }))
+                : factories,
+            }
+          : {}),
         // pi discovers one context file per directory — AGENTS.md or CLAUDE.md
         // — so the agent's own files would be invisible to it. Rather than
         // generating an AGENTS.md from them and keeping it in sync, they are
@@ -1019,10 +1064,22 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     return true;
   }
 
-  async prompt(message: string): Promise<void> {
+  async prompt(message: string, whileRunning: "steer" | "followUp" = "steer"): Promise<void> {
     // expandPromptTemplates lets "/name" resolve to its template or extension
     // command, which is how the TUI treats the same input.
-    await this.session.prompt(message, { expandPromptTemplates: true });
+    //
+    // streamingBehavior is not optional in practice: pi throws "Agent is
+    // already processing" for a prompt that arrives mid-turn unless it is
+    // told which way to queue, and the portal was not telling it. A second
+    // message to a working session came back as an error, so the answer to
+    // "can I ask something while it is thinking" was no — by omission, not by
+    // design. Steering is the default because that is what a person typing
+    // during a run means; a portal-generated prompt asks for followUp so it
+    // lands after the turn it is commenting on rather than inside it.
+    await this.session.prompt(message, {
+      expandPromptTemplates: true,
+      streamingBehavior: whileRunning,
+    });
   }
 
   async abort(): Promise<void> {

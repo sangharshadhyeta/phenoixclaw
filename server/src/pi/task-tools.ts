@@ -112,7 +112,17 @@ export function collectSteps(input: unknown, depth = 0): string[] {
 }
 
 /** An ExtensionFactory — see pi's InlineExtension. One per session, bound to it. */
-export function taskTools(sessionId: string) {
+/**
+ * `autonomous` leaves `task_start` unregistered rather than merely refused.
+ *
+ * The constitution already denies it to an unattended turn and the guard says
+ * so on every attempt — and the log filled up with the model trying anyway,
+ * three times in a row, because the tool was still described in its prompt. A
+ * refusal is not a deterrent to something that cannot remember being refused.
+ * The only thing that stops a turn reaching for a tool is the tool not being
+ * there, which is the same lesson as excludeTools in sdk-client.ts.
+ */
+export function taskTools(sessionId: string, opts: { autonomous?: boolean } = {}) {
   return (pi: any): void => {
     pi.registerTool({
       name: "task_plan",
@@ -236,7 +246,7 @@ export function taskTools(sessionId: string) {
       parameters: Type.Object({}),
     });
 
-    pi.registerTool({
+    if (!opts.autonomous) pi.registerTool({
       name: "task_start",
       label: "Start step",
       description:

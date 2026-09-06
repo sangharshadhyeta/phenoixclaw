@@ -12,6 +12,8 @@ import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
+import { asksForWork } from "./pi/after-turn.js";
+import { handOut } from "./pi/task-session-tools.js";
 import { resetChatBudget } from "./pi/chat-budget.js";
 import { resetRepeats } from "./pi/repeat-guard.js";
 import { failedCheck } from "./pi/after-turn.js";
@@ -114,6 +116,8 @@ class SessionManager extends EventEmitter {
   private live = new Map<string, LiveSession>();
   /** In-flight ask() per session, so messages in one chat are answered in turn. */
   private asking = new Map<string, Promise<string>>();
+  /** Conversations whose current turn had a session started for it by the portal. */
+  private handedOut = new Set<string>();
   /**
    * Who sent the message being handled, per session.
    *
@@ -493,9 +497,19 @@ class SessionManager extends EventEmitter {
     // that has already been judged. See turnStartSeq.
     const since = await turnStartSeq(sessionId).catch(() => 0);
     const calls = await recentToolCalls(sessionId, 40, since).catch(() => []);
+    /**
+     * A turn the portal already handed out is not a turn that failed to.
+     *
+     * `work-not-handed-out` reads the request, and the request that made the
+     * portal start a session by itself is exactly the request that check
+     * matches. Without this the model is told to do the thing that has been
+     * done — which is a demand it cannot satisfy and the shape every loop here
+     * has taken.
+     */
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",
       reply: await this.lastReply(sessionId),
+      handedOut: this.handedOut.delete(sessionId),
     });
     if (!failed) return false;
 
@@ -852,17 +866,7 @@ class SessionManager extends EventEmitter {
        * pi/task-session-tools.ts.
        */
       ...(session.kind === "agent"
-        ? {
-            startTask: taskSessionTools({
-              parentSessionId: sessionId,
-              workspaceRoot: WORKSPACE_ROOT,
-              executor: EXECUTOR_KIND,
-              newId: () => nanoid(12),
-              start: (childId, instructions) => this.prompt(childId, instructions),
-              announce: (started) =>
-                this.record(sessionId, "portal_task_started", started),
-            }),
-          }
+        ? { startTask: taskSessionTools(this.handOutDeps(sessionId)) }
         : {}),
       // A routine run gets the report tool instead: it is the one kind of
       // session with nobody on the other end to read what it found.
@@ -1098,6 +1102,56 @@ class SessionManager extends EventEmitter {
    * the work finishes, so the HTTP request returns immediately and the run
    * continues in the background.
    */
+  /** Shared by `start_task` and by the portal starting work itself. */
+  private handOutDeps(sessionId: string) {
+    return {
+      parentSessionId: sessionId,
+      workspaceRoot: WORKSPACE_ROOT,
+      executor: EXECUTOR_KIND,
+      newId: () => nanoid(12),
+      start: (childId: string, instructions: string) => this.prompt(childId, instructions),
+      announce: (started: { sessionId: string; title: string; workspace: string }) =>
+        this.record(sessionId, "portal_task_started", started),
+    };
+  }
+
+  /**
+   * The portal starts the work, rather than asking the model to.
+   *
+   * Everything before this was a way of telling the conversation to call
+   * `start_task`: it was described in the tool list, named in a pre-turn note,
+   * and handed back afterwards when it had not been called. It still was not
+   * called. Asked for a Python script the chat wrote one into the reply, three
+   * builds in a row, and each new instruction only gave it something else to
+   * reason past — which is how a demand with no way out turns into a loop.
+   *
+   * BirdClaw did not ask. `soul_loop._force_create_task` created the task in
+   * Python when routing failed, and that is the shape adopted here: when the
+   * request is a request to build something, the session exists before the
+   * model's turn begins. There is nothing left to decide and so nothing to get
+   * stuck on — the turn opens with the work already running and its job is to
+   * say so.
+   *
+   * The model keeps `start_task` for everything this does not catch: a request
+   * phrased as a question, a follow-up that turns out to be big, anything the
+   * wording missed. This is a floor, not a replacement — the same relationship
+   * the guard's allowlist has with the constitution.
+   */
+  private async handOutForRequest(sessionId: string, message: string): Promise<string> {
+    const { id } = await handOut(
+      this.handOutDeps(sessionId),
+      message.replace(/\s+/g, " ").trim().slice(0, 60),
+      message.trim(),
+    );
+    return (
+      `\n\n<portal-notice>A session has been started for this (${id}) and is working on it now. ` +
+      `You did not have to ask for it and you are not waiting for it.\n\n` +
+      `Tell the person what has been set going, in a sentence. Do not do the work here — its ` +
+      `answer arrives in this conversation when it has one. If the brief needs anything they said ` +
+      `that the session cannot see, send it with \`tell_task\`.</portal-notice>`
+    );
+  }
+
   async prompt(sessionId: string, message: string, opts: { internal?: boolean } = {}): Promise<void> {
     // Real activity wakes it up: an @idle dream only exists because nothing
     // else was going on, so it yields the moment something real arrives — the
@@ -1199,19 +1253,46 @@ class SessionManager extends EventEmitter {
     const note =
       isCommand || opts.internal
         ? ""
-        : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}${arithmeticNote(message)}` +
-          worldQuestionNote(message);
+        : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}` +
+          `${arithmeticNote(message, kind === "agent")}` +
+          worldQuestionNote(message, kind === "agent");
+
+    /**
+     * A request to build something becomes a session before the turn starts.
+     * See handOutForRequest — the decision is the portal's, not the model's.
+     */
+    const handedOut =
+      kind === "agent" && !isCommand && !opts.internal && asksForWork(message)
+        ? await this.handOutForRequest(sessionId, message)
+        : "";
+    if (handedOut) this.handedOut.add(sessionId);
 
     // Recorded without the note: the transcript should show what was said, not
     // what the portal appended to it.
     if (!isCommand) {
       await this.record(sessionId, opts.internal ? "portal_step" : "portal_prompt", { message });
     }
+    /**
+     * The row, not only the event.
+     *
+     * `record` writes `portal_status` into the log, which is what the open SSE
+     * stream reads — but the sessions list, `GET /api/sessions/:id` and
+     * `anySessionRunning()` all read the row, and the row was left at whatever
+     * it was before. A conversation that was working reported itself idle to
+     * everything except the tab that happened to be watching it stream.
+     */
+    await updateSession(sessionId, { status: "running", last_error: null });
     await this.record(sessionId, "portal_status", { status: "running" });
-    const outgoing = note ? `${message}\n${note}` : message;
+    const outgoing = `${message}${note ? `\n${note}` : ""}${handedOut}`;
 
     try {
-      await client.prompt(outgoing);
+      /**
+       * Steering, for something a person typed while it was working; followUp
+       * for anything the portal generates, which belongs after the turn it is
+       * about rather than inside it. Without either, pi refuses a prompt that
+       * arrives mid-run and the message is simply lost — see PiClient.prompt.
+       */
+      await client.prompt(outgoing, opts.internal ? "followUp" : "steer");
       /**
        * A slash command completes inside prompt() without starting an agent
        * turn, so no agent_end arrives to clear the status. Settle it here

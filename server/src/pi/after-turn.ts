@@ -52,6 +52,12 @@ export interface TurnContext {
   conversational: boolean;
   /** What the turn actually said, for checks about the answer rather than the calls. */
   reply?: string;
+  /**
+   * The portal started a session for this request before the turn began — see
+   * handOutForRequest. The work went out; it just was not the model that sent
+   * it, and asking it to send it again is asking for a thing already done.
+   */
+  handedOut?: boolean;
 }
 
 export interface AfterTurnCheck {
@@ -63,6 +69,17 @@ export interface AfterTurnCheck {
   satisfied: (calls: TurnCall[], context: TurnContext) => boolean;
   /** What to hand back. */
   message: string;
+  /**
+   * The same failure, read for a conversation.
+   *
+   * A chat has no `bash` and no `web_search` — they were taken away so that
+   * work goes to a session instead of happening in the reply (see
+   * excludeTools in sdk-client.ts). A check that then says "put it through
+   * bash" is asking for something the turn cannot do, which is the shape of
+   * every loop this file exists to stop. Where the remedy differs, the
+   * conversation's version of it goes here.
+   */
+  inConversation?: { satisfied: (calls: TurnCall[]) => boolean; message: string };
 }
 
 /**
@@ -183,6 +200,15 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "reading it can tell the difference. Being unable is a complete answer when you have found",
       "the wall; it is not one when you have only imagined it.",
     ].join("\n"),
+    inConversation: {
+      satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),
+      message: [
+        "You said that could not be done, and nothing tried it.",
+        "",
+        "`start_task` with the one check that would settle it — trying is a session's job, not",
+        "yours. If you would rather not, say plainly that you have not checked, and stop there.",
+      ].join("\n"),
+    },
   },
   {
     /**
@@ -205,8 +231,10 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
      */
     name: "work-done-in-the-conversation",
     applies: (_request, context) => context.conversational,
-    satisfied: (calls) => {
-      // Handing out *is* the right outcome, however many calls it took.
+    satisfied: (calls, context) => {
+      // Handing out *is* the right outcome, however many calls it took — and
+      // it counts when the portal did it, not only when the model did.
+      if (context.handedOut) return true;
       if (calls.some((c) => c.toolName === "start_task" || c.toolName === "tell_task")) return true;
       const working = calls.filter((c) => !LIGHT_TOOLS.has(c.toolName));
       return working.length <= WORK_IN_CHAT_LIMIT;
@@ -239,7 +267,8 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
      * tool. What the turn *did not do* is only visible once it is done.
      */
     name: "work-not-handed-out",
-    applies: (request, context) => context.conversational && asksForWork(request),
+    applies: (request, context) =>
+      context.conversational && !context.handedOut && asksForWork(request),
     satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),
     message: [
       "That was a request to build something, and you answered it here.",
@@ -268,6 +297,18 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "If it disagrees, correct yourself plainly. If you genuinely cannot look it up, say that and",
       "label the answer unverified.",
     ].join("\n"),
+    inConversation: {
+      // Memory is a source, and answering from it is half of what a chat is
+      // for. Going out to the world is the other half's job.
+      satisfied: (calls) =>
+        calls.some((c) => c.toolName === "graph_recall" || c.toolName === "start_task"),
+      message: [
+        "You answered that without consulting anything.",
+        "",
+        "`graph_recall` if you have recorded it; `start_task` if you have not. If neither fits,",
+        "answer from memory and say it is unchecked — that is a fine outcome and ends the turn.",
+      ].join("\n"),
+    },
   },
   {
     name: "arithmetic-in-head",
@@ -283,6 +324,15 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "You are fluent enough that a wrong answer arrives with exactly the confidence of a right",
       "one. Neither you nor the person reading it can tell them apart; the shell can.",
     ].join("\n"),
+    inConversation: {
+      satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),
+      message: [
+        "There was arithmetic in that and you did it in your head.",
+        "",
+        "`start_task` with the numbers — there is no shell here. If you would rather not, say the",
+        "figure is unchecked and leave it at that.",
+      ].join("\n"),
+    },
   },
   {
     name: "self-confirming-check",
@@ -322,8 +372,9 @@ export function failedCheck(
 ): AfterTurnCheck | undefined {
   for (const check of AFTER_TURN_CHECKS) {
     if (!check.applies(request, context)) continue;
-    if (check.satisfied(calls, context)) continue;
-    return check;
+    const variant = context.conversational ? check.inConversation : undefined;
+    if ((variant ? variant.satisfied(calls) : check.satisfied(calls, context))) continue;
+    return variant ? { ...check, ...variant } : check;
   }
   return undefined;
 }
