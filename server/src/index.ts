@@ -73,12 +73,52 @@ import { mainConversation } from "./mirror.js";
 // see logbuffer.ts. Installed first so it catches the boot messages too.
 captureLogs();
 
+/**
+ * The one failure that must NOT be survived: another process owns the database.
+ *
+ * Staying up is right for a failed background write. It is exactly wrong for a
+ * lock conflict, because a lock conflict means a second portal is running
+ * against the same file — and a second writer that keeps going is how the
+ * storage gets damaged rather than merely contended.
+ *
+ * That is not hypothetical. Two instances were started against one
+ * `portal.duckdb`; the second logged `Conflicting lock is held in PID …`,
+ * stayed up as designed, and carried on. A few hundred events later the string
+ * dictionary of one row group was unreadable, and every subsequent boot
+ * segfaulted inside `CompressedStringScanState::FetchStringFromDict` while
+ * scanning `events` — no error, no log line, just a core dump seconds after
+ * the banner printed.
+ *
+ * DuckDB has already told us the truth in the message. Believe it and stop:
+ * refusing to start is a clean failure a person can read and fix in one
+ * command. Continuing is data loss.
+ */
+function fatalDatabaseError(detail: string): boolean {
+  return (
+    /Could not set lock on file/i.test(detail) ||
+    /Conflicting lock is held/i.test(detail) ||
+    /database has been invalidated/i.test(detail)
+  );
+}
+
+function reportOrDie(kind: string, detail: string): void {
+  if (fatalDatabaseError(detail)) {
+    console.error(
+      `[portal] ${kind}: another process owns the database — refusing to continue.\n` +
+        `Two portals writing one file is how it gets corrupted, so this exits rather ` +
+        `than staying up.\n\n${detail}`,
+    );
+    process.exit(1);
+  }
+  console.error(`[portal] ${kind} (staying up):\n${detail}`);
+}
+
 process.on("unhandledRejection", (reason) => {
   const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-  console.error(`[portal] unhandled rejection (staying up):\n${detail}`);
+  reportOrDie("unhandled rejection", detail);
 });
 process.on("uncaughtException", (error) => {
-  console.error(`[portal] uncaught exception (staying up):\n${error?.stack ?? error}`);
+  reportOrDie("uncaught exception", String(error?.stack ?? error));
 });
 
 // WORKSPACE_ROOT is the new name; WORKSPACE_ROOT still works for existing deploys.
