@@ -601,12 +601,29 @@ export function saysSomething(name: string, summary: string): boolean {
         .filter((w) => w.length > 2),
     );
   const body = summary.trim();
-  if (body.length < 12) return false;
-  const added = [...words(body)].filter((w) => !words(name).has(w));
-  // A couple of extra words is a restatement with filler — "The result of
-  // multiplying the two largest known prime numbers" over a node called
-  // "product of the two largest known prime numbers".
-  return added.length >= 3;
+  if (!body) return false;
+
+  const inName = words(name);
+  const inBody = [...words(body)];
+  if (!inBody.length) return false;
+  const added = inBody.filter((w) => !inName.has(w));
+  // Two words is the floor: one is a label, not a claim. A character count was
+  // tried first and only ever rejected short *true* things — "Python:
+  // Programming language", "persist-me-check: saved node" — while catching
+  // nothing a word test did not already catch.
+  if (added.length < 2) return false;
+
+  /**
+   * Proportion, not a count.
+   *
+   * Counting new words alone rejected "Python — Programming language", which
+   * is a perfectly good claim: a short name with a short summary has few words
+   * to add. What separates a claim from a restatement is how much of the
+   * summary is *already the name* — "The result of multiplying the two largest
+   * known prime numbers" over a node called "product of the two largest known
+   * prime numbers" is five of its seven words borrowed back.
+   */
+  return added.length / inBody.length > 0.4;
 }
 
 export async function upsertNode(
@@ -614,11 +631,26 @@ export async function upsertNode(
   type: NodeType,
   summary = "",
   confidence?: number,
-  /** category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page` nodes. source: where this came from, unioned across observations. */
-  extra?: { category?: string; expiresAt?: Date | string; source?: string },
+  /**
+   * category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page`
+   * nodes. source: where this came from, unioned across observations.
+   * scaffold: this node exists to hold an edge, not to make a claim — see the
+   * gate below.
+   */
+  extra?: { category?: string; expiresAt?: Date | string; source?: string; scaffold?: boolean },
 ): Promise<string> {
-  // A claim that claims nothing is not recorded. See saysSomething.
-  if (CLAIM_TYPES.has(type) && !saysSomething(name, summary)) return normalizeName(name);
+  /**
+   * A claim that claims nothing is not recorded — unless it is scaffolding.
+   *
+   * `upsertEdge` creates a missing endpoint so the edge has something to point
+   * at, and that node legitimately has no summary yet: the claim being made is
+   * the *relation*, and the node is where it lands. Refusing those silently
+   * dropped every edge to something new, which the graph contract caught
+   * before it shipped.
+   */
+  if (!extra?.scaffold && CLAIM_TYPES.has(type) && !saysSomething(name, summary)) {
+    return normalizeName(name);
+  }
 
   const conn = await getConn();
   let id = normalizeName(name);
@@ -720,7 +752,8 @@ export async function upsertNode(
 export async function upsertEdge(source: string, relation: string, target: string, weight = 1.0): Promise<void> {
   const conn = await getConn();
   for (const name of [source, target]) {
-    if (!(await getNode(name))) await upsertNode(name, "fact");
+    // Scaffolding: the claim is the edge, and this is where it lands.
+    if (!(await getNode(name))) await upsertNode(name, "fact", "", undefined, { scaffold: true });
   }
   const sourceId = normalizeName(source);
   const targetId = normalizeName(target);

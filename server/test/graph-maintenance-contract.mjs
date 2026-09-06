@@ -104,6 +104,15 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("nor does the name repeated", !g.saysSomething("largest prime numbers", "largest prime numbers"));
   ok("nor a restatement with filler",
      !g.saysSomething("product of the two largest known primes", "The result of multiplying the two largest known primes."));
+  /**
+   * A short true thing is still a claim. Counting characters was tried first
+   * and only ever rejected these — "Python: Programming language" — while
+   * catching nothing the word tests did not already catch. What separates a
+   * claim from a restatement is how much of the summary is borrowed back from
+   * the name, not how long it is.
+   */
+  ok("a short claim is kept", g.saysSomething("Python", "Programming language"));
+  ok("but a one-word label is not", !g.saysSomething("Python", "language"));
 
   ok("a real claim survives",
      g.saysSomething("DuckDB ART index", "The ART index is not tidied after a delete, so the next insert can fail."));
