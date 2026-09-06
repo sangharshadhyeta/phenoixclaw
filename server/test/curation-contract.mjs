@@ -153,6 +153,13 @@ const age = async (name, days) => {
   ok("and names bash specifically", /put them through `bash`/.test(framing));
   ok("verification is asked for what is load-bearing", /Check rather than recall/.test(framing));
   ok("and memory is framed as a start, not an authority", /not an authority/.test(framing));
+  // Stated before the first token rather than enforced at the tool call:
+  // refusing a large write after the fact only throws away a generation that
+  // has already thinned.
+  ok("long output is planned in pieces", /Build long things in pieces/.test(framing));
+  ok("naming the tools", /write_plan/.test(framing) && /write_next/.test(framing));
+  ok("with the reason, not just the rule", /attention thins/.test(framing));
+  ok("and short things are left alone", /Something short is still just/.test(framing));
 }
 
 // --- the graph as something you can draw ----------------------------------

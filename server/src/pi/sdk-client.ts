@@ -175,7 +175,29 @@ async function framing(role?: string): Promise<string> {
       "told and what you concluded, which is a good place to start and not an authority. " +
       "For anything load-bearing — a version, a path, an API's behaviour, whether something " +
       "is still true — look at the thing itself: read the file, run the command, fetch the " +
-      "page. Say which you did.",
+      "page. Say which you did.\n\n" +
+      /**
+       * The third standing practice, and it belongs here rather than in a
+       * guard.
+       *
+       * Refusing a large `write` after the fact would be the wrong shape: by
+       * the time the tool call arrives the generation has already happened, the
+       * attention has already thinned across it, and refusing only throws the
+       * work away to have it done again. The moment that decides how a document
+       * comes out is the moment before the first token, which is a prompt.
+       *
+       * Not a rule that everything is planned, either. "Write hello into a
+       * file" through a three-call plan is ceremony, and a practice that fires
+       * when it should not is one people learn to ignore. The line is length,
+       * because length is what the argument is actually about.
+       */
+      "Build long things in pieces. For anything past a couple of pages — an essay, a report, " +
+      "a module with several parts — plan the sections with `write_plan` and write them one at " +
+      "a time with `write_next`, rather than composing the whole thing in one reply. Not " +
+      "ceremony: attention thins across a long stretch, so the last section of a single pass is " +
+      "written with the least left to give it, a call that fails at eighty per cent leaves " +
+      "nothing, and picking the work back up needs somewhere to have left off. The file on disk " +
+      "is that place. Something short is still just `write`.",
   );
 
   /**
