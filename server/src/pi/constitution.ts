@@ -117,6 +117,7 @@ export const AUTONOMOUS_TOOLS = new Set([
   "write_plan",
   "write_next",
   "write_skip",
+  "write_check",
   // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
   // directory, and it cannot replace a skill a person wrote.
   "skill_write",

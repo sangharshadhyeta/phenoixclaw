@@ -63,6 +63,16 @@ export interface SessionRow {
   tokens_out: number;
   cost: number;
   /**
+   * The document this session is writing section by section, if any.
+   *
+   * On the row rather than in memory: the plan lives in `tasks` and survives a
+   * restart, and a path held in a process-local Map does not — so a restart
+   * stranded a plan with no file to write it to. "Anything that only exists in
+   * memory for the duration of a request is a regression" (CLAUDE.md), and
+   * this was one.
+   */
+  writing_file: string | null;
+  /**
    * 1 once this conversation has read something untrusted — see pi/guard.ts.
    *
    * On the row rather than only in the guard's own closure, because a taint
@@ -160,6 +170,7 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
       role TEXT NOT NULL DEFAULT 'primary',
       last_person_key TEXT,
       tainted INTEGER NOT NULL DEFAULT 0,
+      writing_file TEXT,
       tokens_in BIGINT NOT NULL DEFAULT 0,
       tokens_out BIGINT NOT NULL DEFAULT 0,
       cost DOUBLE NOT NULL DEFAULT 0
@@ -380,6 +391,7 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["channel_key", "TEXT"],
     ["routine_slug", "TEXT"],
     ["tainted", "INTEGER NOT NULL DEFAULT 0"],
+    ["writing_file", "TEXT"],
     ["tokens_in", "BIGINT NOT NULL DEFAULT 0"],
     ["tokens_out", "BIGINT NOT NULL DEFAULT 0"],
     ["cost", "DOUBLE NOT NULL DEFAULT 0"],
@@ -579,6 +591,7 @@ export async function updateSession(
       | "thinking_level"
       | "pinned"
       | "pi_session_file"
+      | "writing_file"
     >
   >,
 ): Promise<void> {

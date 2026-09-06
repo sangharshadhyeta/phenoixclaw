@@ -116,5 +116,67 @@ const long = (s) => `${s} `.repeat(60);
   ));
 }
 
+// --- the plan survives a restart -------------------------------------------
+// The document path lived in a process-local Map while the plan lived in the
+// tasks table, so a restart stranded the plan with no file to write it to.
+// "Anything that only exists in memory for the duration of a request is a
+// regression" — CLAUDE.md — and this was one.
+{
+  const { getSession } = await import(dist("db.js"));
+  await createSession({ id: "w4", title: "w4", workspace, executor: "host" });
+  const c4 = mount("w4", workspace);
+  await c4("write_plan", { file: "durable.md", sections: ["Alpha", "Beta"] });
+
+  ok("the document path is on the session row",
+     (await getSession("w4"))?.writing_file?.endsWith("durable.md") === true);
+
+  // A fresh mount is what a restart looks like: new process, same session.
+  const afterRestart = mount("w4", workspace);
+  const out = await afterRestart("write_next", { content: long("Survived the restart.") });
+  ok("a new process picks the document back up", /Wrote "Alpha"/.test(out));
+}
+
+// --- research before writing about the world -------------------------------
+// Sisyphean's decomposer required research and write_doc to be separate steps
+// for anything factual. write_plan plans the sections of the output and says
+// nothing about the work needed to produce it, so a factual document was
+// written straight from what the model already believed.
+{
+  await createSession({ id: "w5", title: "w5", workspace, executor: "host" });
+  const c5 = mount("w5", workspace);
+  const cold = await c5("write_plan", { file: "facts.md", sections: ["One", "Two"] });
+  ok("a plan with no research behind it says so", /have not looked anything up/.test(cold));
+  ok("and says what to do about it", /search your memory|read the source|fetch the page/.test(cold));
+  // It notices rather than refuses: marching a capable model through a research
+  // stage is the pipeline shape this port rejected, and plenty of documents are
+  // legitimately written from what is known.
+  ok("but the plan is still made", /Planned 2 section/.test(cold));
+}
+
+// --- the verifier, which shipped missing -----------------------------------
+{
+  await createSession({ id: "w6", title: "w6", workspace, executor: "host" });
+  const c6 = mount("w6", workspace);
+  await c6("write_plan", { file: "checked.md", sections: ["First", "Second"] });
+  await c6("write_next", { content: long("The first section.") });
+
+  const check = await c6("write_check", {});
+  ok("it reports position", /1 of 2 section/.test(check));
+  ok("names what is left", /Still to write: Second/.test(check));
+  ok("and shows the end of the file", /first section/.test(check));
+  ok("with nothing wrong", /Nothing looks wrong/.test(check));
+
+  // The regression Sisyphean's verifier existed to catch: a whole-file write
+  // that replaced the document instead of appending to it. Silent otherwise —
+  // the file looks finished and half of it is gone.
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(path.join(workspace, "checked.md"), "tiny\n");
+  const damaged = await c6("write_check", {});
+  ok("an overwrite is caught", /overwrote earlier work/.test(damaged));
+
+  writeFileSync(path.join(workspace, "checked.md"), `${long("Restored.")}\n\nTODO: finish this\n`);
+  ok("a stub left behind is caught", /"TODO" is still in the text/.test(await c6("write_check", {})));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

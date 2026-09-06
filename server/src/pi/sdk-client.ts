@@ -28,6 +28,7 @@ import { readIdentity, type IdentityFile } from "../identity.js";
 import { userKnowledgeExcerpt } from "../user-knowledge.js";
 import { selfConceptExcerpt } from "../self-concept.js";
 import { agentHome } from "../agent.js";
+import { PHOENIXCLAW_ROOT, PI_SOURCE_DIR } from "../db.js";
 
 function asArray(v: any): any[] {
   const resolved = typeof v === "function" ? v() : v;
@@ -175,6 +176,31 @@ async function framing(role?: string): Promise<string> {
       "For anything load-bearing — a version, a path, an API's behaviour, whether something " +
       "is still true — look at the thing itself: read the file, run the command, fetch the " +
       "page. Say which you did.",
+  );
+
+  /**
+   * Where the agent itself is, so "look at your own code" is answerable.
+   *
+   * Asked to check its codebase, a session ran `ls -R` in its own working
+   * directory, found two files, and reasoned about the absence — concluding
+   * its code "isn't a collection of files in this workspace". That was correct
+   * and it was reasoning around a gap: its cwd is the agent's home, and the
+   * source is somewhere else entirely with nothing telling it where.
+   *
+   * Naming the paths costs three lines and turns a philosophical answer into a
+   * readable one. It is only ever *reading* — the workspace boundary in
+   * guard.ts still refuses writes outside a session's own area, and
+   * PROTECTED_PATHS refuses the guard, the constitution and the schema to
+   * everything.
+   */
+  lines.push(
+    `\n# WHERE YOU ARE\n` +
+      `Your own source is at ${PHOENIXCLAW_ROOT} — the portal that runs you, its guard, its ` +
+      `memory and its tools. The pi coding agent underneath you is at ${PI_SOURCE_DIR} when that ` +
+      `checkout is present. Read either when a question is about how you actually work rather ` +
+      `than how you seem to: the answer is usually in the code and rarely in speculation.\n` +
+      `You cannot change them from an ordinary session — writes are bounded to the workspace you ` +
+      `were given, and the self-update routine is the deliberate exception.`,
   );
 
   // Notes about the primary user — private to their own conversations, the

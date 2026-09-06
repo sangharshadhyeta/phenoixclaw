@@ -1,7 +1,16 @@
 import { Type } from "typebox";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { clearTasks, listTasks, setTasks, setTaskStatus, type TaskRow } from "../db.js";
+import {
+  clearTasks,
+  eventsSince,
+  getSession,
+  listTasks,
+  setTasks,
+  setTaskStatus,
+  updateSession,
+  type TaskRow,
+} from "../db.js";
 
 /**
  * Writing a long document or program one piece at a time.
@@ -39,8 +48,56 @@ const MIN_SECTION_CHARS = 200;
 
 const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
-/** Where the current document lives, per session. */
-const documents = new Map<string, string>();
+/**
+ * Has this session found anything out, or is it writing from memory?
+ *
+ * Sisyphean's decomposer had a rule this port dropped: "Research, analysis and
+ * explanation tasks MUST have at least 2 steps", with `research` and
+ * `write_doc` as separate step types. `write_plan` plans the *sections of the
+ * output* and says nothing about the *work needed to produce it*, so a guide
+ * about a factual subject was written straight from what the model already
+ * believed, checking nothing.
+ *
+ * That is "verify, don't recall" failing at the point it matters most: a
+ * document is the most confident-looking thing an agent produces and the
+ * hardest to tell apart from a researched one.
+ *
+ * So the plan notices. It does not *refuse* — marching a capable model through
+ * a research stage is the pipeline shape this port deliberately rejected, and
+ * plenty of documents are legitimately written from what is already known. It
+ * says what it sees, at the moment the model is deciding what to do, which is
+ * the same thing the memory injector does for recall.
+ */
+const LOOKING = new Set([
+  "web_search",
+  "web_fetch",
+  "read",
+  "grep",
+  "find",
+  "graph_recall",
+  "graph_ingest",
+  "find_symbol",
+  "conversation_history",
+  "search_conversations",
+  "map_project",
+]);
+
+async function hasLookedAnythingUp(sessionId: string): Promise<boolean> {
+  try {
+    const rows = await eventsSince(sessionId, 0, 5000);
+    return rows.some((row) => {
+      if (row.type !== "tool_execution_start") return false;
+      try {
+        return LOOKING.has(String(JSON.parse(row.payload)?.toolName ?? ""));
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    // If the log cannot be read, say nothing rather than nag wrongly.
+    return true;
+  }
+}
 
 /**
  * What is already written, so the next section follows from it.
@@ -103,16 +160,25 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         mkdirSync(path.dirname(target), { recursive: true });
         if (p?.overwrite === true || !existsSync(target)) writeFileSync(target, "", "utf8");
 
-        documents.set(sessionId, target);
+        await updateSession(sessionId, { writing_file: target });
         // Replaces the session's plan: writing a document *is* what this
         // session is doing, and two plans would be two answers to that.
         await clearTasks(sessionId);
         await setTasks(sessionId, sections);
 
+        const looked = await hasLookedAnythingUp(sessionId);
         return said(
           `Planned ${sections.length} section(s) of ${target}:\n` +
             sections.map((s: string, i: number) => `  ${i + 1}. ${s}`).join("\n") +
-            `\n\nWrite the first with write_next. One section per call.`,
+            `\n\nWrite the first with write_next. One section per call.` +
+            (looked
+              ? ""
+              : `\n\nYou have not looked anything up in this conversation. If any of this states ` +
+                `facts about the world — a tool's behaviour, a version, what something does — find ` +
+                `out first rather than writing what you believe: search your memory, read the ` +
+                `source, fetch the page. A document written from recollection reads exactly like ` +
+                `one that was checked. If it is genuinely something you know or are reasoning ` +
+                `about, carry on.`),
         );
       },
     });
@@ -130,7 +196,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         content: Type.String({ description: "The section's full text, ready to append." }),
       }),
       async execute(_id: string, p: any) {
-        const file = documents.get(sessionId);
+        const file = (await getSession(sessionId))?.writing_file;
         if (!file) return said("No document in progress. Start one with write_plan.");
 
         const pending = (await listTasks(sessionId)).find((t: TaskRow) => t.status === "pending");
@@ -154,13 +220,71 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
 
         const left = (await listTasks(sessionId)).filter((t: TaskRow) => t.status === "pending");
         if (!left.length) {
-          documents.delete(sessionId);
+          await updateSession(sessionId, { writing_file: null });
           return said(`Wrote "${pending.description}". The document is complete: ${file}`);
         }
 
         return said(
           `Wrote "${pending.description}" (${content.length} chars).\n\n` +
             `Next: "${left[0].description}". What is already there ends with:\n\n${tail(file, 600)}`,
+        );
+      },
+    });
+
+    pi.registerTool({
+      name: "write_check",
+      label: "Check the document so far",
+      description:
+        "Read back what has been written and what is left. Use it when you have lost your place, " +
+        "after an interruption, or before finishing — it reports anything that looks wrong: a " +
+        "section that shrank, a stub left behind, a plan that no longer matches the file.",
+      promptSnippet: "write_check — see what is written, what is left, and what looks wrong",
+      parameters: Type.Object({}),
+      async execute() {
+        const file = (await getSession(sessionId))?.writing_file;
+        if (!file) return said("No document in progress.");
+
+        const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+        const tasks = await listTasks(sessionId);
+        const done = tasks.filter((t: TaskRow) => t.status === "done");
+        const left = tasks.filter((t: TaskRow) => t.status === "pending");
+
+        /**
+         * What Sisyphean's verifier checked, kept and re-aimed.
+         *
+         * Its regression test — a section that was complete and is now much
+         * shorter means the model rewrote the file instead of appending — is
+         * not about model size at all. It is about a mistake any writer can
+         * make with a whole-file `write` tool, and it is silent: the document
+         * looks finished and half of it is gone.
+         */
+        const problems: string[] = [];
+        const expected = done.reduce((sum: number, t: TaskRow) => {
+          const m = /^(\d+) chars$/.exec(t.result);
+          return sum + (m ? Number(m[1]) : 0);
+        }, 0);
+        if (expected && text.length < expected * 0.8) {
+          problems.push(
+            `The file is ${text.length} characters but the sections written add up to about ` +
+              `${expected}. Something overwrote earlier work rather than appending to it.`,
+          );
+        }
+        for (const stub of ["TODO", "TBD", "...", "[placeholder]", "coming soon"]) {
+          if (text.includes(stub)) problems.push(`"${stub}" is still in the text.`);
+        }
+        if (!text.trim() && done.length) {
+          problems.push("The plan says sections are written but the file is empty.");
+        }
+
+        return said(
+          [
+            `${file} — ${text.length} characters, ${done.length} of ${tasks.length} section(s) written.`,
+            left.length ? `Still to write: ${left.map((t: TaskRow) => t.description).join(", ")}.` : "All sections written.",
+            problems.length ? `\nProblems:\n${problems.map((x) => `- ${x}`).join("\n")}` : "\nNothing looks wrong.",
+            text ? `\nIt ends with:\n\n${tail(file, 800)}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
         );
       },
     });

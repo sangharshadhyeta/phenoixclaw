@@ -204,7 +204,28 @@ export async function stopIdentityNamingFiles(): Promise<number> {
 export async function inviteNameChoice(): Promise<boolean> {
   const soul = await readIdentity("SOUL.md");
   if (!soul || !/\bphoenixclaw\b/i.test(soul)) return false;
-  if (soul.includes("You do not have a name yet")) return false;
+  // Already invited *and* the claim already gone: nothing to do. An agent that
+  // got the first version — invitation appended, "You are Phoenixclaw" still
+  // standing — is repaired rather than skipped.
+  if (soul.includes("You do not have a name yet") && !/You are Phoenixclaw/i.test(soul)) return false;
+
+  /**
+   * The assertion has to go, not just be argued with.
+   *
+   * The first version appended the invitation and left "You are Phoenixclaw"
+   * standing above it, so the document said both — and a model told two
+   * contradictory things about its own name takes the assertion, because an
+   * assertion is what a soul document is for. It kept introducing itself as
+   * the portal while carrying a paragraph explaining that it should not.
+   *
+   * So the claim is removed where it is made, and only there: a mention inside
+   * the invitation itself is the invitation working, and other prose that
+   * happens to name the portal is not a claim about who the agent is.
+   */
+  const withoutClaim = soul
+    .replace(/^#\s*Phoenixclaw\s*$/gim, "# Your name")
+    .replace(/^You are Phoenixclaw\.\s*/gim, "")
+    .replace(/\bYou are Phoenixclaw\b/g, "You have not chosen a name yet");
 
   const invitation = [
     "",
@@ -223,7 +244,7 @@ export async function inviteNameChoice(): Promise<boolean> {
     "",
   ].join("\n");
 
-  await writeIdentity("SOUL.md", `${soul.trimEnd()}\n${invitation}`);
+  await writeIdentity("SOUL.md", `${withoutClaim.trimEnd()}\n${invitation}`);
   return true;
 }
 
