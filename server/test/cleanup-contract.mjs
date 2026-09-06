@@ -165,5 +165,99 @@ ok("sessions.tainted exists and defaults to 0",
   ok("and it is the newest that survive", Number(newest.m) - Number(oldest.m) === 49);
 }
 
+// --- the settings endpoint writes three fields, not the whole table -------
+// `settings` also holds the Dream Cycle's high-water mark and the default
+// report destination. Iterating the request body meant a PUT of
+// {"self_reflection_seq":"0"} would send the next cycle back over the entire
+// event history.
+{
+  const { setSettings, getStoredSettings, setReflectionSeq, getReflectionSeq } =
+    await import(path.join(here, "..", "dist", "db.js"));
+
+  await setReflectionSeq(12345);
+  await setSettings({ provider: "local-llama", model: "some-model", thinkingLevel: "high" });
+  ok("the three real fields are written",
+     (await getStoredSettings()).provider === "local-llama");
+
+  await setSettings({ self_reflection_seq: "0", report_channel: "attacker" });
+  ok("the dream cycle's watermark is untouched", (await getReflectionSeq()) === 12345);
+  ok("and an unknown key is not stored",
+     (await getStoredSettings()).report_channel === undefined);
+  ok("while the real fields still work",
+     (await getStoredSettings()).model === "some-model");
+
+  // Clearing is still possible — an empty value hands a field back to pi's
+  // own default rather than pinning it forever.
+  await setSettings({ model: "" });
+  ok("an empty value clears rather than storing nothing",
+     (await getStoredSettings()).model === undefined);
+}
+
+// --- closing must wait for queued writes ----------------------------------
+// closeSync is not a statement, so the serialising proxy passed it straight
+// through while writes were still queued — the file was closed mid-write and
+// left shorter than its own metadata claimed:
+//
+//   IO Error: Could not read enough bytes from file "data/portal.duckdb":
+//   attempted to read 262144 bytes from location 485240832
+//
+// on a 459 MB file. Two databases were lost before the cause was clear, and
+// both times it looked like corruption rather than a bug in the shutdown path.
+{
+  const { serialiseStatements } = await import(path.join(here, "..", "dist", "graph.js"));
+
+  const order = [];
+  let closed = false;
+  const fake = {
+    async run(sql) {
+      await new Promise((r) => setTimeout(r, 20));
+      order.push(sql);
+    },
+    async runAndReadAll() {
+      return { getRowObjectsJson: () => [] };
+    },
+    closeSync() {
+      closed = true;
+      order.push("CLOSE");
+    },
+  };
+
+  const wrapped = serialiseStatements(fake);
+  ok("the proxy exposes a draining close", typeof wrapped.closeAfterPending === "function");
+
+  // Fire writes without awaiting, exactly as the portal's fire-and-forget
+  // paths do, then close.
+  void wrapped.run("first");
+  void wrapped.run("second");
+  void wrapped.run("third");
+  await wrapped.closeAfterPending();
+
+  ok("every queued write ran", order.filter((x) => x !== "CLOSE").length === 3);
+  ok("and the close came last", order[order.length - 1] === "CLOSE");
+  ok("in the order they were issued",
+     JSON.stringify(order) === JSON.stringify(["first", "second", "third", "CLOSE"]));
+  ok("the connection is actually closed", closed === true);
+}
+
+// --- and a failed statement must not wedge the queue ----------------------
+{
+  const { serialiseStatements } = await import(path.join(here, "..", "dist", "graph.js"));
+  const done = [];
+  const wrapped = serialiseStatements({
+    async run(sql) {
+      if (sql === "bad") throw new Error("nope");
+      done.push(sql);
+    },
+    async runAndReadAll() {
+      return { getRowObjectsJson: () => [] };
+    },
+    closeSync() {},
+  });
+
+  await wrapped.run("bad").catch(() => {});
+  await wrapped.run("after");
+  ok("one failed statement does not block the next", done.includes("after"));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

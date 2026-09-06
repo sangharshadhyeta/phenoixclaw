@@ -16,6 +16,36 @@ export const SHORTHANDS: Record<string, string> = {
   "@annually": "0 0 1 1 *",
 };
 
+/**
+ * `every:90m` — a plain interval, which cron cannot express.
+ *
+ * Cron says "at these times", not "this often". A step of two in the hour
+ * field is every two hours only because two divides twenty-four; ninety
+ * minutes has no cron expression at all, and a step of ninety in the minute
+ * field means nothing. BirdClaw carried `every:N` for exactly this
+ * (`skills/cron.py`).
+ *
+ * Measured from the last run rather than from a clock boundary, which is what
+ * "every ninety minutes" actually means to somebody saying it — a routine that
+ * takes twenty minutes then waits ninety, not one that drifts to fit a grid.
+ */
+const EVERY = /^every:\s*(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?$/i;
+
+const UNIT_MINUTES: Record<string, number> = {
+  m: 1, min: 1, mins: 1, minute: 1, minutes: 1,
+  h: 60, hr: 60, hrs: 60, hour: 60, hours: 60,
+  d: 1440, day: 1440, days: 1440,
+};
+
+/** The interval in minutes, or undefined if this is not an `every:` schedule. */
+export function parseEvery(input: string): number | undefined {
+  const match = EVERY.exec(input.trim());
+  if (!match) return undefined;
+  const n = Number(match[1]);
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return n * (UNIT_MINUTES[(match[2] ?? "m").toLowerCase()] ?? 1);
+}
+
 interface Field {
   min: number;
   max: number;
@@ -90,6 +120,10 @@ export function parseCron(input: string): Cron {
 }
 
 export const isValidCron = (input: string): string | null => {
+  // An interval is a valid schedule and is not a cron expression, so it has to
+  // be recognised here or the API rejects it on save — which is how a feature
+  // ships working everywhere except the one place a person types it in.
+  if (parseEvery(input) !== undefined) return null;
   try {
     parseCron(input);
     return null;
@@ -135,6 +169,19 @@ export function nextRun(cron: Cron, from: Date = new Date()): Date | null {
   }
   // A schedule like "30 2 30 2 *" — half past two on the 30th of February.
   return null;
+}
+
+/** When an `every:` schedule next fires, given when it last ran. */
+export function nextEvery(minutes: number, since: Date | null, from = new Date()): Date {
+  // Never run: due now, not one interval from now — somebody who asks for
+  // "every ten minutes" expects the first one soon rather than in ten.
+  if (!since) return new Date(from.getTime());
+  return new Date(since.getTime() + minutes * 60_000);
+}
+
+/** Whether an `every:` schedule is due. */
+export function isEveryDue(minutes: number, now: Date, since: Date | null): boolean {
+  return !since || now.getTime() - since.getTime() >= minutes * 60_000;
 }
 
 /** Whether a routine that last ran at `since` is due at `now`. */

@@ -161,6 +161,27 @@ export class ContainerExecutor implements Executor {
       String(this.limits.cpus),
       "--pids-limit",
       String(this.limits.pidsLimit),
+      /**
+       * No network unless somebody asks for one.
+       *
+       * The portal restricts no egress at all — CLAUDE.md says so plainly, and
+       * that is a deliberate property of the `host` executor, where pi runs
+       * with the portal's own permissions and the trust boundary is "you chose
+       * to run this". `container` exists precisely for the other case: a task
+       * you are less sure about, isolated so it cannot reach the rest of the
+       * machine. Leaving it on the network while dropping capabilities,
+       * memory and PIDs was isolating everything except the one path that
+       * carries data out.
+       *
+       * A container session is a *task* session by design (see
+       * executorSupports), so it has a workspace and no channel — it is code
+       * being worked on, not a conversation that might need to look something
+       * up. Where a task genuinely needs the network, CONTAINER_NETWORK names
+       * the mode: `bridge` restores the old behaviour, or a named network
+       * limits it to something the operator has shaped.
+       */
+      "--network",
+      process.env.CONTAINER_NETWORK?.trim() || "none",
       ...passthrough,
       this.image,
       "pi",

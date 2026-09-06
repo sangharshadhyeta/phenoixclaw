@@ -455,7 +455,13 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // after it reads something untrusted, and any session can read something.
       const factories: { name: string; factory: (pi: any) => void }[] = [
         { name: "guard", factory: guardExtension(
-            opts.sessionDir,
+            // The portal's session id, not the directory. This is only used for
+            // the guard's console lines, and passing sessionDir made every one
+            // of them read "[guard /data/sessions] blocked bash: role guest" —
+            // the same string for every session, so the log could not be used
+            // to trace a specific one. The audit rows were always correct;
+            // it was the console that misled.
+            opts.sessionId ?? opts.sessionDir,
             opts.whoNow ?? (() => ({ role: "primary" })),
             opts.sessionId,
             opts.enforceTaint !== false,

@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { anySessionRunning, createSession, findRoutineSession, getDb, getSession, lastHumanActivity, type SessionRow } from "../db.js";
 import { agentHome } from "../agent.js";
 import { sessions, EXECUTOR_KIND } from "../session-manager.js";
-import { isDue, nextRun, parseCron } from "./cron.js";
+import { isDue, isEveryDue, nextEvery, nextRun, parseCron, parseEvery } from "./cron.js";
 import { reportFraming, reportToFor } from "../pi/report-tool.js";
 import { PHOENIXCLAW_ROOT, PI_SOURCE_DIR } from "../db.js";
 import { afterRun, beforeRun, summarise, treesFor, type Snapshot } from "./self-update-envelope.js";
@@ -241,6 +241,16 @@ class RoutineSupervisor {
         continue;
       }
 
+      // An interval rather than a calendar pattern — see parseEvery.
+      const everyMinutes = parseEvery(row.schedule);
+      if (everyMinutes !== undefined) {
+        if (isEveryDue(everyMinutes, now, row.last_run ? new Date(row.last_run) : null)) {
+          startedSomething = true;
+          void this.run(row, "schedule");
+        }
+        continue;
+      }
+
       let cron;
       try {
         cron = parseCron(row.schedule);
@@ -457,6 +467,13 @@ export function whenNext(row: RoutineRow): string | null {
   if (isOneOff(row)) return row.last_run ? null : row.run_at;
   // Fires on quiet, not a clock — there's no instant to predict.
   if (isIdleSchedule(row.schedule)) return null;
+
+  // An interval, measured from the last run rather than a clock boundary.
+  const everyMinutes = parseEvery(row.schedule);
+  if (everyMinutes !== undefined) {
+    return nextEvery(everyMinutes, row.last_run ? new Date(row.last_run) : null).toISOString();
+  }
+
   try {
     return nextRun(parseCron(row.schedule))?.toISOString() ?? null;
   } catch {

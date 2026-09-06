@@ -82,5 +82,22 @@ ok("container refuses a routine", executorSupports("container", "routine") === f
      /READ_TOOLS = \["read", "grep", "find", "ls"\]/.test(code));
 }
 
+// --- a container task has no network unless somebody asks --------------------
+// The portal restricts no egress at all, which is a deliberate property of the
+// host executor. `container` exists for the case you are less sure about, and
+// dropping capabilities, memory and PIDs while leaving the network on isolated
+// everything except the path that carries data out.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/executors/index.ts", import.meta.url), "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  ok("the container is launched with a network flag", /"--network",/.test(code));
+  ok("and it defaults to none", /CONTAINER_NETWORK\?\.trim\(\) \|\| "none"/.test(code));
+  ok("with an escape for a task that needs one", /CONTAINER_NETWORK/.test(src));
+  ok("alongside the isolation that was already there",
+     /--cap-drop/.test(code) && /no-new-privileges/.test(src) && /--pids-limit/.test(code));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

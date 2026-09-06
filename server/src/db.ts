@@ -467,7 +467,10 @@ export async function closeDb(): Promise<void> {
   try {
     const conn = await pending;
     await checkpoint(conn);
-    (conn as unknown as { closeSync?: () => void }).closeSync?.();
+    // Drains the statement queue before closing. Closing while a write was
+    // still queued truncated the file and cost two databases — see
+    // serialiseStatements in graph.ts.
+    await (conn as unknown as { closeAfterPending?: () => Promise<void> }).closeAfterPending?.();
   } catch {
     // Shutting down: the data is checkpointed or it is not, and either way
     // refusing to exit helps nobody.
@@ -847,9 +850,25 @@ async function clearSetting(conn: DuckDBConnection, key: string): Promise<void> 
  * An empty value clears the override rather than storing "", so a field can be
  * handed back to pi's own defaults instead of being pinned forever.
  */
+/**
+ * The only keys `PUT /api/settings` may write.
+ *
+ * The `settings` table is not only the three fields that endpoint is about: it
+ * also holds `self_reflection_seq`, the Dream Cycle's high-water mark, and the
+ * default report destination. Iterating the request body meant a PUT of
+ * `{"self_reflection_seq":"0"}` would reset that watermark and send the next
+ * cycle back over the entire event history.
+ *
+ * Behind auth and primary-only, so this was never much of an exposure — but an
+ * API that writes whatever it is handed is a shape that becomes one later, and
+ * naming three fields costs nothing.
+ */
+const WRITABLE_SETTINGS = new Set<keyof GlobalSettings>(["provider", "model", "thinkingLevel"]);
+
 export async function setSettings(patch: Partial<GlobalSettings>): Promise<GlobalSettings> {
   const conn = await getDb();
   for (const [k, v] of Object.entries(patch)) {
+    if (!WRITABLE_SETTINGS.has(k as keyof GlobalSettings)) continue;
     if (typeof v !== "string") continue;
     if (v.trim()) await upsertSetting(conn, k, v.trim());
     else await clearSetting(conn, k);

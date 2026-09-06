@@ -364,6 +364,33 @@ export function serialiseStatements(conn: DuckDBConnection): DuckDBConnection {
 
   return new Proxy(conn, {
     get(target, prop, receiver) {
+      /**
+       * Closing has to wait for the queue too.
+       *
+       * `closeSync` is not a statement, so it was passed straight through
+       * while queued writes were still in flight — the file was closed
+       * mid-write and left shorter than its own metadata claimed. DuckDB then
+       * refused to open it:
+       *
+       *     IO Error: Could not read enough bytes from file
+       *     "data/portal.duckdb": attempted to read 262144 bytes from
+       *     location 485240832
+       *
+       * on a 459 MB file. Two databases were lost to this before the cause was
+       * clear, and both times it looked like corruption rather than a bug in
+       * the shutdown path — which is exactly what it was.
+       *
+       * `closeAfterPending` drains first, so a caller can shut down cleanly.
+       * `closeSync` itself is deliberately left alone rather than made to
+       * block: turning a synchronous call into a queued one silently changes
+       * what it means, and a caller who genuinely wants "now" should get it.
+       */
+      if (prop === "closeAfterPending") {
+        return async () => {
+          await queue(async () => undefined);
+          (target as unknown as { closeSync?: () => void }).closeSync?.();
+        };
+      }
       const value = Reflect.get(target, prop, receiver);
       if ((prop === "run" || prop === "runAndReadAll") && typeof value === "function") {
         return (...args: unknown[]) => queue(() => (value as Function).apply(target, args));
@@ -404,7 +431,8 @@ export async function closeGraph(): Promise<void> {
   try {
     const conn = await pending;
     await checkpoint(conn);
-    (conn as unknown as { closeSync?: () => void }).closeSync?.();
+    // Drains the statement queue before closing — see serialiseStatements.
+    await (conn as unknown as { closeAfterPending?: () => Promise<void> }).closeAfterPending?.();
   } catch {
     // Shutting down: a failure here costs the clean release, not the data.
   }

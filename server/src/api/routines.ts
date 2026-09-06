@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { getDb, getDefaultReportTo, listRoutineSessions, setDefaultReportTo } from "../db.js";
 import { channelSupervisor } from "../channels/supervisor.js";
 import { isValidSlug, slugify } from "../slug.js";
-import { isValidCron, nextRun, parseCron } from "../routines/cron.js";
+import { isValidCron, nextEvery, nextRun, parseCron, parseEvery } from "../routines/cron.js";
 import { isOneOff, routineSupervisor, whenNext, type RoutineRow } from "../routines/supervisor.js";
 
 /**
@@ -296,6 +296,18 @@ export function routinesRouter(): Router {
     const bad = isValidCron(schedule);
     if (bad) return res.status(400).json({ error: bad });
 
+    const everyMinutes = parseEvery(schedule);
+    if (everyMinutes !== undefined) {
+      // An interval has no calendar pattern to preview; the next few firings
+      // are simply that far apart, starting now.
+      const first = nextEvery(everyMinutes, null);
+      return res.json({
+        valid: true,
+        next: Array.from({ length: 5 }, (_, i) =>
+          new Date(first.getTime() + i * everyMinutes * 60_000).toISOString(),
+        ),
+      });
+    }
     const cron = parseCron(schedule);
     const runs: string[] = [];
     let at = new Date();
