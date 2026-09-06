@@ -1,7 +1,8 @@
 import { Type } from "typebox";
 import { ingestText } from "../ingest.js";
 import { recallPage } from "../page-store.js";
-import { findSymbol } from "../code-index.js";
+import { findSymbol, outlineProject } from "../code-index.js";
+import { scopeToProject, upsertEdge, upsertNode } from "../graph.js";
 import { localModelConfigured } from "../llm.js";
 
 /**
@@ -67,6 +68,78 @@ export function knowledgeTools(cwd: string) {
             `${r.entities} things named and ${r.relations} connections between them. ` +
             "Recorded as extracted rather than concluded, so it carries less weight than " +
             "something you worked out yourself — recall will still find it.",
+        );
+      },
+    });
+
+    pi.registerTool({
+      name: "map_project",
+      label: "Map this project into memory",
+      description:
+        "Read the shape of the codebase you are working in — its files, what each defines, and " +
+        "which packages they depend on — and record it in your memory. Do this once when you " +
+        "start work in an unfamiliar project, not repeatedly: it is a sketch to orient by, and " +
+        "afterwards `graph_recall` will surface the right file for a question without you having " +
+        "to search for it. For a specific definition, `find_symbol` is faster and always current.",
+      promptSnippet: "map_project — record the shape of this codebase in memory",
+      parameters: Type.Object({}),
+      async execute() {
+        const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+        const outline = outlineProject(cwd);
+        if (!outline.length) return said("Nothing that looks like source code here.");
+
+        /**
+         * Written as nodes and edges, scoped to the project.
+         *
+         * Scoped because this is the one kind of memory that genuinely belongs
+         * to a directory: a module in one repository says nothing in another,
+         * which is exactly the distinction personalRecall's PROJECT_BOUND
+         * types draw. A conversation travels with the person; a file layout
+         * does not.
+         *
+         * Low confidence, because a regex outline is a sketch. The `defines`
+         * and `imports` edges carry most of the value — a list of files is a
+         * directory listing, and a list of files that says which reach which
+         * is a description of a system.
+         */
+        let files = 0;
+        let symbols = 0;
+        let deps = 0;
+        for (const entry of outline) {
+          const label = entry.symbols
+            .slice(0, 8)
+            .map((sym) => sym.name)
+            .join(", ");
+          await upsertNode(
+            entry.file,
+            "concept",
+            `A source file in this project${label ? `, defining ${label}` : ""}.`,
+            0.4,
+            { source: `project:${cwd}`, category: "code" },
+          );
+          await scopeToProject(entry.file, cwd).catch(() => {});
+          files++;
+
+          for (const sym of entry.symbols.slice(0, 12)) {
+            await upsertNode(
+              sym.name,
+              sym.kind === "class" || sym.kind === "interface" ? "concept" : "skill",
+              `A ${sym.kind} defined in ${entry.file} at line ${sym.line}.`,
+              0.4,
+              { source: `project:${cwd}`, category: "code" },
+            );
+            await upsertEdge(entry.file, "defines", sym.name).catch(() => {});
+            symbols++;
+          }
+          for (const dep of entry.imports.slice(0, 8)) {
+            await upsertEdge(entry.file, "imports", dep).catch(() => {});
+            deps++;
+          }
+        }
+
+        return said(
+          `Mapped ${files} file(s): ${symbols} definition(s) and ${deps} dependency link(s) are in ` +
+            `your memory now, scoped to this project. Recall them with graph_recall.`,
         );
       },
     });

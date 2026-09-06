@@ -95,6 +95,102 @@ function walk(root: string, out: string[], depth = 0): void {
 }
 
 /** Every place `name` looks defined under `root`, most specific kinds first. */
+/**
+ * Every definition in a tree, rather than the locations of one known name.
+ *
+ * `findSymbol` answers "where is X" and needs X. This answers "what is here",
+ * which is the question worth asking once per project rather than once per
+ * lookup — it is what lets the graph hold a project's shape instead of only
+ * the facts somebody happened to mention about it.
+ *
+ * Same regexes, run the other way round: the name is a capture rather than an
+ * input. And the same trade — a TypeScript parser would be exact and would be a
+ * compiler's worth of dependency for a map whose errors cost a wrong line
+ * number in a file the agent opens anyway.
+ *
+ * Imports are collected alongside, because the edges are most of the value: a
+ * list of files is a directory listing, and a list of files that says which
+ * ones reach which is a description of the system.
+ */
+export interface FileOutline {
+  file: string;
+  symbols: { name: string; kind: string; line: number }[];
+  /** Module specifiers this file imports, as written. */
+  imports: string[];
+}
+
+/** Definitions, captured by name rather than matched against one. */
+const DECLARATIONS: { kind: string; re: RegExp }[] = [
+  { kind: "function", re: /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+\*?([A-Za-z_$][\w$]*)/ },
+  { kind: "class", re: /^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/ },
+  { kind: "interface", re: /^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/ },
+  { kind: "type", re: /^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)/ },
+  { kind: "enum", re: /^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/ },
+  // Python, since a workspace is not always TypeScript.
+  { kind: "function", re: /^\s*(?:async\s+)?def\s+([A-Za-z_][\w]*)/ },
+  { kind: "class", re: /^\s*class\s+([A-Za-z_][\w]*)/ },
+];
+
+const IMPORTS = [
+  /^\s*import\s+[^"']*from\s+["']([^"']+)["']/,
+  /^\s*import\s+["']([^"']+)["']/,
+  /^\s*(?:from|import)\s+([A-Za-z_][\w.]*)/,
+];
+
+/**
+ * Files worth outlining from one tree.
+ *
+ * Capped, and the cap is the point: a repository with ten thousand source files
+ * would otherwise put ten thousand nodes in a graph that is meant to hold what
+ * the agent has *learned*. The outline is a sketch of a project, not an index
+ * of it — anything more specific is what `findSymbol` and `grep` are for.
+ */
+const MAX_OUTLINE_FILES = 200;
+const MAX_SYMBOLS_PER_FILE = 40;
+
+export function outlineProject(root: string): FileOutline[] {
+  const files: string[] = [];
+  walk(root, files);
+
+  const out: FileOutline[] = [];
+  for (const file of files.slice(0, MAX_OUTLINE_FILES)) {
+    let lines: string[];
+    try {
+      lines = readFileSync(file, "utf8").split("\n");
+    } catch {
+      continue;
+    }
+
+    const symbols: FileOutline["symbols"] = [];
+    const imports = new Set<string>();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      for (const { kind, re } of DECLARATIONS) {
+        const m = re.exec(line);
+        if (m?.[1]) {
+          if (symbols.length < MAX_SYMBOLS_PER_FILE) symbols.push({ name: m[1], kind, line: i + 1 });
+          break;
+        }
+      }
+      if (!line.includes("import") && !line.startsWith("from")) continue;
+      for (const re of IMPORTS) {
+        const m = re.exec(line);
+        // Relative specifiers are noise across projects — "./guard" says
+        // nothing on its own. Packages are what a dependency edge is about.
+        if (m?.[1] && !m[1].startsWith(".")) {
+          imports.add(m[1]);
+          break;
+        }
+      }
+    }
+
+    if (symbols.length || imports.size) {
+      out.push({ file: path.relative(root, file), symbols, imports: [...imports] });
+    }
+  }
+  return out;
+}
+
 export function findSymbol(name: string, root: string): SymbolHit[] {
   const clean = name.trim();
   if (!clean || !/^[A-Za-z_$][\w$]*$/.test(clean)) return [];

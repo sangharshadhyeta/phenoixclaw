@@ -79,6 +79,10 @@ export const AUTONOMOUS_TOOLS = new Set([
   // it. What a tainted turn may not do is rewrite the agent itself.
   "graph_ingest",
   "find_symbol",
+  // Reading a codebase's shape into memory. It writes only what it read from
+  // files it was already allowed to read, scoped to the project, at low
+  // confidence — the same category as graph_ingest.
+  "map_project",
   // Its own identity, and what it knows about the person it works for. Both
   // are behind the `self-rewrite` taint rule, so a turn that has read the web
   // cannot write either.
