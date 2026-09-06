@@ -101,14 +101,14 @@ column, this is what is genuinely left.
 
 | From | Idea | Note |
 | --- | --- | --- |
-| SIS-30 | Cluster isolated nodes | The graph accumulates nodes nothing links to. They are found by search and never by traversal, so they are half-remembered: present, and unreachable from anything else the agent knows. |
+| ~~SIS-30~~ | Cluster isolated nodes | **Done.** | The graph accumulates nodes nothing links to. They are found by search and never by traversal, so they are half-remembered: present, and unreachable from anything else the agent knows. |
 | SIS-31 | Refine relations | Edges are written once, at extraction, at whatever confidence the moment suggested. Nothing revisits them when later evidence bears on one. |
 | SIS-74 | OpenAI Chat Completions passthrough | `/v1/messages` is built (SIS-73). The other dialect is the one most tools actually speak, and it is the same mapping onto the same session. |
 | UI-05 | Raw-event view and card verbosity | The transcript is rendered; the events behind it are only reachable through the API. |
-| UI-23 | Toasts for work that finishes off-screen | A run belongs to the server, so it finishes whether or not its tab is open — and nothing says so. |
+| ~~UI-23~~ | Toasts for work that finishes off-screen | **Done.** `Toasts.tsx`. Only for sessions you are *not* looking at — the open one already shows its state every possible way — and silent on first render, since everything looks new when there is nothing to compare against. |
 | UI-31 | Log tail | `/api/logs` does not exist; the server's own output is only visible on the host. |
 | UI-34 | Draggable pane splitters | |
-| UI-36 | Portal status strip — uptime, graph size, sessions | The health endpoint has all of it and nothing shows it. |
+| ~~UI-36~~ | Portal status strip — uptime, graph size, sessions | **Done.** `StatusStrip.tsx` in the sidebar, expanding to every dependency and the running cost. `off` is shown as a choice rather than a fault, matching health.ts — colouring it red teaches people to ignore the row. |
 | UI-38 | Graph purge | Deleting a node is possible through `graph_forget`, which is the agent's tool, not the operator's. |
 
 Verified built despite a MISSING or PARTIAL status: BC-09, BC-11, BC-13, BC-19,

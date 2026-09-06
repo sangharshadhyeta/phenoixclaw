@@ -13,6 +13,7 @@ import {
   LuTrash2,
 } from "react-icons/lu";
 import type { Session, SessionStatus, Workspace } from "../api";
+import { StatusStrip } from "./StatusStrip";
 
 const STATUS_STYLE: Record<SessionStatus, string> = {
   running: "bg-accent animate-pulse",
@@ -266,6 +267,8 @@ export function Sidebar({
           <ThemeSwitcher />
         </div>
       </div>
+      {/* What the portal knows about itself — see StatusStrip. */}
+      <StatusStrip />
     </aside>
   );
 }

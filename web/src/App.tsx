@@ -6,6 +6,7 @@ import { Chat } from "./components/Chat";
 import { MemoryPage } from "./components/MemoryPage";
 import { Login } from "./components/Login";
 import { CommandPalette } from "./components/CommandPalette";
+import { Toasts } from "./components/Toasts";
 import { ConfigModal } from "./components/ConfigModal";
 import { ExtensionDialog, type UiRequest } from "./components/ExtensionDialog";
 import { SessionsPage } from "./components/SessionsPage";
@@ -225,6 +226,12 @@ function Shell({
 
   return (
     <div className="flex h-screen bg-canvas">
+      {/* Work finishes whether or not its tab is open — see Toasts. */}
+      <Toasts
+        sessions={sessions}
+        openSessionId={sessionId ?? null}
+        onOpen={(id) => navigate(`/s/${id}`)}
+      />
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
