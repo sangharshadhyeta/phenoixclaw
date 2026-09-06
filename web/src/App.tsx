@@ -244,6 +244,11 @@ function Shell({
         activeId={sessionId ?? null}
         view={view}
         onNavigate={(to) => navigate(`/${to}`)}
+        onOpenMain={async () => {
+          // Created on first use, so this is also what brings it into being.
+          const main = await api.mainConversation();
+          navigate(`/s/${main.id}`);
+        }}
         onSelect={(id) => navigate(`/s/${id}`)}
         onCreate={async (workspacePath) => {
           const s = await api.createSession(workspacePath);

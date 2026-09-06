@@ -24,7 +24,6 @@ import { runWizard, type WizardInput } from "./agent-setup.js";
 import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors, inviteNameChoice, adoptDiskEdits } from "./identity.js";
 import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
-import { mainConversation } from "./mirror.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
 import { extensionsRouter } from "./api/extensions.js";
@@ -42,6 +41,7 @@ import { getBuiltinCommands } from "./pi/builtins.js";
 import { isValidSlug, slugify } from "./slug.js";
 import { getSettingDefaults, getSettings, getStoredSettings, setSettings } from "./db.js";
 import { captureLogs } from "./logbuffer.js";
+import { mainConversation } from "./mirror.js";
 
 /**
  * One bad query must not take the portal down.
@@ -160,6 +160,27 @@ app.put("/api/settings", async (req, res) => {
 // --- workspaces ---
 
 /** Directories pi can be pointed at. Anything directly under WORKSPACE_ROOT. */
+/**
+ * The conversation with the agent itself.
+ *
+ * It has always existed — the mirror creates it so a task's activity has
+ * somewhere to be reported — and there was no way to reach it from the portal.
+ * The sessions list showed the work; nothing showed the *agent*, which is the
+ * thing that has a self, a memory of you, and the standing to decide that a
+ * request has become a piece of work.
+ *
+ * That is the difference between this and any other session: it is not pointed
+ * at a repository, it is pointed at itself. Its cwd is the agent's home, it
+ * gets the identity documents, and it is the only kind that may start tasks
+ * and write routines. You ask here; it decides what that means and hands the
+ * work out — see pi/task-session-tools.ts.
+ */
+app.get("/api/agent/main", async (_req, res) => {
+  const id = await mainConversation(EXECUTOR_KIND);
+  const row = await getSession(id);
+  res.json(row ? toApi(row) : { id });
+});
+
 app.get("/api/workspaces", (_req, res) => {
   if (!existsSync(WORKSPACE_ROOT)) return res.json({ root: WORKSPACE_ROOT, workspaces: [] });
   const workspaces = readdirSync(WORKSPACE_ROOT)

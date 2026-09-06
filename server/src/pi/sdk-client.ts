@@ -402,6 +402,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
      * through a channel should be able to touch the schedule.
      */
     routineTools?: boolean;
+    /** The `start_task` factory, when this session may hand work to another. */
+    startTask?: (pi: any) => void;
     /**
      * The routine this session runs, when it is one. Gives the agent the report
      * tool, so a run with nobody watching can still reach someone.
@@ -659,8 +661,21 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       if (path.resolve(opts.cwd) !== path.resolve(agentHome())) {
         factories.push({ name: "workspace-context", factory: workspaceContext(opts.cwd) });
       }
-      if (opts.routineTools)
+      if (opts.routineTools) {
         factories.push({ name: "routines", factory: routineTools(opts.sessionId) });
+        /**
+         * Starting work is the conversation's job, not a task's.
+         *
+         * Same gate as the scheduling tools and the same reason: a task that
+         * can start tasks builds a chain nobody watched being made. The main
+         * conversation is where a person asks for something, so it is where
+         * the decision to turn a request into a piece of work belongs — see
+         * task-session-tools.ts.
+         */
+        if (opts.startTask) {
+          factories.push({ name: "task-sessions", factory: opts.startTask });
+        }
+      }
       // A routine looking after itself: advancing its own phase so an
       // interrupted cycle resumes where it stopped, and pruning what has aged
       // out. Split from the scheduling tools above, which routines still do

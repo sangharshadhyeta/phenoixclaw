@@ -132,6 +132,28 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
        * typed. Shown as a notice with its first line, which is enough to see
        * which step is running; the whole brief is in the event log.
        */
+      /**
+       * A task's answer, arriving in the conversation that asked for it.
+       *
+       * Rendered as the agent speaking rather than as a notice, because that
+       * is what it is: the person asked for something, the agent handed it to
+       * a session of its own, and this is the reply. A notice would file the
+       * answer under housekeeping.
+       */
+      case "portal_task_result": {
+        closeCurrent();
+        const text = String(p.text ?? "").trim();
+        if (!text) break;
+        items.push({
+          kind: "assistant",
+          id: `r${ev.seq}`,
+          text: `**${String(p.title ?? "task")}** — finished.\n\n${text}`,
+          thinking: "",
+          done: true,
+        });
+        break;
+      }
+
       case "portal_step": {
         closeCurrent();
         const brief = String(p.message ?? "");

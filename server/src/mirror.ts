@@ -80,7 +80,11 @@ export const isMirrorable = (type: string): boolean =>
   type === "portal_prompt" ||
   type === "message_end" ||
   type === "tool_execution_start" ||
-  type === "portal_routine";
+  type === "portal_routine" ||
+  // A finished task's answer. Everything else mirrored is a notice that
+  // something happened; this is the thing itself, which is why it is exempt
+  // from the clip below — see mirrorResult.
+  type === "portal_task_result";
 
 /** Enough of a message to follow the thread; the source session has all of it. */
 const MIRRORED_TEXT = 500;
@@ -128,6 +132,18 @@ function assistantText(p: Record<string, unknown>): { text: string } | undefined
 function trim(type: string, payload: unknown): unknown | undefined {
   if (!payload || typeof payload !== "object") return payload;
   const p = payload as Record<string, unknown>;
+
+  /**
+   * The one thing that arrives whole.
+   *
+   * Every other mirrored line is a notice that something happened, clipped so
+   * a conversation watching a dozen sessions stays readable. A task's answer
+   * is not a notice — it is what was asked for, and the whole point of the
+   * chat being one place is that the result appears there rather than in a
+   * window you have to go and find. Clipping it to 500 characters would make
+   * the main conversation a place that tells you your answer exists.
+   */
+  if (type === "portal_task_result") return p;
 
   if (type === "portal_prompt" && typeof p.message === "string") {
     return { ...p, message: clip(p.message, MIRRORED_TEXT) };

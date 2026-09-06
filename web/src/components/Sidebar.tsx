@@ -11,6 +11,7 @@ import {
   LuSettings,
   LuShield,
   LuTrash2,
+  LuMessageCircle,
 } from "react-icons/lu";
 import type { Session, SessionStatus, Workspace } from "../api";
 import { StatusStrip } from "./StatusStrip";
@@ -73,6 +74,7 @@ export function Sidebar({
   onCreateWorkspace,
   onOpenSettings,
   onNavigate,
+  onOpenMain,
 }: {
   sessions: Session[];
   workspaces: Workspace[];
@@ -88,6 +90,8 @@ export function Sidebar({
   onCreateWorkspace: (name: string) => Promise<Workspace>;
   onOpenSettings: () => void;
   onNavigate: (to: "sessions" | "agent" | "routines" | "audit" | "memory") => void;
+  /** Open the conversation with the agent itself. */
+  onOpenMain: () => void;
 }) {
   const [width, setWidth] = useState(storedWidth);
   // The mouseup handler closes over the width at mousedown, so the value it
@@ -163,6 +167,19 @@ export function Sidebar({
 
       {/* Destinations, above the session lists. */}
       <nav className="px-2 pb-2">
+        {/*
+          * First, because it is where you talk to the agent rather than about
+          * it. The other destinations are views onto work; this is the thing
+          * that has a self, remembers you, and decides what a request means —
+          * and the only kind of session that may start tasks or write
+          * routines. See /api/agent/main.
+          */}
+        <NavItem
+          icon={<LuMessageCircle />}
+          label="Chat"
+          onClick={onOpenMain}
+          active={false}
+        />
         <NavItem icon={<LuPlus />} label="New" onClick={() => setCreating((v) => !v)} active={creating} />
         <NavItem
           icon={<LuMessagesSquare />}

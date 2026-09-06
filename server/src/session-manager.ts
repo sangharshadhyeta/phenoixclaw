@@ -9,12 +9,14 @@ import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
+import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
 import { failedCheck } from "./pi/after-turn.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
+import { nanoid } from "nanoid";
 import {
   addUsage,
   appendEvent,
@@ -61,6 +63,8 @@ function summarizeToolInput(p: any): string | undefined {
 }
 
 const SESSION_ROOT = path.resolve(process.env.SESSION_DIR || "./data/sessions");
+/** The same root index.ts creates sessions under — a task the agent starts is an ordinary session. */
+const WORKSPACE_ROOT = path.resolve(process.env.WORKSPACE_ROOT || "/workspaces");
 const EXECUTOR_KIND = (process.env.EXECUTOR || "host") as ExecutorKind;
 
 /**
@@ -501,6 +505,8 @@ class SessionManager extends EventEmitter {
       // Falling through to settle is right: a plan that could not be worked
       // must not leave the session spinning.
     }
+    // A finished task's answer belongs in the conversation that asked for it.
+    await this.reportResult(sessionId).catch(() => {});
     await updateSession(sessionId, { status: "idle" });
     await this.record(sessionId, "portal_status", { status: "idle" });
   }
@@ -754,6 +760,24 @@ class SessionManager extends EventEmitter {
       // has no business rescheduling anything; a routine run is excluded too,
       // since a routine that can create routines can build a chain unwatched.
       routineTools: session.kind === "agent",
+      /**
+       * The conversation can turn a request into a piece of work.
+       *
+       * Built here rather than in sdk-client because it needs the session
+       * manager to start the child — and deliberately *not* awaited by the
+       * tool, so the conversation carries on while the task runs. See
+       * pi/task-session-tools.ts.
+       */
+      ...(session.kind === "agent"
+        ? {
+            startTask: taskSessionTools({
+              workspaceRoot: WORKSPACE_ROOT,
+              executor: EXECUTOR_KIND,
+              newId: () => nanoid(12),
+              start: (childId, instructions) => this.prompt(childId, instructions),
+            }),
+          }
+        : {}),
       // A routine run gets the report tool instead: it is the one kind of
       // session with nobody on the other end to read what it found.
       routineSlug: session.kind === "routine" ? session.routine_slug : undefined,
@@ -1350,6 +1374,58 @@ class SessionManager extends EventEmitter {
     await live.client.abort().catch(() => {});
     await updateSession(sessionId, { status: "idle" });
     await this.record(sessionId, "portal_status", { status: "idle", aborted: true });
+  }
+
+  /**
+   * A finished task's answer, delivered to the conversation that asked for it.
+   *
+   * The chat is meant to be the one place a person deals with the agent: they
+   * ask, and the answer appears there. Without this a task the agent started
+   * reached the main conversation as a clipped progress line while its actual
+   * result stayed in a session you had to know to open — which makes the
+   * single-space arrangement a lie, and is the reason the sessions list had to
+   * be the primary interface.
+   *
+   * Only for task sessions, only once, and only when there is something to
+   * say: a task whose last word was a tool result has produced nothing worth
+   * carrying over.
+   */
+  private readonly reported = new Set<string>();
+
+  private async reportResult(sessionId: string): Promise<void> {
+    if (this.reported.has(sessionId)) return;
+    const session = await getSession(sessionId).catch(() => undefined);
+    if (session?.kind !== "task") return;
+
+    let answer = "";
+    try {
+      const rows = await eventsSince(sessionId, 0, 3000);
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].type !== "message_end") continue;
+        const message = JSON.parse(rows[i].payload)?.message;
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+        const text = (message.content as any[])
+          .filter((c) => c?.type === "text" && typeof c.text === "string")
+          .map((c) => c.text)
+          .join("")
+          .trim();
+        if (text) {
+          answer = text;
+          break;
+        }
+      }
+    } catch {
+      return;
+    }
+    if (!answer) return;
+
+    this.reported.add(sessionId);
+    await this.record(sessionId, "portal_task_result", {
+      title: session.title,
+      sessionId,
+      status: session.status === "error" ? "error" : "done",
+      text: answer,
+    });
   }
 
   /** Interrupt any in-progress @idle or @continuous run — see prompt(). */
