@@ -681,22 +681,26 @@ export function guardExtension(
          * rule here has had: the tool was described, and writing the file felt
          * simpler in the moment.
          *
-         * So it is mechanical, like the others. Identity and skills have their
-         * own tools and are unaffected; an ordinary `write` of an ordinary
-         * file from a conversation is refused and pointed at the tool that
-         * gives the work a workspace, an id and a plan of its own.
+         * Told to stop writing in its own home, the next run wrote the same
+         * module into `/workspaces/test` instead — which was allowed, because
+         * a conversation has no workspace boundary at all. The rule was too
+         * narrow: the principle is not "not here", it is that a conversation
+         * does not produce files anywhere. It talks, and hands work out.
+         *
+         * Identity and skills have their own tools and are unaffected.
          */
-        if (resolved && conversational && within(resolved, agentHome()) && !isAgentArtefact(resolved)) {
+        if (resolved && conversational && !isAgentArtefact(resolved)) {
           note("refused", "Work belongs in a session of its own");
           return {
             block: true,
             reason:
-              `Refused: "${resolved}" is inside your own home, which holds who you are — your ` +
-              `identity documents, your skills, your memory — and not the things you make.\n\n` +
-              `This is work, so give it a session of its own with \`start_task\`: it gets an id, a ` +
-              `workspace and a plan, it runs while you carry on here, and its answer comes back to ` +
-              `this conversation when it has one. Write the brief for someone who cannot see what ` +
-              `we have said.`,
+              `Refused: this is a conversation, and a conversation does not write files.\n\n` +
+              `"${resolved}" is work. Give it a session of its own with \`start_task\` — it gets an ` +
+              `id, a workspace and a plan, it runs while you carry on talking here, and its answer ` +
+              `comes back to this conversation when it has one. Write the brief for someone who ` +
+              `cannot see what we have said.\n\n` +
+              `Your own home is the exception, and only for what it is for: skills, extensions, and ` +
+              `the identity documents, which have tools of their own.`,
           };
         }
 

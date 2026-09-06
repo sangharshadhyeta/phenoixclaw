@@ -217,12 +217,24 @@ const blocked = (r) => Boolean(r && r.block);
 
   ok("a project file in the agent's home is refused",
      blocked(await chat.call("write", { path: path.join(home, "units.py") })));
+  /**
+   * The first version refused only the agent's home, and the next live run
+   * wrote the same module into `/workspaces/test` instead — allowed, because a
+   * conversation has no workspace boundary at all. The principle is not "not
+   * here": a conversation does not produce files anywhere.
+   */
+  ok("and so is one anywhere else",
+     blocked(await chat.call("write", { path: "/workspaces/test/units.py" })));
+  ok("editing counts too",
+     blocked(await chat.call("edit", { path: "/tmp/anything.py" })));
   ok("and it points at the tool that gives work a home",
      /start_task/.test((await chat.call("write", { path: path.join(home, "units.py") })).reason ?? ""));
-  ok("saying what the directory is actually for",
-     /identity documents, your skills, your memory/.test(
+  ok("saying what a conversation is for",
+     /a conversation does not write files/.test(
        (await chat.call("write", { path: path.join(home, "units.py") })).reason ?? "",
      ));
+  ok("and naming the exception, so self-maintenance is not blocked in the dark",
+     /skills, extensions/.test((await chat.call("write", { path: "/tmp/x.py" })).reason ?? ""));
 
   // The agent maintaining itself must not be caught by this.
   ok("a skill is still writable", !blocked(await chat.call("write", { path: path.join(home, "skills", "x", "SKILL.md") })));
