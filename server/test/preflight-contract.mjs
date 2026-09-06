@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { hasBareReferent, preflightNote, hasArithmetic, arithmeticNote } = await import(path.join(here, "..", "dist", "pi", "preflight.js"));
+const { hasBareReferent, preflightNote, hasArithmetic, arithmeticNote, isWorldQuestion, worldQuestionNote, LOOKUP_TOOLS } = await import(path.join(here, "..", "dist", "pi", "preflight.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -100,6 +100,52 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("and cites the failure that produced it", /393/.test(note) && /391/.test(note));
   ok("saying why fluency is the problem", /confidence of a right one/.test(note));
   ok("a request with no arithmetic says nothing", arithmeticNote("write the guide") === "");
+}
+
+// --- a question about the world --------------------------------------------
+// The prompt says to check rather than recall and lands unreliably: asked the
+// capital of France, one session searched and one answered "I know this fact",
+// same prompt and same minute. The one that searched answered *first* and
+// confirmed afterwards, which is looking for agreement.
+{
+  ok("a capital", isWorldQuestion("What is the capital of France?"));
+  ok("an author", isWorldQuestion("who wrote Middlemarch"));
+  ok("a date", isWorldQuestion("when was Rust released"));
+  ok("a quantity", isWorldQuestion("how many people live in Tokyo"));
+  ok("a place", isWorldQuestion("where is the Eiffel Tower"));
+
+  /**
+   * Questions about *this* system are already answered by looking, and `read`
+   * and `grep` are the looking. Sending the model to the web for what its own
+   * grep would answer is worse than saying nothing.
+   */
+  ok("this repo is not the world", !isWorldQuestion("what is in this repo"));
+  ok("nor a file's length", !isWorldQuestion("how many lines is guard.ts"));
+  ok("nor the portal's own state", !isWorldQuestion("what is broken in the portal"));
+  ok("nor its running sessions", !isWorldQuestion("how many sessions are running"));
+  ok("nor who it works for", !isWorldQuestion("who is the primary user"));
+  ok("nor an instruction that is not a question", !isWorldQuestion("read src/pi/guard.ts and summarise"));
+  ok("a long message carries its own context", !isWorldQuestion(`who wrote this ${"x".repeat(320)}`));
+
+  const note = worldQuestionNote("What is the capital of France?");
+  ok("the note says to look first", /Look it up before you answer/.test(note));
+  // The specific trap: answering and then searching reads whatever comes back
+  // as confirmation, because the decision is already made.
+  ok("and closes off answering then confirming", /not checking/.test(note) && /already decided/.test(note));
+  ok("with the unverified label as the fallback", /labelled as\* from memory|labelled/.test(note));
+  ok("a local question gets no note", worldQuestionNote("what is in this repo") === "");
+
+  /**
+   * What counts as having looked. `read`, `grep` and `bash` are absent on
+   * purpose: a session that greps its own workspace for the capital of France
+   * has checked nothing, which is `echo "Paris" | grep -v "Paris"` in another
+   * costume.
+   */
+  ok("searching counts", LOOKUP_TOOLS.has("web_search"));
+  ok("so does its own memory", LOOKUP_TOOLS.has("graph_recall"));
+  ok("grepping the workspace does not", !LOOKUP_TOOLS.has("grep"));
+  ok("nor reading a local file", !LOOKUP_TOOLS.has("read"));
+  ok("nor running a command", !LOOKUP_TOOLS.has("bash"));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

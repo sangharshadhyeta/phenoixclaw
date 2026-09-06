@@ -144,3 +144,84 @@ export function arithmeticNote(message: string): string {
     "reading it can tell them apart. `echo $((17*23))` can.",
   ].join("\n");
 }
+
+/**
+ * A question about the world, which the model will answer from itself.
+ *
+ * The standing practice says to check rather than recall, and it lands
+ * unreliably. Asked the capital of France, one session searched and one
+ * reasoned "I know this fact" and answered — same prompt, same model, same
+ * minute. The one that searched still answered *first* and confirmed
+ * afterwards, which is not checking, it is looking for agreement.
+ *
+ * That is the third rule to behave this way. "Build long things in pieces"
+ * landed only once the criterion became structural; "compute rather than
+ * guess" landed only once the request was checked mechanically. Prose stating
+ * a principle is reasoned past whenever the particular case feels like an
+ * exception, and a small enough sum or a famous enough fact always does.
+ *
+ * So: the same shape again. The portal reads the request, and where it plainly
+ * asks for a fact somebody could look up, it says so before the model starts.
+ *
+ * ## What it deliberately does not match
+ *
+ * Questions about *this* system — the code, the memory, the session, the file
+ * in front of it — are already answered by looking, and `read` and
+ * `graph_recall` are the looking. Telling a model to go and search the web for
+ * what its own `grep` would answer is worse than saying nothing.
+ */
+const WORLD_QUESTION = [
+  /\b(?:what|which)(?:'s| is| are| was| were)\s+the\s+[a-z ]{0,24}\b(?:capital|population|currency|language|author|founder|president|prime minister|ceo|height|length|distance|area|gdp)\b/i,
+  /\bwho\s+(?:is|was|are|were|wrote|invented|founded|discovered|created|directed|painted)\b/i,
+  /\bwhen\s+(?:did|was|were|does|is)\b.*\b(?:born|die[d]?|founded|released|published|invented|happen|start|end)\b/i,
+  /\bwhere\s+(?:is|was|are|were)\s+(?:the\s+)?[A-Z]/,
+  /\bhow\s+(?:many|much|tall|long|far|old)\b(?!.*\b(?:lines?|files?|tests?|sessions?|nodes?|rows?|characters?)\b)/i,
+];
+
+/** Things that are about this machine, not the world. */
+const LOCAL =
+  /\b(?:this (?:code|file|repo|repository|project|portal|session|workspace|graph)|our|my |your (?:memory|graph|code|self|identity|name)|primary user|src\/|\.ts\b|\.mjs\b|npm |git |the (?:portal|agent|guard|graph|log|database))\b/i;
+
+export function isWorldQuestion(message: string): boolean {
+  const text = message.trim();
+  if (!text || text.length > 300) return false;
+  if (LOCAL.test(text)) return false;
+  return WORLD_QUESTION.some((pattern) => pattern.test(text));
+}
+
+/** The note for a question about the world. Empty when there is none. */
+export function worldQuestionNote(message: string): string {
+  if (!isWorldQuestion(message)) return "";
+  return [
+    "",
+    "# THIS ASKS FOR A FACT ABOUT THE WORLD",
+    "",
+    "Look it up before you answer — `web_search`, or your own memory if you have recorded it.",
+    "You will feel that you already know this one. That feeling is not evidence: it is identical",
+    "whether you are right or wrong, which is exactly why it cannot be the thing you rely on.",
+    "",
+    "Look first, then answer. Answering and then searching for agreement is not checking — you",
+    "will read whatever comes back as confirmation, because you have already decided.",
+    "",
+    "If you cannot look it up, say so and answer from memory *labelled as* from memory. An",
+    "unverified answer marked unverified is honest. The same answer unmarked is not.",
+  ].join("\n");
+}
+
+/**
+ * Tools that constitute having looked something up.
+ *
+ * `read`, `grep` and `bash` are absent on purpose. They answer questions about
+ * *this machine*, and a world question is not one — a session that greps its
+ * own workspace for the capital of France has not checked anything, which is
+ * the `echo "Paris" | grep -v "Paris"` failure in another costume.
+ */
+export const LOOKUP_TOOLS = new Set([
+  "web_search",
+  "web_fetch",
+  "graph_recall",
+  "graph_ingest",
+  "conversation_history",
+  "search_conversations",
+  "memory_digest",
+]);

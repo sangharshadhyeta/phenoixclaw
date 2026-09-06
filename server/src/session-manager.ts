@@ -10,7 +10,8 @@ import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
-import { arithmeticNote, preflightNote } from "./pi/preflight.js";
+import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
+import { failedCheck } from "./pi/after-turn.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
@@ -19,6 +20,7 @@ import {
   appendEvent,
   eventsSince,
   listTasks,
+  recentToolCalls,
   setTaskStatus,
   type TaskRow,
   getSession,
@@ -423,6 +425,56 @@ class SessionManager extends EventEmitter {
   private working = new Set<string>();
 
   /**
+   * A world question answered without looking anything up is sent back once.
+   *
+   * The prompt says to check rather than recall and it lands unreliably: asked
+   * the capital of France, one session searched and one answered "I know this
+   * fact", same prompt and same minute. The one that did search answered
+   * *first* and confirmed afterwards, which is looking for agreement rather
+   * than checking.
+   *
+   * Prose stating a principle is reasoned past whenever the particular case
+   * feels like an exception, and a famous enough fact always does. Every rule
+   * that has actually held today became mechanical: the plan handoff ends the
+   * turn, the arithmetic check reads the request. So does this — the portal
+   * looks at what the turn did and, if it answered a factual question having
+   * consulted nothing, gives it one turn to go and look.
+   *
+   * Once, and only for a question the portal itself classified. A second pass
+   * would be arguing with the model, and this is not a debate: it is the
+   * difference between an answer with a source and one without.
+   */
+  private readonly askedTwice = new Set<string>();
+
+  private async enforceAfterTurn(sessionId: string): Promise<boolean> {
+    if (this.askedTwice.has(sessionId)) return false;
+
+    let request: string;
+    try {
+      request = await this.lastRequest(sessionId);
+    } catch {
+      return false;
+    }
+    const calls = await recentToolCalls(sessionId, 40).catch(() => []);
+    const failed = failedCheck(request, calls);
+    if (!failed) return false;
+
+    this.askedTwice.add(sessionId);
+    try {
+      await this.record(sessionId, "portal_notice", {
+        text: `Handed back: ${failed.name.replace(/-/g, " ")}.`,
+      });
+      await this.ask(sessionId, failed.message, { internal: true });
+    } catch {
+      // A failed hand-back leaves the original answer standing, which is the
+      // behaviour before any of this existed.
+    } finally {
+      this.askedTwice.delete(sessionId);
+    }
+    return true;
+  }
+
+  /**
    * What happens once a turn ends: work the plan, or settle.
    *
    * Kept together because they are the same decision, and splitting them is
@@ -442,6 +494,9 @@ class SessionManager extends EventEmitter {
     try {
       const outcome = await this.workPlan(sessionId);
       if (outcome !== undefined) return; // workPlan settles the session itself.
+      // The turn is checked against what was asked before it is allowed to
+      // stand — see pi/after-turn.ts.
+      if (await this.enforceAfterTurn(sessionId)) return;
     } catch {
       // Falling through to settle is right: a plan that could not be worked
       // must not leave the session spinning.
@@ -963,7 +1018,8 @@ class SessionManager extends EventEmitter {
     const note =
       isCommand || opts.internal
         ? ""
-        : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}${arithmeticNote(message)}`;
+        : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}${arithmeticNote(message)}` +
+          worldQuestionNote(message);
 
     // Recorded without the note: the transcript should show what was said, not
     // what the portal appended to it.
