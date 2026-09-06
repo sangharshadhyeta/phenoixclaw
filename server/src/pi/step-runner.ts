@@ -265,6 +265,8 @@ export interface StepRunDeps {
    * only at `pending`, skip it and file the text under the next one.
    */
   start?: (seq: number) => Promise<void>;
+  /** Record what this run produced, so a later run can improve on it. */
+  remember?: () => Promise<void>;
 }
 
 /**
@@ -348,6 +350,11 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
       }
 
       const { file } = await deps.document();
+      // Recorded before the answer rather than after: the artefact is finished
+      // at this point, and the closing turn is where a run has most often gone
+      // quiet on us. Prior work nobody can find is prior work that does not
+      // exist.
+      await deps.remember?.();
       await deps.recycle();
       await deps.ask(synthesisBrief({ goal, tasks, file, supervision: done, problems }));
       return "finished";

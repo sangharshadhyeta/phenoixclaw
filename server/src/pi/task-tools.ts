@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { listTasks, nextTask, setTaskStatus, setTasks, type TaskRow } from "../db.js";
+import { getSession, listTasks, nextTask, setTaskStatus, setTasks, type TaskRow } from "../db.js";
 
 /**
  * The agent's own checklist for the work in front of it. Ports BirdClaw's
@@ -188,6 +188,34 @@ export function taskTools(sessionId: string) {
             `Step ${seq} ("${current.description}") was already written and recorded. Nothing to change.\n\n` +
               `The plan as it now stands:\n${render(plan)}`,
           );
+        }
+
+        /**
+         * A section is not finished because the model says it is.
+         *
+         * Sisyphean's synthesizer carried a rule — never claim to have written
+         * or run something unless a result says you did — and the audit filed
+         * it as small-model scaffolding on the grounds that under pi the model
+         * answering is the model that made the calls. Then a 26B model, asked
+         * for the "area" section of a planned module, closed the step with
+         * "I have completed the area function." and left the file empty.
+         *
+         * Here it is mechanical rather than a rule in a prompt. This session
+         * is writing a document, this step is one of its sections, and
+         * `write_next` records where each section landed. No span means no
+         * text. There is nothing to interpret.
+         */
+        if (!p.failed) {
+          const writingFile = (await getSession(sessionId))?.writing_file;
+          if (writingFile && current && !/@\d+-\d+$/.test(String(current.result ?? ""))) {
+            return say(
+              `"${current.description}" is a section of ${writingFile}, and nothing has been written ` +
+                `for it — the file does not contain it. Write it with \`write_next\`, which appends ` +
+                `the text and closes the step for you.\n\nIf the section is genuinely not needed, ` +
+                `\`write_skip\` says so with a reason. Marking it done leaves the plan claiming work ` +
+                `the file does not have.`,
+            );
+          }
         }
 
         const row = await setTaskStatus(sessionId, seq, p.failed ? "failed" : "done", String(p.result ?? ""));

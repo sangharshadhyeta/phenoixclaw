@@ -10,6 +10,7 @@ import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, type StepOutcome } from "./pi/step-runner.js";
 import { checkDocument } from "./pi/writing-tools.js";
+import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
 import {
   addUsage,
@@ -436,13 +437,24 @@ class SessionManager extends EventEmitter {
             "Fresh context for the next step — it gets the plan and what the earlier steps produced, " +
               "not their working.",
           ),
-        ask: (message) => this.ask(sessionId, message),
+        ask: (message) => this.ask(sessionId, message, { internal: true }),
         supervise: () => supervise(sessionId, goal),
         note: (text) => this.record(sessionId, "portal_notice", { text }),
         // The mechanical check, run by the portal rather than left to the
         // model's own opinion of its work — see checkDocument.
         start: async (seq) => {
           await setTaskStatus(sessionId, seq, "running");
+        },
+        remember: async () => {
+          const row = await getSession(sessionId);
+          if (!row?.writing_file) return;
+          const plan = await listTasks(sessionId);
+          await rememberArtefact(
+            row.writing_file,
+            goal,
+            `${plan.filter((t: TaskRow) => t.status === "done").length} section(s): ` +
+              plan.map((t: TaskRow) => t.description).join(", "),
+          );
         },
         verify: async () => {
           const row = await getSession(sessionId);
@@ -692,7 +704,7 @@ class SessionManager extends EventEmitter {
    * the work finishes, so the HTTP request returns immediately and the run
    * continues in the background.
    */
-  async prompt(sessionId: string, message: string): Promise<void> {
+  async prompt(sessionId: string, message: string, opts: { internal?: boolean } = {}): Promise<void> {
     // Real activity wakes it up: an @idle dream only exists because nothing
     // else was going on, so it yields the moment something real arrives — the
     // routine's own scheduler kicking itself off is not "real activity".
@@ -749,7 +761,17 @@ class SessionManager extends EventEmitter {
     }
 
     await updateSession(sessionId, { status: "running", last_error: null });
-    if (!isCommand) await this.record(sessionId, "portal_prompt", { message });
+    /**
+     * A brief the portal wrote is not something a person said.
+     *
+     * Recorded as `portal_prompt` it appeared in the transcript as a user
+     * message — and worse, `lastRequest` finds this session's goal by reading
+     * the most recent `portal_prompt`, so once a step brief was filed as one
+     * the goal of the next plan would have been a brief about the last.
+     */
+    if (!isCommand) {
+      await this.record(sessionId, opts.internal ? "portal_step" : "portal_prompt", { message });
+    }
     await this.record(sessionId, "portal_status", { status: "running" });
     try {
       await client.prompt(message);
@@ -806,6 +828,8 @@ class SessionManager extends EventEmitter {
        * next message, so it needs to know one is open.
        */
       onUi?: (request: any) => void;
+      /** A prompt the portal composed — a step brief, not a person speaking. */
+      internal?: boolean;
       /**
        * Most tool calls this run may make before it is stopped.
        *
@@ -833,7 +857,8 @@ class SessionManager extends EventEmitter {
           opts.onReply,
           opts.streamText,
           opts.onUi,
-          opts.maxToolCalls
+          opts.maxToolCalls,
+          opts.internal
         )
       );
     // Kept only while it is the newest, so a finished chain is not held forever.
@@ -851,7 +876,8 @@ class SessionManager extends EventEmitter {
     onReply?: (text: string) => void | Promise<void>,
     streamText = true,
     onUi?: (request: any) => void,
-    maxToolCalls?: number
+    maxToolCalls?: number,
+    internal = false
   ): Promise<string> {
     await this.ensureClient(sessionId);
     let toolCalls = 0;
@@ -970,7 +996,7 @@ class SessionManager extends EventEmitter {
         settle = resolve;
         fail = reject;
       });
-      await this.prompt(sessionId, message);
+      await this.prompt(sessionId, message, { internal });
       await finished;
       if (exhausted) {
         throw new Error(

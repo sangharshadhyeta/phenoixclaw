@@ -427,5 +427,40 @@ const long = (s) => `${s} `.repeat(60);
   ok("so it reads back as itself", /The area function/.test(await c16("read_section", { section: 1 })));
 }
 
+// --- a section is not finished because the model says it is ----------------
+// Sisyphean's synthesizer carried an honesty rule and the audit dropped it,
+// reasoning that under pi the answering model is the one that made the calls.
+// Then a 26B model closed the "area" step with "I have completed the area
+// function." and left the file empty.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  await createSession({ id: "w17", title: "w17", workspace, executor: "host" });
+  const c17 = mount("w17", workspace);
+  const tt17 = {};
+  taskTools("w17")({ on() {}, registerTool: (t) => (tt17[t.name] = t) });
+  const t17 = async (n, a) => (await tt17[n].execute("id", a)).content[0].text;
+
+  await c17("write_plan", { file: "honest.md", sections: ["area", "perimeter"] });
+  const claimed = await t17("task_finish", { step: 1, result: "I have completed the area function." });
+  ok("closing an unwritten section is refused", /nothing has been written for it/.test(claimed));
+  ok("and it says the file would not have it", /the file does not contain it/.test(claimed));
+  ok("pointing at the tool that actually writes", /write_next/.test(claimed));
+  ok("and at the honest alternative", /write_skip/.test(claimed));
+  ok("the step stays open", (await listTasks("w17"))[0].status === "pending");
+
+  // A step that genuinely failed may still be recorded as failed.
+  const failed = await t17("task_finish", { step: 1, result: "no formula for this shape", failed: true });
+  ok("a failure can still be recorded", /Failed/.test(failed));
+
+  // And outside a document, task_finish is unchanged: there is no file to
+  // check a claim against.
+  await createSession({ id: "w18", title: "w18", workspace, executor: "host" });
+  const tt18 = {};
+  taskTools("w18")({ on() {}, registerTool: (t) => (tt18[t.name] = t) });
+  await tt18.task_plan.execute("id", { steps: ["look into it"] });
+  const plain = await tt18.task_finish.execute("id", { step: 1, result: "looked into it" });
+  ok("a step with no document behind it closes normally", /Done/.test(plain.content[0].text));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

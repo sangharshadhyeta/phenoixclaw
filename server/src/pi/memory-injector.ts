@@ -1,4 +1,5 @@
 import { personalRecall, type NodeRow } from "../graph.js";
+import { priorWorkBlock, priorWorkFrom } from "./prior-work.js";
 import { semanticPrune } from "../ingest.js";
 import { appendEvent } from "../db.js";
 
@@ -225,6 +226,17 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
         "working on right now is in the conversation itself, below this.",
         "",
         full.length > RENDER_BUDGET ? await condense(full, prompt, rows, sessionId) : full,
+        /**
+         * Something this agent has built before, if the recall turned one up.
+         *
+         * Hung off the search that has already happened rather than a second
+         * one. An artefact node reaching the model as one more memory line —
+         * "written to /workspaces/session-x/geometry.mjs" — is true and
+         * useless: nothing tells it to go and read the thing, so each run
+         * writes from nothing and the second attempt is different rather than
+         * better. See prior-work.ts.
+         */
+        priorWorkBlock(priorWorkFrom(rows, cwd)),
       ].join("\n");
 
       /**

@@ -52,6 +52,8 @@ here. **State** is one of `done` (built and under contract), `next`, or `open`.
 | SIS-42 | Final-answer assembly, saying honestly what failed. | `synthesisBrief()` — its own context holding what every step produced, with failed steps named and unfixed defects carried into the answer. | done |
 | BC-68 | Route a real task through the live agent and assert on the outcome. | `npm run test:e2e` — creates a session, prompts, waits for terminal status, and checks what is on disk. It caught the collapsed step budget that 600 unit assertions could not. | done |
 | BC-15 | A step budget learned from history. | Removed for interactive sessions: pi's learned `maxSteps` had collapsed to 3. Progress, not a counter, is the bound. | done |
+| SIS-42 | Never claim to have written or run something unless a result says you did. | Mechanical, not a rule in a prompt: `task_finish` refuses to close a section of a document that has no recorded span, because `write_next` records where every section landed. Dropped by the audit on the grounds that under pi the answering model made the calls itself — then a 26B model closed a step with "I have completed the area function." over an empty file. | done |
+| BC-49 | "The file is the memory." | Its missing half: the graph remembers *which* file and what it was for (`pi/prior-work.ts`), so an artefact is findable by what was asked rather than where it happened to be written. Each run used to start from an empty file while the last run's output sat in another workspace, so a second attempt was different rather than better. Hung off the recall the memory injector already does. | done |
 
 ## Next
 

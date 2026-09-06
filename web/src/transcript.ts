@@ -124,6 +124,27 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
         items.push({ kind: "user", id: `u${ev.seq}`, text: String(p.message ?? "") });
         break;
 
+      /**
+       * A brief the portal wrote for one step of a plan.
+       *
+       * Not a user message — rendering it as one put a wall of generated
+       * instructions in the transcript looking like something the person had
+       * typed. Shown as a notice with its first line, which is enough to see
+       * which step is running; the whole brief is in the event log.
+       */
+      case "portal_step": {
+        closeCurrent();
+        const brief = String(p.message ?? "");
+        const step = /^# THIS STEP\n+(.+)$/m.exec(brief)?.[1]?.trim();
+        items.push({
+          kind: "notice",
+          id: `s${ev.seq}`,
+          text: step ? `Working on: ${step}` : "Working the plan",
+          tone: "info",
+        });
+        break;
+      }
+
       case "message_update": {
         const inner = p.assistantMessageEvent ?? {};
         const delta = typeof inner.delta === "string" ? inner.delta : "";
