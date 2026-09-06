@@ -146,3 +146,57 @@ Three things this phase would need, roughly in order:
 3. **A gate on what it may change.** `PROTECTED_PATHS` covers the constitution.
    Nothing yet distinguishes "fix the bug you found" from "rewrite the guard
    that constrains you", and that distinction is the whole of the risk.
+
+## The module-by-module reconciliation
+
+Written because the earlier figure — "106 of 158 rows not individually
+verified" — was true when said and then could not be checked: that inventory
+lived in a session's analysis and was never committed. This is the same
+question answered against the sources themselves, so it does not have to be
+derived a third time.
+
+**185 Python modules** across the two POCs (101 BirdClaw, 84 Sisyphean) against
+**68 TypeScript modules** in `server/src`. Every one of the 125 distinct
+capability-level modules maps to something here. The three that resisted
+placing at first, and where they actually live:
+
+| POC module | Phoenix |
+| --- | --- |
+| `agent/subtask_manifest`, `translation/subtask/manifest` | `pi/step-runner.ts` — the "WHAT THE FILES BEFORE THIS ONE DECLARE" block, which prints each earlier step's file and its exported signatures so a step imports by name rather than guessing. |
+| `agent/subtask_verifier`, `translation/subtask/verifier` | `write_check` in `pi/writing-tools.ts` — the same three findings: a section missing, a stub left behind, a section that shrank because the file was rewritten rather than appended to. |
+| `engine/memory/session_merge` | `harvest.ts` — upserts `conversation:<date>:<session>` per turn, the lightweight per-session consolidation node that keeps the graph current between dream cycles. |
+
+### What is genuinely not ported: the skills themselves
+
+The skills *infrastructure* is here — `builtinSkillsDir()` and
+`additionalSkillPaths` in `pi/sdk-client.ts`, `pi/skill-tools.ts`,
+`skills.ts`, and the guard's matching path resolution. What is not here is the
+content. Phoenix ships **one** builtin skill, `skill-creator`. Between them the
+POCs ship **fourteen**:
+
+| From | Skill | Notes |
+| --- | --- | --- |
+| Sisyphean | `calc` | A safe `math.*` evaluator, with uppercase aliases so `SQRT(144)` works. 53 lines. |
+| Sisyphean | `web` | Fetch and extract a page. |
+| Sisyphean | `read_pdf` | Text out of a PDF. |
+| Sisyphean | `ocr` | Text out of an image. |
+| Sisyphean | `arxiv` | Paper search and metadata. |
+| Sisyphean | `youtube` | Transcript retrieval. |
+| Sisyphean | `maps` | Geocoding and routing. |
+| Sisyphean | `github_ops` | Repository operations. |
+| Sisyphean | `hf_hub` | Hugging Face model and dataset lookup. |
+| Sisyphean | `obsidian` | Read and write an Obsidian vault. |
+| Sisyphean / BirdClaw | `system_health` | Disk, memory, load. Both ship one. |
+| BirdClaw | `code-generation` | A SKILL.md, not a script. |
+| BirdClaw | `document-creation` | A SKILL.md. |
+| BirdClaw | `dreaming` | A SKILL.md. Phoenix has the dream *routine*; this is the skill that describes it. |
+
+1144 lines of Python plus four SKILL.md files. They are not a rewrite — the
+infrastructure that loads them already exists, and a Python skill runs as a
+script either way.
+
+`calc` is worth calling out on its own. Asked for the square root of 144, a
+session ran `echo "sqrt(144)" | bc -l`, got 12, and then spent its whole output
+budget deliberating whether `bc` counted as "bash" and whether `python3 -c`
+would have been better. With one obvious tool for arithmetic there is nothing
+to deliberate about, which is a better fix than any wording of the note.
