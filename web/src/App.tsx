@@ -1,3 +1,4 @@
+import { LuPanelLeftOpen } from "react-icons/lu";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, type PortalEvent, type Session, type Workspace } from "./api";
@@ -92,6 +93,30 @@ function Shell({
    */
   const [connected, setConnected] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /**
+   * Whether the sidebar is out of the way, remembered per browser.
+   *
+   * Here rather than in Sidebar because the button that brings it back has to
+   * live somewhere still on screen — a toggle inside the thing it hides is a
+   * trap.
+   */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("phoenix.sidebarCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((v) => {
+      try {
+        localStorage.setItem("phoenix.sidebarCollapsed", v ? "0" : "1");
+      } catch {
+        // A browser that refuses storage still toggles; it just forgets.
+      }
+      return !v;
+    });
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     const r = await api.sessions();
@@ -238,6 +263,7 @@ function Shell({
         sessions={sessions}
       />
       <Sidebar
+        collapsed={sidebarCollapsed}
         sessions={sessions}
         executor={executor}
         activeId={sessionId ?? null}
@@ -267,6 +293,26 @@ function Shell({
         }
       />
 
+      {/*
+        * The way back, from anywhere.
+        *
+        * Chat's header has its own toggle for hiding, but it is a chat header:
+        * collapse the sidebar and open Memory or Routines and there would be
+        * nothing to click. This one is rendered for every view, and only while
+        * the sidebar is hidden, so there is never a second button competing
+        * with the first.
+        */}
+      {sidebarCollapsed && (
+        <button
+          onClick={toggleSidebar}
+          className="fixed left-2 top-2 z-40 rounded-lg bg-surface/90 p-1.5 text-fg-subtle shadow ring-1 ring-inset ring-line transition hover:text-fg"
+          title="Show the sidebar"
+          aria-label="Show the sidebar"
+        >
+          <LuPanelLeftOpen className="h-4 w-4" />
+        </button>
+      )}
+
       <main className="flex min-w-0 flex-1 flex-col">
         {error && <div className="bg-danger/10 px-4 py-2 text-sm text-danger">{error}</div>}
         {view === "sessions" ? (
@@ -293,6 +339,8 @@ function Shell({
         ) : active ? (
           <Chat
             session={active}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
             events={events}
             connected={connected}
             onSend={async (msg) => {

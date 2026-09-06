@@ -1,3 +1,4 @@
+import { LuPanelLeftClose, LuPanelLeftOpen } from "react-icons/lu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { api, type PiCommand, type PortalEvent, type Session } from "../api";
@@ -222,6 +223,8 @@ function Thread({ item }: { item: Extract<Item, { kind: "thread" }> }) {
 
 export function Chat({
   session,
+  sidebarCollapsed = false,
+  onToggleSidebar,
   events,
   onSend,
   onAbort,
@@ -229,6 +232,9 @@ export function Chat({
   connected = true,
 }: {
   session: Session;
+  /** Whether the sidebar is hidden, and how to put it back. */
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
   events: PortalEvent[];
   /** False while the event stream is reconnecting — see the header strip. */
   connected?: boolean;
@@ -282,7 +288,28 @@ export function Chat({
     if (!q) return allItems;
     return allItems.filter((item) => haystack(item).toLowerCase().includes(q));
   }, [allItems, search]);
-  const running = session.status === "running";
+  /**
+   * Whether it is working, from the event stream rather than the session row.
+   *
+   * The row is only refreshed for sessions in the sidebar list, and that list
+   * is task sessions — so the agent's own conversation carried whatever status
+   * it had when the page loaded, forever. "working…" never appeared in Chat,
+   * which is the one place it matters most: it is the session you are sitting
+   * in front of waiting for.
+   *
+   * `portal_status` is emitted on every transition and arrives over the same
+   * SSE connection as everything else here, so this is live by construction
+   * and needs no polling.
+   */
+  const running = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type !== "portal_status") continue;
+      const status = (e.payload as { status?: string } | undefined)?.status;
+      if (typeof status === "string") return status === "running";
+    }
+    return session.status === "running";
+  }, [events, session.status]);
 
   /**
    * When this run began, for the elapsed clock in the header.
@@ -351,6 +378,24 @@ export function Chat({
     <div className="flex h-full flex-col">
       <header className="border-b border-line px-4 py-3">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3">
+        {/*
+          * Hide the sidebar, from the header.
+          *
+          * Only while it is showing. The way *back* is App's own toggle, which
+          * is on screen for every view — this one is in a chat header, and a
+          * collapsed sidebar on the Memory or Routines page would otherwise
+          * have nothing to click.
+          */}
+        {onToggleSidebar && !sidebarCollapsed && (
+          <button
+            onClick={onToggleSidebar}
+            className="-ml-1 shrink-0 rounded-lg p-1.5 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
+            title={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
+            aria-label={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
+          >
+            {sidebarCollapsed ? <LuPanelLeftOpen className="h-4 w-4" /> : <LuPanelLeftClose className="h-4 w-4" />}
+          </button>
+        )}
         <div className="min-w-0">
           <h2 className="truncate text-sm font-medium text-fg">{session.title}</h2>
           {/*

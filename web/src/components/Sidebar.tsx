@@ -57,6 +57,7 @@ export function Sidebar({
   onOpenSettings,
   onNavigate,
   onOpenMain,
+  collapsed = false,
 }: {
   sessions: Session[];
   executor: string;
@@ -71,6 +72,8 @@ export function Sidebar({
   onNavigate: (to: "sessions" | "agent" | "routines" | "audit" | "memory") => void;
   /** Open the conversation with the agent itself. */
   onOpenMain: () => void;
+  /** Hidden, with only the header's toggle to bring it back. */
+  collapsed?: boolean;
 }) {
   const [width, setWidth] = useState(storedWidth);
   // The mouseup handler closes over the width at mousedown, so the value it
@@ -98,6 +101,17 @@ export function Sidebar({
       onPin={onPin}
     />
   );
+
+  /**
+   * Collapsed means gone, not narrow.
+   *
+   * A rail of icons would keep the destinations reachable, and they already
+   * are: ⌘K opens everything, which is why the palette was built. Rendering
+   * nothing is honest about what collapsing is for — the transcript is the
+   * thing being read, and a 56px strip of glyphs takes space from it to
+   * duplicate a shortcut.
+   */
+  if (collapsed) return null;
 
   return (
     <aside

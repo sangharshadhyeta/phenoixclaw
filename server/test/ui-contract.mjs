@@ -141,5 +141,38 @@ function loadFn(file, name) {
   ok("it saves the width it ended on", /widthRef\.current/.test(sidebar));
 }
 
+// --- the sidebar can be got out of the way --------------------------------
+// The trap to avoid: a toggle that lives inside the thing it hides. Chat's
+// header hides it; App brings it back, and App's is rendered for every view
+// because a collapsed sidebar on the Memory page would otherwise have nothing
+// to click.
+{
+  const app = readFileSync(web("App.tsx"), "utf8");
+  const chat = readFileSync(web("components/Chat.tsx"), "utf8");
+  const sidebar = readFileSync(web("components/Sidebar.tsx"), "utf8");
+
+  ok("the sidebar hides itself entirely", /if \(collapsed\) return null;/.test(sidebar));
+  ok("the state is held above it, not inside", /const \[sidebarCollapsed, setSidebarCollapsed\]/.test(app));
+  ok("and remembered", /phoenix\.sidebarCollapsed/.test(app));
+
+  ok("the header hides it only while it is showing", /onToggleSidebar && !sidebarCollapsed/.test(chat));
+  // The one that matters: the way back must not depend on being in a chat.
+  ok("the way back is outside any one view", /\{sidebarCollapsed && \([\s\S]{0,400}Show the sidebar/.test(app));
+  ok("and never competes with the header's toggle",
+     app.indexOf("sidebarCollapsed && (") > 0 && /!sidebarCollapsed/.test(chat));
+}
+
+// --- "working…" has to be live -------------------------------------------
+// The session row is only refreshed for sessions in the sidebar list, and that
+// list is task sessions — so the agent's own conversation carried whatever
+// status it had at page load, forever, and "working…" never appeared in the
+// one place you sit waiting for it.
+{
+  const chat = readFileSync(web("components/Chat.tsx"), "utf8");
+  ok("running comes from the event stream", /e\.type !== "portal_status"/.test(chat));
+  ok("with the row only as a fallback", /return session\.status === "running";/.test(chat));
+  ok("and it is the last status that counts", /for \(let i = events\.length - 1/.test(chat));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
