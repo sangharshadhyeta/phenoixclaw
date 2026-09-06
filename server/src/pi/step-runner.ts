@@ -109,6 +109,41 @@ export function neededSections(
   return out;
 }
 
+/**
+ * The signature lines of what is already written.
+ *
+ * `neededSections` only fires when a step's description names an earlier one,
+ * and in a real plan the sections are bare nouns — "area", "perimeter",
+ * "describe" — so the dependency the person stated ("a describe function that
+ * uses all three") is nowhere in the step text. The step that needs the others
+ * most is exactly the one whose name says least.
+ *
+ * Signatures rather than bodies, always. A function that calls three others
+ * needs to know what they take and return; it does not need their
+ * implementations, and including those is how a per-step context becomes the
+ * accumulating one again. This is the middle rung of BirdClaw's progressive
+ * disclosure: an index is too little, the whole file is too much.
+ *
+ * Prose gets its headings, for the same reason and at the same cost.
+ */
+export function signaturesOf(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (
+      /^(export\s+)?(default\s+)?(async\s+)?(function|class)\s+\w/.test(trimmed) ||
+      /^(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s*)?(\([^)]*\)|\w+)\s*=>/.test(trimmed) ||
+      /^def\s+\w/.test(trimmed) ||
+      /^#{1,6}\s+\S/.test(trimmed)
+    ) {
+      // Up to the brace or arrow: the shape, not the body.
+      out.push(trimmed.replace(/\s*\{\s*$/, "").replace(/\s*=>\s*$/, " =>").slice(0, 160));
+    }
+  }
+  return out;
+}
+
 /** What has been written so far, by name — cheap, and it says what exists. */
 function writtenIndex(tasks: TaskRow[], step: TaskRow): string {
   const done = tasks.filter((t) => t.seq < step.seq && t.status === "done");
@@ -160,7 +195,18 @@ export function briefFor(ctx: BriefContext): string {
       ? [
           `# WHAT IS ALREADY IN ${file}`,
           "",
-          writtenIndex(tasks, step) ? `Written so far: ${writtenIndex(tasks, step)}.` : "",
+          writtenIndex(tasks, step) ? `Written so far: ${writtenIndex(tasks, step)}.` : undefined,
+          ...(() => {
+            const signatures = signaturesOf(written);
+            return signatures.length
+              ? [
+                  "",
+                  "What it already defines, so this section matches it rather than guessing:",
+                  "",
+                  ...signatures.map((sig) => `  ${sig}`),
+                ]
+              : [];
+          })(),
           ...neededSections(step, tasks, written).flatMap((sec) => [
             "",
             `This step names "${sec.description}", which you have already written. Here it is in full,`,
@@ -174,7 +220,9 @@ export function briefFor(ctx: BriefContext): string {
           boundaryTail(written, 1500),
           "",
         ]
-          .filter((line) => line !== "")
+          // Only genuinely absent slots are dropped; the "" entries here are
+          // the blank lines that keep the block readable.
+          .filter((line) => line !== undefined)
           .join("\n")
       : file
         ? `# ${file} is empty so far.\n`

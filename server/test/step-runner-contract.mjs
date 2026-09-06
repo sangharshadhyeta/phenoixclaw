@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { briefFor, runPlan, synthesisBrief, neededSections } = await import(path.join(here, "..", "dist", "pi", "step-runner.js"));
+const { briefFor, runPlan, synthesisBrief, neededSections, signaturesOf } = await import(path.join(here, "..", "dist", "pi", "step-runner.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -126,6 +126,46 @@ const plan = [
   // A span pointing past the end of the file is stale, not a slice to take.
   const stale = neededSections(plan[2], [{ seq: 1, description: "area", status: "done", result: "9 chars @0-9999" }], text);
   ok("a span past the end of the file is ignored", stale.length === 0);
+}
+
+// --- what is already defined, for the step that needs it most ---------------
+// neededSections only fires when a step's description names an earlier one,
+// and in a real plan the sections are bare nouns — "area", "perimeter",
+// "describe" — so the dependency the person stated ("a describe function that
+// uses all three") is nowhere in the step text. The step that needs the others
+// most is exactly the one whose name says least.
+{
+  const code = [
+    "/** Doc comment. */",
+    "export function area(width, height) {",
+    "  return width * height;",
+    "}",
+    "export const scale = (x) => x * 2;",
+    "async function helper(a) {",
+    "  return a;",
+    "}",
+  ].join("\n");
+
+  const sigs = signaturesOf(code);
+  ok("declarations are found", sigs.some((s) => /export function area\(width, height\)/.test(s)));
+  ok("arrow constants too", sigs.some((s) => /scale/.test(s)));
+  ok("and async functions", sigs.some((s) => /helper/.test(s)));
+  ok("bodies are not included", !sigs.some((s) => /return width \* height/.test(s)));
+  ok("nor doc comments", !sigs.some((s) => /Doc comment/.test(s)));
+  ok("prose gets its headings", signaturesOf("## Rollback\nsome text").some((s) => /## Rollback/.test(s)));
+  ok("plain prose yields nothing to show", signaturesOf("just a paragraph of words").length === 0);
+
+  const plan = [
+    { seq: 1, description: "area", status: "done", result: "10 chars @0-10" },
+    { seq: 2, description: "describe", status: "pending", result: "" },
+  ];
+  const brief = briefFor({ goal: "g", tasks: plan, step: plan[1], file: "/w/m.mjs", written: code });
+  ok("the step is shown what the file already defines", /export function area\(width, height\)/.test(brief));
+  ok("said to be there so it matches rather than guesses", /matches it rather than guessing/.test(brief));
+  // Only the signature block is body-free; the tail below it is the end of
+  // the file and legitimately contains code.
+  const sigBlock = brief.split("already defines")[1]?.split("ends like this")[0] ?? "";
+  ok("without the bodies", sigBlock.length > 0 && !sigBlock.includes("return width * height"));
 }
 
 // --- a failed earlier step is not hidden ------------------------------------

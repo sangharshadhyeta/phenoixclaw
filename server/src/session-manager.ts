@@ -420,6 +420,9 @@ class SessionManager extends EventEmitter {
 
     this.working.add(sessionId);
     try {
+      // Held for the whole plan — see the agent_end handler.
+      await updateSession(sessionId, { status: "running" });
+      await this.record(sessionId, "portal_status", { status: "running" });
       const goal = await this.lastRequest(sessionId);
       return await runPlan(goal, {
         tasks: () => listTasks(sessionId),
@@ -492,6 +495,8 @@ class SessionManager extends EventEmitter {
       return undefined;
     } finally {
       this.working.delete(sessionId);
+      await updateSession(sessionId, { status: "idle" });
+      await this.record(sessionId, "portal_status", { status: "idle" });
     }
   }
 
@@ -685,8 +690,21 @@ class SessionManager extends EventEmitter {
       }
 
       if (msg.type === "agent_end") {
-        void updateSession(sessionId, { status: "idle" });
-        void this.record(sessionId, "portal_status", { status: "idle" });
+        /**
+         * A plan being worked is not idle between its steps.
+         *
+         * Each step is its own turn, so `agent_end` fires after every one —
+         * and the session read as idle in the gaps while the portal was
+         * driving the next step. Anything watching the status rather than the
+         * plan concluded the run was over: the UI showed a finished session
+         * that then started moving again, and a test waiting for it to settle
+         * settled four times.
+         */
+        const stillWorking = this.working.has(sessionId);
+        if (!stillWorking) {
+          void updateSession(sessionId, { status: "idle" });
+          void this.record(sessionId, "portal_status", { status: "idle" });
+        }
         void this.harvest(sessionId);
         void this.recordUsage(sessionId);
         // A turn that ended holding a plan with steps left is the trigger for
