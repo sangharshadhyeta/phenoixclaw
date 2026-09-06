@@ -191,5 +191,23 @@ ok("nor status changes", isMirrorable("portal_status") === false);
      /client\?\.abort\(\)\?\.catch\(\(\) => \{\}\)/.test(timeoutBlock));
 }
 
+// --- abort must not miss a genuinely running session -------------------------
+// `pauseIdleDreaming` calls this the instant real activity arrives, to
+// interrupt a routine mid-iteration. A single instantaneous `client.running`
+// check missed the gap between two of the routine's own tool calls — not one
+// continuous "running" state from pi's point of view — so the abort silently
+// did nothing and the routine ran two more full steps while the person it was
+// supposedly pausing for was already mid-conversation.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("abort polls rather than checking once",
+     /private async isActuallyRunning\(sessionId: string, windowMs = 2000\)/.test(mgr));
+  ok("polling for up to two seconds before giving up",
+     /if \(Date\.now\(\) >= deadline\) return false;/.test(mgr));
+  ok("abort itself goes through the poll rather than the old one-shot check",
+     /if \(!\(await this\.isActuallyRunning\(sessionId\)\)\) return;/.test(mgr));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

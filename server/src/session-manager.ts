@@ -12,6 +12,7 @@ import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
+import { routeHint, routeQuery } from "./pi/route-hint.js";
 import { agentHome } from "./agent.js";
 import { resetChatBudget } from "./pi/chat-budget.js";
 import { resetRepeats } from "./pi/repeat-guard.js";
@@ -1248,12 +1249,23 @@ class SessionManager extends EventEmitter {
      * Asked before this prompt is recorded, or the prompt being asked about is
      * itself the earlier turn and the answer is always yes.
      */
+    /**
+     * A separate, disposable classification call — see route-hint.ts for why
+     * this is not the same thing as turning thinking on for the reply itself,
+     * and why it only runs for the conversation. A task session is already
+     * mid-plan by the time it prompts; classifying "what kind of thing is
+     * this" a second time there answers a question that has already been
+     * answered.
+     */
+    const route = kind === "agent" && !isCommand && !opts.internal ? await routeQuery(message) : "";
+
     const note =
       isCommand || opts.internal
         ? ""
         : `${preflightNote(message, await this.hasEarlierTurn(sessionId))}` +
           `${arithmeticNote(message, kind === "agent")}` +
-          worldQuestionNote(message, kind === "agent");
+          `${worldQuestionNote(message, kind === "agent")}` +
+          routeHint(route);
 
     /**
      * The person's own message goes into the log first.
@@ -1651,9 +1663,39 @@ class SessionManager extends EventEmitter {
     return this.live.get(sessionId)?.client.respondUi(id, response) ?? false;
   }
 
+  /**
+   * A single instant is not enough to know a session is not running.
+   *
+   * A multi-tool-call turn is not one continuous "running" state from pi's
+   * own point of view — it toggles between generating and having just
+   * finished a step, and this used to check exactly once: if that check
+   * landed in the gap between two tool calls, `client.running` read false,
+   * abort did nothing, and nobody tried again. `pauseIdleDreaming` calls this
+   * the instant real activity arrives specifically to interrupt a routine
+   * mid-iteration — and a routine's own turn is exactly the multi-tool-call
+   * shape this gap lives in. The observed result: a chat message arrived, the
+   * abort silently missed, and the learning loop ran two more full steps
+   * (task_finish, task_plan, a fresh search) while the person it was
+   * supposedly pausing for was already mid-conversation.
+   *
+   * Polling for up to two seconds — a routine's own gap between steps is
+   * milliseconds, not seconds, so this catches the miss without meaningfully
+   * delaying a genuine "nothing to abort".
+   */
+  private async isActuallyRunning(sessionId: string, windowMs = 2000): Promise<boolean> {
+    const deadline = Date.now() + windowMs;
+    for (;;) {
+      const live = this.live.get(sessionId);
+      if (live?.client.running) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   async abort(sessionId: string): Promise<void> {
+    if (!(await this.isActuallyRunning(sessionId))) return;
     const live = this.live.get(sessionId);
-    if (!live?.client.running) return;
+    if (!live) return;
     await live.client.abort().catch(() => {});
     await updateSession(sessionId, { status: "idle" });
     await this.record(sessionId, "portal_status", { status: "idle", aborted: true });
