@@ -1273,9 +1273,32 @@ class SessionManager extends EventEmitter {
           worldQuestionNote(message, kind === "agent");
 
     /**
+     * The person's own message goes into the log first.
+     *
+     * Handing work out records `portal_task_started`, and that used to happen
+     * before this line — so the transcript read "started a session about X"
+     * above the message asking for X, and the session appeared to have been
+     * started before anybody said anything. Events are read in the order they
+     * are written.
+     *
+     * Recorded without the note: the transcript should show what was said, not
+     * what the portal appended to it.
+     */
+    if (!isCommand) {
+      await this.record(sessionId, opts.internal ? "portal_step" : "portal_prompt", { message });
+    }
+
+    /**
      * Anything the graph cannot answer becomes a session before the turn
      * starts. See needs-session.ts for the rule and handOutForRequest for what
      * it does — the decision is the portal's, not the model's.
+     *
+     * The memory search is here, in the portal, and it happens before the
+     * model's turn begins: `needsSession` looks the question up and hands out
+     * only when nothing came back. The `graph_recall` the model may call later
+     * is a second, separate look — the recalled block is already in its prompt
+     * (memory-injector.ts) and it reaches for the tool anyway. Either way
+     * memory is consulted before a session is started, not after.
      */
     const handedOut =
       kind === "agent" && !isCommand && !opts.internal
@@ -1285,11 +1308,6 @@ class SessionManager extends EventEmitter {
         : "";
     if (handedOut) this.handedOut.add(sessionId);
 
-    // Recorded without the note: the transcript should show what was said, not
-    // what the portal appended to it.
-    if (!isCommand) {
-      await this.record(sessionId, opts.internal ? "portal_step" : "portal_prompt", { message });
-    }
     /**
      * The row, not only the event.
      *
