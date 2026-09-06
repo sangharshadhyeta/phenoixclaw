@@ -169,9 +169,26 @@ function loadFn(file, name) {
    * A grey nought answers the question; a missing badge only raises it.
    */
   ok("the running count is always drawn", !/\{runningCount > 0 && \(/.test(app));
-  ok("and goes quiet rather than away", /runningCount > 0 \? "text-accent" : "text-fg-faint"/.test(app));
+  ok("and goes quiet rather than away",
+     /runningCount > 0[\s\S]{0,60}text-accent[\s\S]{0,60}text-fg-faint/.test(app));
   ok("with the pulse only when something is running", /runningCount > 0 \? "animate-pulse/.test(app));
   ok("and a title that says so either way", /Nothing running — show the sidebar/.test(app));
+
+  /**
+   * An increase is what you would miss.
+   *
+   * The count says how much is going on and nothing about change — and a
+   * session that begins while you are reading something else moves the number
+   * and does nothing else, which is easy not to notice with the sidebar
+   * hidden.
+   */
+  ok("an increase is noticed", /const grew = runningCount > lastCount\.current/.test(app));
+  ok("and lights the badge", /justStarted[\s\S]{0,80}bg-accent\/15 text-accent/.test(app));
+  ok("saying what happened", /Something just started/.test(app));
+  // A badge that stayed lit would be saying "something started" long after it
+  // stopped being news.
+  ok("and it fades on its own", /setJustStarted\(false\), 6000/.test(app));
+  ok("a decrease does not light it", /if \(!grew\) return;/.test(app));
 }
 
 // --- "working…" has to be live -------------------------------------------

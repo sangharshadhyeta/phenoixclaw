@@ -250,6 +250,29 @@ function Shell({
   const active = listed ?? (other?.id === sessionId ? other : null);
   const runningCount = sessions.filter((s) => s.status === "running").length;
 
+  /**
+   * Whether something has just started.
+   *
+   * The count alone says how much is going on and nothing about *change* — and
+   * change is the thing you would miss with the sidebar hidden. A session that
+   * begins while you are reading something else moves the number and nothing
+   * else happens, which is easy not to notice.
+   *
+   * So an increase lights it up briefly, the same accent as the working dot.
+   * It fades on its own: a badge that stayed lit would be saying "something
+   * started" long after it stopped being news.
+   */
+  const [justStarted, setJustStarted] = useState(false);
+  const lastCount = useRef(runningCount);
+  useEffect(() => {
+    const grew = runningCount > lastCount.current;
+    lastCount.current = runningCount;
+    if (!grew) return;
+    setJustStarted(true);
+    const t = setTimeout(() => setJustStarted(false), 6000);
+    return () => clearTimeout(t);
+  }, [runningCount]);
+
   return (
     <div className="flex h-screen bg-canvas">
       {/* Work finishes whether or not its tab is open — see Toasts. */}
@@ -328,13 +351,19 @@ function Shell({
             */}
           <button
             onClick={toggleSidebar}
-            className={`flex items-center gap-1 rounded-lg bg-surface/90 px-1.5 py-0.5 text-[10px] shadow ring-1 ring-inset ring-line transition hover:brightness-125 ${
-              runningCount > 0 ? "text-accent" : "text-fg-faint"
+            className={`flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] shadow ring-1 ring-inset transition hover:brightness-125 ${
+              justStarted
+                ? "bg-accent/15 text-accent ring-accent/40"
+                : runningCount > 0
+                  ? "bg-surface/90 text-accent ring-line"
+                  : "bg-surface/90 text-fg-faint ring-line"
             }`}
             title={
-              runningCount > 0
-                ? `${runningCount} session${runningCount > 1 ? "s" : ""} running — show the sidebar`
-                : "Nothing running — show the sidebar"
+              justStarted
+                ? `Something just started — ${runningCount} running. Show the sidebar.`
+                : runningCount > 0
+                  ? `${runningCount} session${runningCount > 1 ? "s" : ""} running — show the sidebar`
+                  : "Nothing running — show the sidebar"
             }
           >
             <span
