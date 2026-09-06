@@ -177,6 +177,36 @@ const WORK_IN_CHAT_LIMIT = 4;
 
 export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
   {
+    /**
+     * A turn that said nothing at all.
+     *
+     * Asked to run `ls -1`, a conversation called `graph_recall` with the same
+     * query three times running — the repeat guard refused the third call
+     * correctly, exactly as designed — and the turn ended there. No text, no
+     * error, no "I could not do that": the agent loop stopped the moment a
+     * tool call came back refused, and nothing after it produced a reply. The
+     * person is left looking at a chat that said nothing, indistinguishable
+     * from one still thinking.
+     *
+     * Every other check here asks whether what was *said* holds up. This is
+     * the one case none of them can catch, because there is nothing to read.
+     * Applies regardless of conversational or not — a task session that goes
+     * silent leaves nobody able to tell it from one still working, which is
+     * the same failure with a different audience.
+     */
+    name: "silent-turn",
+    applies: (_request, context) => context.reply !== undefined && context.reply.trim() === "",
+    satisfied: () => false,
+    message: [
+      "That turn ended with nothing said.",
+      "",
+      "Whatever the last thing you tried came back as — refused, empty, an error — say what",
+      "happened and what you are doing about it. If a tool refused a call because you had already",
+      "tried the same thing, that is the signal to try something different, not to stop; if there",
+      "is truly nothing further to try, say that in a sentence.",
+    ].join("\n"),
+  },
+  {
     name: "impossible-without-trying",
     applies: (_request, context) => claimsImpossible(context.reply),
     // Anything that actually reaches the world counts as having tried.

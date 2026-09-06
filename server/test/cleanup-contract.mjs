@@ -330,5 +330,25 @@ ok("sessions.tainted exists and defaults to 0",
   ok("one failed statement does not block the next", done.includes("after"));
 }
 
+// --- lastReply must be scoped to the current turn, like the tool calls -----
+// Unscoped, it scanned the last 400 events and returned the *previous* turn's
+// reply when the current one had none — asked to run `ls -1`, a conversation
+// looped on `graph_recall`, the repeat guard refused it correctly, and the
+// turn ended with no text at all; `lastReply` walked past that silence into
+// an earlier turn's real answer and reported it as this turn's reply. The
+// `silent-turn` check in after-turn.ts existed for exactly this and could
+// never fire, because the thing it checked was never actually empty by the
+// time it got there.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("lastReply takes a scope boundary",
+     /private async lastReply\(sessionId: string, since = 0\)/.test(mgr));
+  ok("and uses it rather than always starting from zero",
+     /eventsSince\(sessionId, since, 400\)/.test(mgr));
+  ok("the after-turn check passes the same boundary the tool-call scan uses",
+     /reply: await this\.lastReply\(sessionId, since\)/.test(mgr));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

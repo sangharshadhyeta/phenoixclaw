@@ -519,7 +519,7 @@ class SessionManager extends EventEmitter {
      */
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",
-      reply: await this.lastReply(sessionId),
+      reply: await this.lastReply(sessionId, since),
     });
     if (!failed) return false;
 
@@ -727,9 +727,22 @@ class SessionManager extends EventEmitter {
   }
 
   /** What the turn actually said, for checks about the answer rather than the calls. */
-  private async lastReply(sessionId: string): Promise<string> {
+  /**
+   * Scoped to this turn, like `calls` in `enforceAfterTurn` — and for the
+   * same reason `recentToolCalls` takes `since`. Unscoped, this scanned
+   * backward through the last 400 events and returned the *previous* turn's
+   * reply when the current one had none: asked to run `ls -1`, a conversation
+   * called `graph_recall` with the same query three times, the repeat guard
+   * refused the third correctly, and the turn ended with no text at all — but
+   * `lastReply` walked past that silence into an earlier turn's real answer
+   * and reported it as this turn's reply. The `silent-turn` check in
+   * after-turn.ts existed for exactly this shape of failure and could never
+   * fire, because the thing it was checking was never actually empty by the
+   * time it got there.
+   */
+  private async lastReply(sessionId: string, since = 0): Promise<string> {
     try {
-      const rows = await eventsSince(sessionId, 0, 400);
+      const rows = await eventsSince(sessionId, since, 400);
       for (let i = rows.length - 1; i >= 0; i--) {
         if (rows[i].type !== "message_end") continue;
         const message = JSON.parse(rows[i].payload)?.message;

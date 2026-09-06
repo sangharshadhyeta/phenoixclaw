@@ -276,5 +276,25 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
      failedCheck(asked, [call("start_task", {})], { conversational: true }) === undefined);
 }
 
+// --- a turn that said nothing at all ----------------------------------------
+// Asked to run `ls -1`, a conversation called `graph_recall` with the same
+// query three times, the repeat guard correctly refused the third, and the
+// turn ended there with no text reply. None of the other checks can catch
+// this — there is nothing to read — so this one applies whenever the reply is
+// empty, regardless of what else the turn did.
+{
+  ok("an empty reply is handed back",
+     failedCheck("run ls -1", [], { conversational: true, reply: "" })?.name === "silent-turn");
+  ok("whitespace-only counts as empty",
+     failedCheck("run ls -1", [], { conversational: true, reply: "   \n  " })?.name === "silent-turn");
+  ok("a real reply, however short, is not silence",
+     failedCheck("run ls -1", [], { conversational: true, reply: "ok" })?.name !== "silent-turn");
+  ok("no reply info at all does not trigger it — only a reply known to be empty does",
+     failedCheck("run ls -1", [call("bash", {})], { conversational: true }) === undefined ||
+       failedCheck("run ls -1", [call("bash", {})], { conversational: true })?.name !== "silent-turn");
+  ok("it applies in a task session too, not only the conversation",
+     failedCheck("do the thing", [], { conversational: false, reply: "" })?.name === "silent-turn");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
