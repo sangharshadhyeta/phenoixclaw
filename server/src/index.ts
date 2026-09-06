@@ -19,7 +19,7 @@ import {
 import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
-import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors } from "./identity.js";
+import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors, inviteNameChoice } from "./identity.js";
 import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { mainConversation } from "./mirror.js";
@@ -250,8 +250,10 @@ app.get("/api/agent/setup", async (_req, res) => {
 /** Run the wizard. Refuses to overwrite an existing MEMORY.md. */
 app.post("/api/agent/setup", async (req, res) => {
   const body = (req.body ?? {}) as WizardInput;
-  if (typeof body.agentName !== "string" || !body.agentName.trim()) {
-    return res.status(400).json({ error: "The agent needs a name" });
+  // Blank is allowed: an agent with no name is asked to choose one rather than
+  // inheriting the portal's. See runWizard.
+  if (typeof body.agentName !== "string") {
+    return res.status(400).json({ error: "agentName must be a string (it may be empty)" });
   }
   if (typeof body.userName !== "string" || !body.userName.trim()) {
     return res.status(400).json({ error: "Who is it working for?" });
@@ -695,6 +697,12 @@ void trimEventLog()
     if (n > 0) console.log(`[portal] trimmed ${n} old event(s) from the log`);
   })
   .catch(() => {});
+
+// An agent named after the portal has not been named at all — see
+// inviteNameChoice.
+if (await inviteNameChoice()) {
+  console.log("[portal] the agent was named after the portal; it has been asked to choose its own");
+}
 
 const renamed = await stopIdentityNamingFiles();
 if (renamed > 0) console.log(`[portal] repaired ${renamed} identity document(s) that described themselves as files`);

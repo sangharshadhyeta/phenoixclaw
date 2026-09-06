@@ -59,5 +59,28 @@ ok("container refuses a routine", executorSupports("container", "routine") === f
   ok("and the limitation is announced at boot", /registers no guard, so it runs task sessions only/.test(idx));
 }
 
+// --- restricting an autonomous turn must not disarm it ---------------------
+// pi's `tools` option is the WHOLE allowlist, extensions included: passing the
+// read set there stripped every tool the portal registers, and the learning
+// loop reported that it could only use read/grep/find/ls and stopped. A
+// denylist over the built-ins is what was meant.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/pi/sdk-client.ts", import.meta.url), "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  ok("the built-in set is not narrowed by autonomy",
+     /const BUILTIN_TOOLS = \[\.\.\.READ_TOOLS, "bash", "edit", "write"\]/.test(code));
+  // `tools` is the WHOLE allowlist and takes the portal's own tools with it;
+  // `defaultTools` picks the built-in selection and leaves extensions alone.
+  ok("built-ins are chosen via defaultTools, not an allowlist",
+     /settings\.defaultTools =/.test(code) && !/^\s*tools,$/m.test(code));
+  ok("an autonomous turn is restricted by denylist instead",
+     /excludeTools = opts\.autonomous \? \["bash", "edit", "write"\]/.test(code));
+  ok("and it is actually passed to the session", /excludeTools \? \{ excludeTools \}/.test(code));
+  ok("grep, find and ls are registered so the role allowlist means something",
+     /READ_TOOLS = \["read", "grep", "find", "ls"\]/.test(code));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

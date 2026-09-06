@@ -75,8 +75,8 @@ export function AgentSetup({ home, onDone }: { home: string; onDone: (s: Setup) 
               autoFocus
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && agentName.trim() && setStep(1)}
-              placeholder="Aria"
+              onKeyDown={(e) => e.key === "Enter" && setStep(1)}
+              placeholder="leave blank and it will choose"
               className={`${inputCls} mt-1`}
             />
           </label>

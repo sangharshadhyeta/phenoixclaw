@@ -85,6 +85,58 @@ export function graphTools(cwd: string, reflective = true, sessionId?: string) {
     });
 
     /**
+     * Notice something worth fixing, and write it down.
+     *
+     * Ports BirdClaw's `note_improvement`. The self-update routine is asked to
+     * "look for one concrete, minimal, safe improvement — a failed routine run,
+     * a session error, a TODO or FIXME in the tree", which means it rediscovers
+     * its own agenda from scratch every run, from whatever it happens to grep
+     * that day. Meanwhile the moment a gap is genuinely *visible* — mid-task,
+     * when something almost worked, or did not — is a moment nothing was
+     * recording.
+     *
+     * A `concept` node categorised `improvement`, so it is ordinary memory: it
+     * corroborates when noticed twice, decays if it stops mattering, and is
+     * searchable like anything else. No new table, and the graph's curation
+     * applies to it for free.
+     */
+    pi.registerTool({
+      name: "note_improvement",
+      label: "Note something worth fixing",
+      description:
+        "Record something about yourself or this portal that could be better — a rough edge you " +
+        "just hit, a tool that nearly did what you needed, an error you worked around. Write it " +
+        "when you notice it, which is while you are working rather than when somebody asks: the " +
+        "self-update routine reads these, and without them it has to guess what needs doing. Say " +
+        "what is wrong and what would fix it, not just that something annoyed you.",
+      promptSnippet: "note_improvement — record a rough edge worth fixing",
+      parameters: Type.Object({
+        what: Type.String({ description: "What is wrong, and what would fix it. One or two sentences." }),
+        priority: Type.Optional(
+          Type.Union([Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")], {
+            description: "high only for something that is actively breaking work.",
+          }),
+        ),
+      }),
+      async execute(_id: string, p: any) {
+        const what = String(p?.what ?? "").trim();
+        const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+        if (!what) return said("Nothing to note.");
+
+        const priority = ["low", "normal", "high"].includes(String(p?.priority)) ? String(p.priority) : "normal";
+        // Named by content so the same rough edge noticed twice lands on one
+        // node and corroborates, rather than filling the backlog with
+        // near-duplicates of a single complaint.
+        const name = `improvement: ${what.toLowerCase().replace(/\s+/g, " ").slice(0, 70)}`;
+        await upsertNode(name, "concept", `[${priority}] ${what}`, undefined, {
+          category: "improvement",
+          source: "agent-noticed",
+        });
+        return said(`Noted (${priority}). The self-update routine will see it.`);
+      },
+    });
+
+    /**
      * The correction path.
      *
      * Without one, a wrong belief could only be removed by a person editing

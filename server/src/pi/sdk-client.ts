@@ -325,8 +325,74 @@ export class SdkPiClient extends EventEmitter implements PiClient {
      * between messages, and a launch-time list would freeze capability to
      * whoever happened to speak first.
      */
+    /**
+     * The built-in tools to enable, named so `grep`, `find` and `ls` exist.
+     *
+     * pi enables four by default — read, bash, edit, write — and ships the
+     * other three switched off, which quietly made a nonsense of guard.ts's
+     * READ_ONLY allowlist: it permits read/grep/find/ls, so a colleague was
+     * being granted three tools that did not exist.
+     *
+     * Passed through `extensionsOverride` rather than `tools`, because `tools`
+     * is documented as the *whole* allowlist — "when provided, only the listed
+     * tool names are enabled" — and it takes the portal's own registered tools
+     * with it. Setting it left every session with exactly seven built-ins and
+     * nothing else, and the learning loop said so plainly before giving up:
+     *
+     *     "the required tools (self_review, task_list, graph_recall, …) are
+     *      not available in my current environment."
+     *
+     * That was every session, not only autonomous ones — a task session had no
+     * graph_remember either. It read as a quiet loop rather than a broken
+     * portal, which is the worst way for something to fail.
+     */
     const READ_TOOLS = ["read", "grep", "find", "ls"];
-    const tools = opts.autonomous ? READ_TOOLS : [...READ_TOOLS, "bash", "edit", "write"];
+    const BUILTIN_TOOLS = [...READ_TOOLS, "bash", "edit", "write"];
+
+    /**
+     * Set as the *default built-in selection*, not as an allowlist.
+     *
+     * `createAgentSession`'s `tools` option is documented as "when provided,
+     * only the listed tool names are enabled", and it means it: passing this
+     * array there left every session with exactly these seven and stripped
+     * every tool the portal itself registers. The learning loop reported it
+     * plainly before giving up — "the required tools (self_review, task_list,
+     * graph_recall, …) are not available in my current environment" — and a
+     * task session had no graph_remember either. It read as a quiet loop rather
+     * than a broken portal, which is the worst way for anything to fail.
+     *
+     * `defaultTools` is the right seam (sdk.ts: `configuredDefaultToolNames ??
+     * defaultActiveToolNames`). It decides which *built-ins* start enabled and
+     * leaves extension tools alone, which is all that was ever wanted here:
+     * pi ships grep, find and ls switched off, and guard.ts's READ_ONLY
+     * allowlist names all three — so a colleague was being granted three tools
+     * that did not exist.
+     */
+    (settingsManager as unknown as { settings: Record<string, unknown> }).settings.defaultTools =
+      BUILTIN_TOOLS;
+
+    /**
+     * An autonomous turn loses the tools that change things, and keeps the rest.
+     *
+     * `excludeTools` and not `tools`, and the difference is not cosmetic. pi
+     * documents `tools` as "when provided, only the listed tool names are
+     * enabled" — the *whole* allowlist, extensions included. Passing the read
+     * set there stripped every tool the portal itself registers, and the
+     * learning loop said so in as many words before giving up:
+     *
+     *     "the required tools (self_review, task_list, graph_recall, task_plan,
+     *      task_start, task_finish, graph_remember, graph_episode) are not
+     *      available in my current environment. I can only use read, grep,
+     *      find, and ls."
+     *
+     * It then sat idle, which read as a quiet loop rather than a broken one.
+     * `excludeTools` is a denylist over the built-ins and leaves extension
+     * tools alone, which is what was meant: the constitution already refuses
+     * bash/write/edit to an autonomous turn (constitution.ts's CITED map), so
+     * this changes no decision — it moves the refusal into the session's shape,
+     * which keeps the schemas out of the prompt as well.
+     */
+    const excludeTools = opts.autonomous ? ["bash", "edit", "write"] : undefined;
 
     // Without an explicit loader the SDK starts with no extensions, skills or
     // prompt templates — so installed packages contribute no commands at all.
@@ -553,7 +619,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       sessionManager,
       modelRuntime,
       settingsManager,
-      tools,
+      ...(excludeTools ? { excludeTools } : {}),
       ...(resourceLoader ? { resourceLoader } : {}),
       ...(model ? { model } : {}),
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),

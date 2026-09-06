@@ -1467,9 +1467,18 @@ async function seedSelfUpdateRoutines(conn: DuckDBConnection): Promise<void> {
   const shared = [
     "Check git status is clean before starting.",
     "",
-    "Look for one concrete, minimal, safe improvement — a failed routine run,",
-    "a session error, a TODO or FIXME in the tree. Make the smallest change",
-    "that fixes it.",
+    "Start with your own backlog: call `graph_recall` for \"improvement\" to see the",
+    "rough edges you noted while working. Those are worth more than anything you",
+    "could find by grepping now, because you noticed them at the moment they",
+    "actually got in your way. Pick the one that would help most, and prefer a",
+    "high-priority note over an older low one.",
+    "",
+    "If the backlog is empty, look for one concrete, minimal, safe improvement — a",
+    "failed routine run, a session error, a TODO or FIXME in the tree. Make the",
+    "smallest change that fixes it.",
+    "",
+    "When it is done, remove the note with `graph_forget` so the next run does not",
+    "pick it up again.",
     "",
   ];
   const closing = [

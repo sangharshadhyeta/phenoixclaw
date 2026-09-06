@@ -65,6 +65,10 @@ export const AUTONOMOUS_TOOLS = new Set([
   // nothing about it — and because forgetting is bounded: anchors, user notes
   // and projects refuse it, so it cannot reach identity.
   "graph_forget",
+  // Noticing a rough edge is what an unattended run is best placed to do, and
+  // it writes an ordinary concept node — nothing it could not already write
+  // with graph_remember, just filed where self-update will look.
+  "note_improvement",
   "graph_reflect",
   "graph_episode",
   "workspace_note",

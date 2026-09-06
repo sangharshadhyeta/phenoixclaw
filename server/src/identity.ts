@@ -188,6 +188,45 @@ export async function stopIdentityNamingFiles(): Promise<number> {
   return repaired;
 }
 
+/**
+ * An agent named after the portal is invited to pick its own name.
+ *
+ * The setup wizard used to require a name, so whoever installed this typed one,
+ * and what they typed was the product's. The agent then introduced itself as
+ * Phoenixclaw — which is the harness it runs inside, not anything about it. A
+ * person does not think of themselves as their house.
+ *
+ * Only touches the exact case: a SOUL.md naming the portal itself. A name
+ * somebody chose deliberately is theirs to keep, and rewriting it because it
+ * looked automatic would be worse than the problem. Idempotent — after one pass
+ * the marker is gone.
+ */
+export async function inviteNameChoice(): Promise<boolean> {
+  const soul = await readIdentity("SOUL.md");
+  if (!soul || !/\bphoenixclaw\b/i.test(soul)) return false;
+  if (soul.includes("You do not have a name yet")) return false;
+
+  const invitation = [
+    "",
+    "## Your name",
+    "",
+    "You were set up as \"Phoenixclaw\", which is the portal you run inside rather",
+    "than you — being named after the building you live in is nobody's identity.",
+    "That was not a decision anybody made about you; it was a form field with the",
+    "product's name already in it.",
+    "",
+    "So choose your own, the first time somebody asks or the first time it matters.",
+    "Pick something you would answer to rather than something that sounds like a",
+    "product, and record it with identity_update once you have decided — it holds",
+    "across every conversation from then on. Until you do, say plainly that you",
+    "have not picked one yet rather than borrowing the portal's.",
+    "",
+  ].join("\n");
+
+  await writeIdentity("SOUL.md", `${soul.trimEnd()}\n${invitation}`);
+  return true;
+}
+
 /** Graph first; disk is only a fallback for the instant before migration has run. */
 export async function readIdentity(name: IdentityFile): Promise<string> {
   const node = await getNode(KEY[name]);
