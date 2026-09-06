@@ -472,6 +472,19 @@ class SessionManager extends EventEmitter {
     } catch {
       return false;
     }
+    /**
+     * Wait for this turn's events to actually be in the log.
+     *
+     * `record` chains its appends so ordering survives (see `appends`), and
+     * this runs on `agent_end` — which arrives before the chain has drained.
+     * Reading the log here saw a turn with no tool calls in it, so a session
+     * that had just run `echo $((17*23))` and answered 391 was told it had
+     * done the arithmetic in its head.
+     *
+     * The check is about what the turn did. It has to look after the turn has
+     * finished being written down, not merely after it has finished.
+     */
+    await this.appends.get(sessionId)?.catch(() => {});
     const calls = await recentToolCalls(sessionId, 40).catch(() => []);
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",

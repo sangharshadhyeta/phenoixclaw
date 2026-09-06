@@ -192,6 +192,16 @@ ok("sessions.tainted exists and defaults to 0",
   ok("and the prompt heuristic does not settle mid-plan",
      /this\.working\.has\(sessionId\)\s*\?\s*false/.test(mgr));
 
+  /**
+   * The after-turn check must read a turn that has finished being written
+   * down, not merely one that has finished. `record` chains its appends so
+   * ordering survives, and `agent_end` arrives before the chain drains — so a
+   * session that had just run `echo $((17*23))` and answered 391 was told it
+   * had done the arithmetic in its head.
+   */
+  ok("the after-turn check waits for the log to catch up",
+     /await this\.appends\.get\(sessionId\)\?\.catch[\s\S]{0,400}recentToolCalls/.test(mgr));
+
   // A rejected promise in any `void this.something()` path used to kill the
   // process, which ends every running session at once — the opposite of a run
   // belonging to the server.
