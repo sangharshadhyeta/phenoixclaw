@@ -15,6 +15,7 @@ import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
+import { planContext } from "./plan-context.js";
 import { writingTools } from "./writing-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
@@ -562,6 +563,11 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // are the same shape, and neither is a routine.
       if (opts.sessionId) {
         factories.push({ name: "tasks", factory: taskTools(opts.sessionId) });
+        // And the plan itself, back in the prompt on every provider call.
+        // Writing one is no use if the model then has to remember it wrote
+        // one — see plan-context.ts. After the assembler, so the plan sits
+        // below its note rather than being cut with the old turns.
+        factories.push({ name: "plan-context", factory: planContext(opts.sessionId) });
         // Writing something long, one section at a time — see writing-tools.ts
         // for why that is better than one large call even for a capable model.
         factories.push({ name: "writing", factory: writingTools(opts.sessionId, opts.cwd) });
