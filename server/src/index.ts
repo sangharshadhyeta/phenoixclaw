@@ -31,6 +31,7 @@ import { skillsRouter } from "./api/skills.js";
 import { mcpRouter } from "./api/mcp.js";
 import { peopleRouter } from "./api/people.js";
 import { memoryRouter } from "./api/memory.js";
+import { healthRouter } from "./api/health.js";
 import { routineSupervisor } from "./routines/supervisor.js";
 import { channelSupervisor } from "./channels/supervisor.js";
 import { piSettingsPath } from "./pi-settings.js";
@@ -161,6 +162,9 @@ const toApi = (s: Awaited<ReturnType<typeof getSession>> & {}) => ({
   ...s,
   pinned: Boolean(s.pinned),
   live: sessions.isRunning(s.id),
+  // Accumulated across every conversation this session has had, including ones
+  // retired for filling up — see addUsage.
+  usage: { tokensIn: Number(s.tokens_in ?? 0), tokensOut: Number(s.tokens_out ?? 0), cost: Number(s.cost ?? 0) },
 });
 
 app.get("/api/sessions", async (_req, res) => {
@@ -520,6 +524,7 @@ app.use("/api", skillsRouter());
 app.use("/api", mcpRouter());
 app.use("/api", peopleRouter());
 app.use("/api", memoryRouter());
+app.use("/api", healthRouter());
 
 // --- event stream ---
 

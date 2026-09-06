@@ -51,6 +51,18 @@ export interface SessionRow {
   /** Who last spoke here, surviving a restart that empties the in-memory map. */
   last_person_key: string | null;
   /**
+   * What this session has cost, accumulated across every run it has made.
+   *
+   * pi reports usage per session, and a session that is reopened by path
+   * carries its own history — but a routine's conversation is *recycled* when
+   * it fills up (see recycleConversation), and that resets pi's counters while
+   * the work plainly continues. So the totals live here, where they survive
+   * both a restart and a recycle.
+   */
+  tokens_in: number;
+  tokens_out: number;
+  cost: number;
+  /**
    * 1 once this conversation has read something untrusted — see pi/guard.ts.
    *
    * On the row rather than only in the guard's own closure, because a taint
@@ -147,7 +159,10 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
       routine_slug TEXT,
       role TEXT NOT NULL DEFAULT 'primary',
       last_person_key TEXT,
-      tainted INTEGER NOT NULL DEFAULT 0
+      tainted INTEGER NOT NULL DEFAULT 0,
+      tokens_in BIGINT NOT NULL DEFAULT 0,
+      tokens_out BIGINT NOT NULL DEFAULT 0,
+      cost DOUBLE NOT NULL DEFAULT 0
     )
   `);
 
@@ -365,6 +380,9 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["channel_key", "TEXT"],
     ["routine_slug", "TEXT"],
     ["tainted", "INTEGER NOT NULL DEFAULT 0"],
+    ["tokens_in", "BIGINT NOT NULL DEFAULT 0"],
+    ["tokens_out", "BIGINT NOT NULL DEFAULT 0"],
+    ["cost", "DOUBLE NOT NULL DEFAULT 0"],
   ] as const) {
     if (!sessionCols.has(col)) await addColumn(conn, "sessions", col, ddl);
   }
@@ -613,6 +631,40 @@ export async function deleteSession(id: string): Promise<void> {
  * direction — the in-memory flag is still set for the life of the process, and
  * the row catches up on the next tainting read.
  */
+/**
+ * Add a turn's usage to a session's running totals.
+ *
+ * Accumulated rather than replaced. pi reports what *its* conversation has
+ * used, and a routine's conversation is retired when it fills up — so reading
+ * pi's number straight would show the loop's cost dropping to zero every time
+ * it recycled, which is the opposite of what happened. The portal's job is to
+ * remember what the previous conversations cost.
+ */
+export async function addUsage(
+  id: string,
+  usage: { tokensIn: number; tokensOut: number; cost: number },
+): Promise<void> {
+  if (!usage.tokensIn && !usage.tokensOut && !usage.cost) return;
+  const conn = await getDb();
+  await conn.run(
+    `UPDATE sessions SET tokens_in = tokens_in + $tokensIn,
+                         tokens_out = tokens_out + $tokensOut,
+                         cost = cost + $cost
+      WHERE id = $id`,
+    { tokensIn: Math.max(0, usage.tokensIn), tokensOut: Math.max(0, usage.tokensOut), cost: Math.max(0, usage.cost), id },
+  );
+}
+
+/** What everything has cost, for the portal-wide view. */
+export async function totalUsage(): Promise<{ tokensIn: number; tokensOut: number; cost: number }> {
+  const conn = await getDb();
+  const row = await one<{ i: number; o: number; c: number }>(
+    conn,
+    "SELECT sum(tokens_in) AS i, sum(tokens_out) AS o, sum(cost) AS c FROM sessions",
+  );
+  return { tokensIn: Number(row?.i ?? 0), tokensOut: Number(row?.o ?? 0), cost: Number(row?.c ?? 0) };
+}
+
 export async function markSessionTainted(id: string): Promise<void> {
   const conn = await getDb();
   await conn.run("UPDATE sessions SET tainted = 1 WHERE id = $id", { id });

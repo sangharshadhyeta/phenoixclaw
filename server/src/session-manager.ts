@@ -8,6 +8,7 @@ import { buildExecutor, executorSupports, unsupportedReason, type Executor, type
 import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import {
+  addUsage,
   appendEvent,
   eventsSince,
   getSession,
@@ -330,6 +331,56 @@ class SessionManager extends EventEmitter {
     return next;
   }
 
+  /**
+   * What pi's counters read at the end of the last turn, per session.
+   *
+   * Kept so each turn's cost can be worked out as a difference. pi reports
+   * cumulative usage for its own conversation, which is the right thing for it
+   * to report and the wrong thing to store: a routine's conversation is retired
+   * when it fills up, and its counters restart while the work carries on.
+   */
+  private lastUsage = new Map<string, { tokensIn: number; tokensOut: number; cost: number }>();
+
+  /**
+   * Add this turn's usage to the session's running totals.
+   *
+   * Nothing counted tokens or cost anywhere. A portal running unattended
+   * autonomous loops against a configurable model could not answer "what did
+   * the learning loop cost last week", nor notice a run that had gone
+   * pathological — which, over ten hours of one conversation compacting on
+   * every turn, is exactly what had happened.
+   *
+   * Fire-and-forget after the reply has gone: this is bookkeeping, and nobody
+   * should wait on it.
+   */
+  private async recordUsage(sessionId: string): Promise<void> {
+    try {
+      const stats = await this.live.get(sessionId)?.client.getStats();
+      if (!stats) return;
+      const now = {
+        tokensIn: Number(stats.tokens?.input ?? 0),
+        tokensOut: Number(stats.tokens?.output ?? 0),
+        cost: Number(stats.cost ?? 0),
+      };
+      const before = this.lastUsage.get(sessionId);
+      // A conversation that was recycled reports smaller numbers than last
+      // time. Treat that as a fresh start rather than subtracting into
+      // nonsense: the earlier cost is already banked on the row.
+      const delta =
+        before && now.tokensIn >= before.tokensIn
+          ? {
+              tokensIn: now.tokensIn - before.tokensIn,
+              tokensOut: now.tokensOut - before.tokensOut,
+              cost: Math.max(0, now.cost - before.cost),
+            }
+          : now;
+      this.lastUsage.set(sessionId, now);
+      await addUsage(sessionId, delta);
+    } catch {
+      // Usage is a nicety; failing to record it must not disturb the run.
+    }
+  }
+
   /** Record a portal-generated event on a session — used for run bookends. */
   async note(sessionId: string, type: string, payload: unknown): Promise<void> {
     await this.record(sessionId, type, payload);
@@ -455,6 +506,7 @@ class SessionManager extends EventEmitter {
         void updateSession(sessionId, { status: "idle" });
         void this.record(sessionId, "portal_status", { status: "idle" });
         void this.harvest(sessionId);
+        void this.recordUsage(sessionId);
       }
     });
 
@@ -905,6 +957,9 @@ class SessionManager extends EventEmitter {
    */
   async recycleConversation(sessionId: string): Promise<void> {
     await this.stop(sessionId);
+    // pi's counters restart with the conversation; the running totals on the
+    // row do not.
+    this.lastUsage.delete(sessionId);
     await updateSession(sessionId, { pi_session_file: null });
     await this.record(sessionId, "portal_notice", {
       text: "Starting a fresh conversation — the previous one had filled up. What was learned is in memory.",
