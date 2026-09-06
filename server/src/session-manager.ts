@@ -406,6 +406,25 @@ class SessionManager extends EventEmitter {
    */
   private working = new Set<string>();
 
+  /**
+   * What happens once a turn ends: work the plan, or settle.
+   *
+   * Kept together because they are the same decision, and splitting them is
+   * what let a session look finished while the portal was about to give it
+   * three more steps.
+   */
+  private async afterTurn(sessionId: string): Promise<void> {
+    try {
+      const outcome = await this.workPlan(sessionId);
+      if (outcome !== undefined) return; // workPlan settles the session itself.
+    } catch {
+      // Falling through to settle is right: a plan that could not be worked
+      // must not leave the session spinning.
+    }
+    await updateSession(sessionId, { status: "idle" });
+    await this.record(sessionId, "portal_status", { status: "idle" });
+  }
+
   async workPlan(sessionId: string): Promise<StepOutcome | undefined> {
     if (process.env.STEP_ISOLATION === "off") return undefined;
     if (this.working.has(sessionId)) return undefined;
@@ -700,18 +719,22 @@ class SessionManager extends EventEmitter {
          * that then started moving again, and a test waiting for it to settle
          * settled four times.
          */
-        const stillWorking = this.working.has(sessionId);
-        if (!stillWorking) {
-          void updateSession(sessionId, { status: "idle" });
-          void this.record(sessionId, "portal_status", { status: "idle" });
-        }
         void this.harvest(sessionId);
         void this.recordUsage(sessionId);
-        // A turn that ended holding a plan with steps left is the trigger for
-        // working it, one isolated context per step — see step-runner.ts.
-        // Fire-and-forget, like everything else here: the run belongs to the
-        // server, so a browser that disconnects mid-plan loses nothing.
-        void this.workPlan(sessionId);
+        /**
+         * One owner for the idle transition.
+         *
+         * This used to settle the session here and *then* start the plan, so
+         * between the two there was a window in which a session with three
+         * sections left to write reported itself finished. Anything polling
+         * status saw it — the UI, and a test waiting for the run to settle,
+         * which settled at the first step every time.
+         *
+         * `afterTurn` decides instead: it either drives the rest of the plan,
+         * keeping the session running throughout, or settles it. Nothing else
+         * writes idle at the end of a turn.
+         */
+        void this.afterTurn(sessionId);
       }
     });
 

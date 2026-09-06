@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isArtefact } from "../artefacts.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -631,7 +632,16 @@ export function guardExtension(
       if (workspace && (event.toolName === "write" || event.toolName === "edit")) {
         const raw = target(event.input ?? {});
         const resolved = raw ? path.resolve(cwd ?? process.cwd(), raw) : "";
-        if (resolved && !within(resolved, workspace) && !within(resolved, agentHome())) {
+        /**
+         * The shared artefact store is writable from any session, on purpose.
+         *
+         * Same shape as the skills directory, which has always worked this way:
+         * a place outside any one workspace where the agent's finished work
+         * accumulates, so a second run at the same thing edits what exists
+         * instead of producing a near-duplicate in a throwaway directory. See
+         * artefacts.ts for what that concedes and what bounds it.
+         */
+        if (resolved && !within(resolved, workspace) && !within(resolved, agentHome()) && !isArtefact(resolved)) {
           note("refused", "Outside this session's workspace");
           return {
             block: true,

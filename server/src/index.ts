@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { ARTEFACTS_DIR, ensureArtefactRepo } from "./artefacts.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -776,8 +777,14 @@ if (adopted.length) {
 const renamed = await stopIdentityNamingFiles();
 if (renamed > 0) console.log(`[portal] repaired ${renamed} identity document(s) that described themselves as files`);
 
+// The shared store where finished work accumulates, and its git history — see
+// artefacts.ts. Made at boot so the first run to plan a document does not also
+// have to be the one that discovers the directory is missing.
+ensureArtefactRepo();
+
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`phenoixclaw listening on :${PORT}`);
+  console.log(`  artefacts: ${ARTEFACTS_DIR}`);
   console.log(`  local bin: ${BIN_DIR}`);
   console.log(`  executor: ${EXECUTOR_KIND}`);
   console.log(`  workspaces: ${WORKSPACE_ROOT}`);

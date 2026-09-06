@@ -1,4 +1,13 @@
 import { Type } from "typebox";
+import {
+  artefactHistory,
+  artefactPath,
+  commitArtefact,
+  isArtefact,
+  readArtefactPlan,
+  writeArtefactPlan,
+} from "../artefacts.js";
+import { priorWork } from "./prior-work.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -346,6 +355,43 @@ function currentSection(tasks: TaskRow[]): TaskRow | undefined {
   return tasks.find((t) => t.status === "running") ?? tasks.find((t) => t.status === "pending");
 }
 
+/**
+ * A session workspace nobody chose.
+ *
+ * `/workspaces/session-<id>` is made for one conversation and outlives nothing.
+ * A workspace a person created and named is a different thing and keeps its
+ * files where they put them.
+ */
+function isEphemeral(cwd: string): boolean {
+  return /(^|\/)session-[A-Za-z0-9_-]+\/?$/.test(path.resolve(cwd));
+}
+
+/** The request this session is serving, which names the work in the store. */
+async function lastRequestOf(sessionId: string): Promise<string> {
+  try {
+    const rows = await eventsSince(sessionId, 0, 2000);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].type !== "portal_prompt") continue;
+      const message = JSON.parse(rows[i].payload)?.message;
+      if (typeof message === "string" && message.trim()) return message;
+    }
+  } catch {
+    /* an unnamed piece of work still gets a home, just a duller one */
+  }
+  return "";
+}
+
+/** Keep the sidecar in step with the plan, so the next run can adopt it. */
+async function saveArtefactPlan(sessionId: string, file: string): Promise<void> {
+  if (!isArtefact(file)) return;
+  const tasks = await listTasks(sessionId);
+  writeArtefactPlan(file, {
+    goal: await lastRequestOf(sessionId),
+    updatedAt: new Date().toISOString(),
+    sections: tasks.map((t) => ({ description: t.description, status: t.status, result: String(t.result ?? "") })),
+  });
+}
+
 export function writingTools(sessionId: string | undefined, cwd: string) {
   return (pi: any): void => {
     if (!sessionId) return;
@@ -421,8 +467,82 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
           );
         }
 
-        const target = path.isAbsolute(file) ? file : path.join(cwd, file);
+        /**
+         * Where a planned document belongs.
+         *
+         * An absolute path, or a relative one inside a workspace somebody
+         * chose, is exactly where it says. A relative path in an *ephemeral*
+         * session workspace is not: that directory exists for the length of
+         * one conversation, so the document written there is thrown away and
+         * the next run at the same request writes it again from nothing. Those
+         * go to the shared store, where a second run finds the first — see
+         * artefacts.ts.
+         */
+        const goal = await lastRequestOf(sessionId);
+        /**
+         * Which file this run opens.
+         *
+         * Recall first, because "is this the same work?" is a semantic
+         * question and `workSlug` cannot answer it — it names a *new* artefact
+         * after its file, which is predictable but blind to wording. The
+         * embedding search in prior-work.ts is what actually recognises that
+         * this request has been served before, whatever words it used, and
+         * hands back the file that answered it.
+         */
+        let target: string;
+        if (path.isAbsolute(file)) {
+          target = file;
+        } else if (isEphemeral(cwd)) {
+          const prior = p?.overwrite === true ? undefined : await priorWork(goal, cwd);
+          target =
+            prior && isArtefact(prior.file) && path.basename(prior.file) === path.basename(file)
+              ? prior.file
+              : artefactPath(goal, file);
+        } else {
+          target = path.join(cwd, file);
+        }
         mkdirSync(path.dirname(target), { recursive: true });
+
+        /**
+         * Continuing an artefact rather than appending a second copy under it.
+         *
+         * The sidecar holds the sections the last run wrote and where each
+         * landed. Adopted, they become this session's plan, so the model can
+         * read and revise them; without it a run opening an existing artefact
+         * has the text and no idea what its parts are, and `write_next`
+         * cheerfully appends a whole second document underneath the first.
+         */
+        const carried = p?.overwrite === true ? undefined : readArtefactPlan(target);
+        if (carried?.sections.length && existsSync(target)) {
+          await updateSession(sessionId, { writing_file: target });
+          await clearTasks(sessionId);
+          const existingNames = carried.sections.map((sec) => sec.description);
+          const added = sections.filter((s: string) => !existingNames.includes(s));
+          await setTasks(sessionId, [...existingNames, ...added]);
+          for (const sec of carried.sections) {
+            const seq = existingNames.indexOf(sec.description) + 1;
+            // The sidecar is a file on disk and may have been edited by hand;
+            // an unrecognised status is treated as unwritten rather than
+            // trusted into the plan.
+            const status = (["pending", "running", "done", "failed"] as const).find((x) => x === sec.status) ?? "pending";
+            await setTaskStatus(sessionId, seq, status, sec.result);
+          }
+          const history = artefactHistory(target, 5);
+          return said(
+            `This already exists — you wrote it before, and it is still here:\n\n${target}\n\n` +
+              `${render(await listTasks(sessionId))}\n\n` +
+              (history.length ? `Its history:\n${history.map((h) => `  ${h}`).join("\n")}\n\n` : "") +
+              `Do not start it again. Read what is there with \`read_section\`, change what is wrong ` +
+              `with \`write_revise\`` +
+              (added.length
+                ? `, and write the ${added.length} new section(s) with \`write_next\`.`
+                : `. Every section it planned is already written — if nothing needs changing, say so.`) +
+              `\n\nThis is the point of keeping it: the second attempt improves the first rather than ` +
+              `producing a second copy of it.`,
+            { planned: added.length > 0 },
+          );
+        }
+
         if (p?.overwrite === true || !existsSync(target)) writeFileSync(target, "", "utf8");
 
         await updateSession(sessionId, { writing_file: target });
@@ -516,6 +636,8 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         // makes read_section and write_revise possible at all.
         const start = existing.length + separator.length;
         await setTaskStatus(sessionId, pending.seq, "done", spanResult({ start, end: start + content.length }));
+        await saveArtefactPlan(sessionId, file);
+        commitArtefact(file, `wrote ${pending.description}`);
 
         const left = (await listTasks(sessionId)).filter(
           (t: TaskRow) => t.status === "pending" || t.status === "running",
@@ -734,6 +856,9 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
             await setTaskStatus(sessionId, other.seq, other.status, spanResult({ start: s.start + delta, end: s.end + delta }));
           }
         }
+
+        await saveArtefactPlan(sessionId, file);
+        commitArtefact(file, `revised ${task.description}`);
 
         const language = languageOf(file);
         const syntax = language?.check?.(file);
