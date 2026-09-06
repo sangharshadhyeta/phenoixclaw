@@ -19,7 +19,7 @@ import {
 import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
-import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors, inviteNameChoice } from "./identity.js";
+import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors, inviteNameChoice, adoptDiskEdits } from "./identity.js";
 import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { mainConversation } from "./mirror.js";
@@ -702,6 +702,19 @@ void trimEventLog()
 // inviteNameChoice.
 if (await inviteNameChoice()) {
   console.log("[portal] the agent was named after the portal; it has been asked to choose its own");
+}
+
+/**
+ * A person editing the readable mirror expects that to mean something.
+ *
+ * Checked at boot rather than continuously: an identity document is not edited
+ * often, and watching five files for changes is machinery earning nothing most
+ * of the time. Restart to apply is a reasonable contract for a file you edit by
+ * hand once a month.
+ */
+const adopted = await adoptDiskEdits();
+if (adopted.length) {
+  console.log(`[portal] adopted disk edits to ${adopted.join(", ")}`);
 }
 
 const renamed = await stopIdentityNamingFiles();

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { agentHome } from "./agent.js";
 import { getNode, upsertNode } from "./graph.js";
@@ -225,6 +225,58 @@ export async function inviteNameChoice(): Promise<boolean> {
 
   await writeIdentity("SOUL.md", `${soul.trimEnd()}\n${invitation}`);
   return true;
+}
+
+/**
+ * Take back an identity document a person edited on disk.
+ *
+ * The mirror exists so these stay human-readable and git-diffable, and the
+ * obvious thing to do with a readable file is edit it. Until now that edit was
+ * silently ignored — the graph is the source, so the change sat on disk
+ * looking applied and changed nothing about how the agent behaved. The guard
+ * catches a *tool* writing there and redirects it to identity_update; a person
+ * with an editor gets no such message.
+ *
+ * So a mirror newer than its node is read back in. Compared against the node's
+ * `last_seen`, which writeIdentity sets on every write, so the file is newer
+ * only if something outside the portal touched it after the portal last did.
+ *
+ * One-directional on purpose: newer-on-disk wins, and a node newer than its
+ * file simply rewrites the file, which writeIdentity already does. There is no
+ * merge here and there should not be — two edits to the same document from two
+ * places is a conflict a person has to settle, and quietly picking one is how
+ * work disappears.
+ */
+export async function adoptDiskEdits(): Promise<string[]> {
+  const adopted: string[] = [];
+  for (const name of IDENTITY_FILES) {
+    const file = diskPath(name);
+    if (!existsSync(file)) continue;
+
+    let mtime: number;
+    let disk: string;
+    try {
+      mtime = statSync(file).mtimeMs;
+      disk = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (!disk.trim()) continue;
+
+    const node = await getNode(KEY[name]);
+    // No node yet: migrateIdentityFromDisk's job, not this one.
+    if (!node) continue;
+    if (disk === node.summary) continue;
+
+    const nodeTime = new Date(node.last_seen).getTime();
+    // A second of slack: writeIdentity writes the file and the node moments
+    // apart, and filesystem timestamps are coarser than the database's.
+    if (!Number.isFinite(nodeTime) || mtime <= nodeTime + 1000) continue;
+
+    await upsertNode(KEY[name], "anchor", disk, 1.0);
+    adopted.push(name);
+  }
+  return adopted;
 }
 
 /** Graph first; disk is only a fallback for the instant before migration has run. */
