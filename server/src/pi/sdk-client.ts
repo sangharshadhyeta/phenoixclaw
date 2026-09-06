@@ -21,6 +21,7 @@ import { writingTools } from "./writing-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
 import { temporalContext } from "./temporal-context.js";
+import { samplingDefaults } from "./sampling.js";
 import { contextAssembler } from "./context-assembler.js";
 import { historyTools } from "./history-tools.js";
 import { cachedTools } from "./cached-tools.js";
@@ -598,6 +599,13 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // went looking through the filesystem for something already in memory.
         // What day it is, every turn. Registered before the memory injector so
         // "today" is established before anything recalled is dated against it.
+        /**
+         * Anti-repetition at the sampler, before anything else touches the
+         * payload. llama.cpp ships with every repetition control disabled, and
+         * the loops that produced "I'll just say Paris" forty times had nothing
+         * pushing against them — see sampling.ts. Local providers only.
+         */
+        { name: "sampling", factory: samplingDefaults(pi.getAgentDir(), opts.provider) },
         { name: "temporal", factory: temporalContext() },
         { name: "memory-injector", factory: memoryInjector(opts.cwd, opts.role, opts.sessionId) },
         // Assembles each request from the system prompt, what the injector
