@@ -16,7 +16,7 @@
     "docs:build": "npm run build -w docs",
     "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs",
     "test:prune": "node server/test/prune-contract.mjs",
-    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard && npm run test:trust && npm run test:self-update && npm run test:injector && npm run test:harvest && npm run test:assembler && npm run test:temporal && npm run test:executor",
+    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard && npm run test:trust && npm run test:self-update && npm run test:injector && npm run test:harvest && npm run test:assembler && npm run test:temporal && npm run test:executor && npm run test:curation",
     "test:web": "node server/test/web-contract.mjs",
     "test:symbols": "node server/test/code-index-contract.mjs",
     "test:llm": "node server/test/llm-contract.mjs",
@@ -29,6 +29,7 @@
     "test:harvest": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/harvest-contract.mjs",
     "test:assembler": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/assembler-contract.mjs",
     "test:temporal": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/temporal-contract.mjs",
-    "test:executor": "node server/test/executor-contract.mjs"
+    "test:executor": "node server/test/executor-contract.mjs",
+    "test:curation": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node --env-file-if-exists=.env server/test/curation-contract.mjs"
   }
 }

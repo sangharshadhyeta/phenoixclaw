@@ -49,14 +49,14 @@ export async function rememberUser(fact: string, category: UserCategory = "facts
     const known = normalise(existing.summary);
     if (known.includes(key) || key.includes(known)) {
       // Re-observed: worth strengthening, not worth storing twice.
-      await upsertNode(existing.name, "user", existing.summary, undefined, { category });
+      await upsertNode(existing.name, "user", existing.summary, undefined, { category, source: "primary-user" });
       return `Already known: "${existing.summary}"`;
     }
   }
 
   // Named by content so the same fact arriving twice lands on the same node
   // even across sessions — the graph's own identity rule, applied here.
-  await upsertNode(`user:${key.slice(0, 80)}`, "user", text, undefined, { category });
+  await upsertNode(`user:${key.slice(0, 80)}`, "user", text, undefined, { category, source: "primary-user" });
   return `Remembered (${category}): "${text}"`;
 }
 

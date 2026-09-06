@@ -300,7 +300,9 @@ export async function harvestTurn(
    * and the relations between them, and links them back here.
    */
   const name = nodeNameFor(session);
-  await upsertNode(name, "episode", summary, HARVEST_CONFIDENCE);
+  await upsertNode(name, "episode", summary, HARVEST_CONFIDENCE, {
+    source: session.kind === "routine" ? `routine:${session.routine_slug}` : `session:${session.id}`,
+  });
 
   // What they said about themselves goes where it is always read, not only
   // where it can be searched — see harvestPersonalFacts.

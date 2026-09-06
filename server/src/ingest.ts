@@ -196,7 +196,10 @@ export async function ingestText(
       const mapped = TYPE_MAP[asString(e.type).toLowerCase()] ?? "concept";
       const type: NodeType = mapped === "user" ? "concept" : mapped;
       const summary = asString(e.summary) || name;
-      await upsertNode(name, type, summary, 0.4);
+      // Provenance travels with the claim, not just as an edge: `sources` is
+      // what makes a belief re-checkable rather than merely traceable, and it
+      // survives the node being recalled on its own.
+      await upsertNode(name, type, summary, 0.4, { source });
       await linkToSource(sourceNode, name);
       entityCount++;
 
@@ -208,7 +211,7 @@ export async function ingestText(
         // The target may not have been extracted as an entity in its own
         // right. Created thinly rather than dropped: a relation pointing at
         // nothing is worse than a node with only a name.
-        await upsertNode(target, "concept", target, 0.3);
+        await upsertNode(target, "concept", target, 0.3, { source });
         await upsertEdge(name, relation, target);
         relationCount++;
       }

@@ -66,7 +66,12 @@ export function graphTools(cwd: string, reflective = true, sessionId?: string) {
       async execute(_id: string, p: any) {
         const name = String(p.name ?? "").trim();
         if (!name) throw new Error("Nothing to remember — no name given.");
-        await upsertNode(name, p.type as NodeType, String(p.summary ?? "").trim());
+        // "the agent concluded this" — distinguishable later from "the person
+        // said it" and from "a page said it", which is the whole point of
+        // keeping sources at all.
+        await upsertNode(name, p.type as NodeType, String(p.summary ?? "").trim(), undefined, {
+          source: "agent-conclusion",
+        });
         for (const r of Array.isArray(p.relations) ? p.relations : []) {
           const relation = String(r?.relation ?? "").trim();
           const target = String(r?.target ?? "").trim();

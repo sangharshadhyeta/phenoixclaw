@@ -410,6 +410,9 @@ export async function closeGraph(): Promise<void> {
   }
 }
 
+/** The live connection, for contracts that need to age a row to test decay. */
+export const __conn = getConn;
+
 /** Same identity rule as Sisyphean's `_node_key()` — a node's name, normalized, is its id. */
 export const normalizeName = (name: string): string => name.trim().toLowerCase();
 
@@ -442,21 +445,32 @@ const DEDUP_SIMILARITY = 0.93;
 const DEDUP_TYPES = "('concept', 'fact', 'skill')";
 
 /**
- * The node an incoming label is really about, if one already exists.
+ * The node an incoming claim is really about, if one already exists.
  *
  * Deduplication was exact-name-only, so "Gemma model" and "the Gemma model"
  * accumulated as two nodes that would never merge and — before decay existed —
  * never fade either. Both then corroborated separately, so the graph grew more
  * confident about a thing it could not tell was one thing.
  *
- * Needs embeddings, and returns nothing without them rather than guessing from
- * string overlap: "Qdrant client" and "Qdrant server" are close as text and are
- * not the same subject.
+ * Compared against the *same text* upsertNode embeds — `name: summary`, not the
+ * bare name. The first version probed with the label alone against stored
+ * vectors of label-plus-summary, which is comparing unlike things: real
+ * duplicates measured 0.98 label-to-label and well under the threshold once the
+ * summary was on one side only, so nothing ever merged and the feature looked
+ * like it worked. It takes the vector upsertNode has already computed, so this
+ * costs no extra call.
+ *
+ * Needs embeddings and returns nothing without them, rather than guessing from
+ * string overlap: measured against this embedder, "Qdrant server" and "Qdrant
+ * client" sit at 0.88 — close as text, different subjects — where genuine
+ * duplicates sit at 0.98. The threshold lives in that gap.
  */
-async function existingSynonym(name: string, type: NodeType): Promise<string | undefined> {
-  if (!DEDUP_TYPES.includes(`'${type}'`)) return undefined;
-  const vec = await embedText(name);
-  if (!vec) return undefined;
+async function existingSynonym(
+  vec: number[] | undefined,
+  name: string,
+  type: NodeType,
+): Promise<string | undefined> {
+  if (!DEDUP_TYPES.includes(`'${type}'`) || !vec) return undefined;
 
   const conn = await getConn();
   const reader = await conn.runAndReadAll(
@@ -483,6 +497,10 @@ export async function upsertNode(
   let id = normalizeName(name);
   let existing = await getNode(name);
 
+  // Embedded first, so the same vector serves both the duplicate probe below
+  // and the row itself. Two uses, one call.
+  const probe = !existing && summary ? await embedText(`${name}: ${summary}`) : undefined;
+
   /**
    * Before creating a node, check whether it is one we already have under a
    * slightly different label — see existingSynonym. Only for genuinely new
@@ -490,7 +508,7 @@ export async function upsertNode(
    * an embedding call on every corroboration.
    */
   if (!existing) {
-    const synonym = await existingSynonym(name, type);
+    const synonym = await existingSynonym(probe, name, type);
     if (synonym) {
       const reader = await conn.runAndReadAll("SELECT * FROM nodes WHERE id = $id", { id: synonym });
       const row = (reader.getRowObjectsJson() as unknown as NodeRow[])[0];
@@ -502,7 +520,7 @@ export async function upsertNode(
   }
   // Only worth re-embedding when the summary actually changes — same text
   // embedded twice wastes a round trip to the embedding server for nothing.
-  const embedding = summary ? await embedText(`${name}: ${summary}`) : undefined;
+  const embedding = probe ?? (summary ? await embedText(`${name}: ${summary}`) : undefined);
   const embeddingParam = embedding ? arrayValue(embedding) : null;
   const category = extra?.category ?? null;
   // Unioned rather than replaced: two sources agreeing is the evidence the
@@ -847,6 +865,27 @@ const SCOPE_BONUS = (alias: string) => `(CASE WHEN EXISTS (
      ) THEN 1.0 ELSE 0.85 END)`;
 
 /**
+ * Fresher memory ranks above staler memory of equal strength.
+ *
+ * Confidence says how well established something is; it says nothing about
+ * whether it is still current. Without this a fact recorded in March and never
+ * revisited outranks one from yesterday purely because it had been corroborated
+ * more often back when it was being discussed — which is exactly backwards for
+ * anything that changes.
+ *
+ * A gentle curve, not a cliff: full weight for a fortnight, then easing toward
+ * 0.6 over a quarter and never below it. Old is not wrong, and a settled fact
+ * from a year ago should still surface when nothing newer speaks to the
+ * question — it just should not beat something fresher that does.
+ *
+ * Separate from decay, which lowers the stored confidence of things nobody
+ * re-observes. This only reorders what a search returns and changes nothing on
+ * disk, so a search ordering can be tuned without rewriting the graph's beliefs.
+ */
+const RECENCY_BONUS = (alias: string) =>
+  `greatest(0.6, 1.0 - (date_diff('day', ${alias}.last_seen, now()) - 14) * 0.005)`;
+
+/**
  * What the memory injector searches: everything the person could reasonably
  * expect to be remembered, ranked with the current project first.
  */
@@ -911,7 +950,7 @@ export async function personalRecall(query: string, cwd: string, limit = 10): Pr
          SELECT *, array_cosine_similarity(embedding, $q) AS sim FROM nodes WHERE embedding IS NOT NULL
        ) n
        WHERE sim > 0.3 AND ${SOFT_SCOPE("n")}
-       ORDER BY sim * confidence * ${SCOPE_BONUS("n")} DESC
+       ORDER BY sim * confidence * ${SCOPE_BONUS("n")} * ${RECENCY_BONUS("n")} DESC
        LIMIT $limit`,
       { q: arrayValue(queryVec), projectId, limit },
       { q: ARRAY(FLOAT, EMBEDDING_DIM) },
@@ -926,7 +965,7 @@ export async function personalRecall(query: string, cwd: string, limit = 10): Pr
        SELECT *, fts_main_nodes.match_bm25(id, $query) AS score FROM nodes
      ) n
      WHERE score IS NOT NULL AND ${SOFT_SCOPE("n")}
-     ORDER BY score * confidence * ${SCOPE_BONUS("n")} DESC
+     ORDER BY score * confidence * ${SCOPE_BONUS("n")} * ${RECENCY_BONUS("n")} DESC
      LIMIT $limit`,
     { query, projectId, limit },
   );
