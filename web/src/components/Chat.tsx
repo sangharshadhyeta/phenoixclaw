@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { api, type PiCommand, type PortalEvent, type Session } from "../api";
-import { buildTranscript } from "../transcript";
+import { buildTranscript, type Item } from "../transcript";
 import { ComposerBar } from "./ComposerBar";
 import { TaskPanel } from "./TaskPanel";
 
@@ -62,6 +62,65 @@ function ContextChip({ label, body }: { label: string; body: string }) {
         </pre>
       )}
     </>
+  );
+}
+
+/**
+ * A run of work from one other session, collapsed to a single line.
+ *
+ * Open by default when it is short and shut when it is long: a two-line thread
+ * costs nothing to show, and a forty-line one is what buries the conversation.
+ * The summary line always says what the session was asked to do when that is
+ * known, because it is the one line that explains the rest.
+ */
+function Thread({ item }: { item: Extract<Item, { kind: "thread" }> }) {
+  const asked = item.items.find((i) => i.mode === "asked");
+  const long = item.items.length > 4;
+  const [open, setOpen] = useState(!long);
+
+  return (
+    <div className="border-l-2 border-line pl-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-baseline gap-2 py-0.5 text-left text-[11px] text-fg-subtle hover:text-fg-muted"
+      >
+        <span className="shrink-0 font-medium">
+          {open ? "▾" : "▸"} {item.source}
+        </span>
+        <span className="min-w-0 truncate text-fg-faint">
+          {asked ? asked.text : `${item.items.length} steps`}
+        </span>
+        {!open && (
+          <span className="ml-auto shrink-0 text-fg-faint">{item.items.length}</span>
+        )}
+      </button>
+      {open && (
+        <div className="pb-0.5">
+          {item.items.map((line) => {
+            const prose = line.mode === "asked" || line.mode === "said";
+            return (
+              <div key={line.id} className="flex gap-2 py-0.5 text-[11px] text-fg-faint">
+                <span className="shrink-0 text-fg-subtle">
+                  {line.phase === "start"
+                    ? "▸"
+                    : line.phase === "end"
+                      ? "■"
+                      : line.mode === "asked"
+                        ? "▹"
+                        : line.mode === "said"
+                          ? "◂"
+                          : "·"}
+                </span>
+                <span className={prose ? "min-w-0 whitespace-pre-wrap" : "min-w-0 truncate"}>
+                  {line.text}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -284,6 +343,7 @@ export function Chat({
               </div>
             );
           }
+          if (item.kind === "thread") return <Thread key={item.id} item={item} />;
           return (
             <div
               key={item.id}

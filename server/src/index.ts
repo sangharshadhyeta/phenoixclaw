@@ -21,6 +21,7 @@ import { runWizard, type WizardInput } from "./agent-setup.js";
 import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles, relocateMirrors } from "./identity.js";
 import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
+import { mainConversation } from "./mirror.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
 import { extensionsRouter } from "./api/extensions.js";
@@ -171,6 +172,23 @@ app.get("/api/sessions", async (_req, res) => {
  * transcript, same replay, same model handling — so the Agent tab opens them
  * with the ordinary chat view rather than a parallel implementation.
  */
+/**
+ * The agent's own conversation — the one the mirror writes into.
+ *
+ * Created here if it does not exist yet. It is otherwise made lazily, the first
+ * time something is mirrored into it, so a fresh install landing on "/" would
+ * find nothing to open and fall back to whatever task session happened to be
+ * most recent. That is the old behaviour, and it puts the least interesting
+ * session in front of the person by default.
+ */
+app.get("/api/agent/main", async (_req, res) => {
+  try {
+    res.json({ id: await mainConversation(EXECUTOR_KIND) });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 app.get("/api/agent/sessions", async (_req, res) => {
   const conn = await getDb();
   const reader = await conn.runAndReadAll("SELECT id, slug, name, kind FROM channels");

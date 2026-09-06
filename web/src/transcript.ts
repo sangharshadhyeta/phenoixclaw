@@ -18,7 +18,16 @@ export type Item =
       text: string;
       phase?: "start" | "end";
       mode?: "tool" | "said" | "asked";
-    };
+    }
+  /**
+   * A run of consecutive lines from one other session, folded into one entry.
+   *
+   * Without this the main conversation is a flat interleave: three sessions
+   * working at once produce lines that alternate between them, and following
+   * any single thread means reading past the other two. Grouping restores the
+   * thread while keeping the one-stream view the mirror is for.
+   */
+  | { kind: "thread"; id: string; source: string; items: Extract<Item, { kind: "self" }>[] };
 
 /**
  * Fold pi's event stream into renderable turns.
@@ -171,7 +180,41 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
   }
 
   // Anything still open belongs to a run in flight.
-  return items;
+  return group(items);
+}
+
+/**
+ * Fold consecutive `self` lines from the same source into one thread.
+ *
+ * Only consecutive ones: a run interrupted by something you said, or by another
+ * session, starts a new group. That keeps the ordering honest — a thread here
+ * means "these happened together", not "these happened at some point".
+ *
+ * A single line is left alone. Wrapping one mirrored tool call in a collapsible
+ * header costs a click and saves nothing.
+ */
+function group(items: Item[]): Item[] {
+  const out: Item[] = [];
+  let run: Extract<Item, { kind: "self" }>[] = [];
+
+  const flush = () => {
+    if (!run.length) return;
+    if (run.length === 1) out.push(run[0]);
+    else out.push({ kind: "thread", id: `t${run[0].id}`, source: run[0].source, items: run });
+    run = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === "self" && (!run.length || run[0].source === item.source)) {
+      run.push(item);
+      continue;
+    }
+    flush();
+    if (item.kind === "self") run.push(item);
+    else out.push(item);
+  }
+  flush();
+  return out;
 }
 
 function summarizeToolInput(p: any): string | undefined {

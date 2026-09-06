@@ -302,6 +302,9 @@ export const api = {
   agentSessions: () =>
     json<{ sessions: AgentSession[]; agentHome: string }>("/api/agent/sessions"),
 
+  /** The agent's own conversation — created on first ask, so this never 404s. */
+  mainConversation: () => json<{ id: string }>("/api/agent/main"),
+
   pinSession: (id: string, pinned: boolean) =>
     json<Session>(`/api/sessions/${id}`, {
       method: "PATCH",

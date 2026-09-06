@@ -90,12 +90,29 @@ function Shell({
 
   useEffect(() => {
     refreshSessions()
-      .then((list) => {
-        // Landing on "/" opens the most recent session — but only "/". The
-        // Sessions and Agents pages have no sessionId either, and without the
-        // view check they were redirected away the moment they loaded.
-        if (!sessionId && !settings && view === "chat" && list[0]) {
-          navigate(`/s/${list[0].id}`, { replace: true });
+      .then(async (list) => {
+        // Only "/" redirects. The Sessions and Agents pages have no sessionId
+        // either, and without the view check they were redirected away the
+        // moment they loaded.
+        if (sessionId || settings || view !== "chat") return;
+
+        /**
+         * Land in the agent's own conversation, not the newest task.
+         *
+         * That conversation is where everything the agent does now shows up —
+         * routines on their own initiative and task sessions alike (see
+         * mirror.ts). Opening the most recent task instead put the narrowest
+         * view in front of you by default and left the whole picture somewhere
+         * you had to go looking for.
+         *
+         * Falls back to the newest task if the main conversation cannot be
+         * reached, because landing somewhere is better than landing nowhere.
+         */
+        try {
+          const { id } = await api.mainConversation();
+          navigate(`/s/${id}`, { replace: true });
+        } catch {
+          if (list[0]) navigate(`/s/${list[0].id}`, { replace: true });
         }
       })
       .catch((e) => setError(String(e)));
