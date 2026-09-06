@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (f) => path.join(here, "..", "dist", f);
 const { taskSessionTools, workspaceFor, briefIsUsable } = await import(dist("pi/task-session-tools.js"));
-const { getSession } = await import(dist("db.js"));
+const { getSession, createSession } = await import(dist("db.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -100,6 +100,26 @@ const call = async (name, args) => (await tools[name].execute("id", args)).conte
   const listing = await call("tasks_running", {});
   ok("started work is listed", /write the parser/.test(listing));
   ok("with its id, so it can be opened", /child1/.test(listing));
+  ok("separated by a real newline, not the two characters backslash-n",
+     listing.includes("\n") && !listing.includes("\\n"));
+  ok("the legend is printed with the data",
+     /finished.*still running.*failed/.test(listing));
+}
+
+// --- two tasks with the same title must not read as one entry --------------
+// Watched happen live: `tasks_running` correctly reported one task finished
+// (done) and one still running, joined by a literal two-character backslash-n
+// rather than an actual newline — so a small model reading the squashed
+// result answered that the finished one "is still showing as running,"
+// directly contradicting the mark it had just been handed.
+{
+  await createSession({ id: "child2", title: "write the parser", workspace: workspaceFor(root, "child2"),
+    executor: "host", started_by: "parent" });
+  const listing = await call("tasks_running", {});
+  const lines = listing.split("\n").filter((l) => l.trim());
+  ok("each task is its own line", lines.some((l) => l.includes("child1")) &&
+     lines.some((l) => l.includes("child2")) &&
+     lines.find((l) => l.includes("child1")) !== lines.find((l) => l.includes("child2")));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -212,8 +212,27 @@ export function taskSessionTools(deps: TaskSessionDeps) {
         const line = (s: (typeof rows)[number]) =>
           `${s.status === "running" ? "▸" : s.status === "error" ? "✗" : "✓"} ${s.title} (${s.id})` +
           (s.status === "error" && s.last_error ? ` — ${s.last_error.slice(0, 120)}` : "");
+        /**
+         * A real newline, and the legend printed with the data.
+         *
+         * `join("\\n")` — a literal backslash and the letter n, not a newline
+         * — squashed every entry onto one line: two same-titled tasks read as
+         * `✓ Arithmetic calculation (FgaTBKv5xG0o)\n✓ Arithmetic calculation
+         * (b2YToQRz3Ncp)`, one run of text with no visual separation between
+         * which checkmark belonged to which id. Watched happen live: the turn
+         * that read this then answered that the *finished* one "is still
+         * showing as running" — directly contradicting the ✓ it had just been
+         * handed, in exactly the shape a squashed list invites. The legend is
+         * printed here, next to the symbols, rather than left in the tool's
+         * own description a turn reads once at the top of the conversation.
+         */
         return {
-          content: [{ type: "text" as const, text: rows.slice(-12).map(line).join("\\n") }],
+          content: [
+            {
+              type: "text" as const,
+              text: `${rows.slice(-12).map(line).join("\n")}\n\n(✓ finished, ▸ still running, ✗ failed)`,
+            },
+          ],
           details: {},
         };
       },
