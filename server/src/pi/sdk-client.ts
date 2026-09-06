@@ -15,6 +15,7 @@ import { skillTools } from "./skill-tools.js";
 import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
+import { writingTools } from "./writing-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
 import { temporalContext } from "./temporal-context.js";
@@ -509,6 +510,9 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // are the same shape, and neither is a routine.
       if (opts.sessionId) {
         factories.push({ name: "tasks", factory: taskTools(opts.sessionId) });
+        // Writing something long, one section at a time — see writing-tools.ts
+        // for why that is better than one large call even for a capable model.
+        factories.push({ name: "writing", factory: writingTools(opts.sessionId, opts.cwd) });
       }
       /**
        * Tools about the agent *itself* go to conversations with the agent —

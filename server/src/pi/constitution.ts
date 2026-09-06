@@ -110,6 +110,13 @@ export const AUTONOMOUS_TOOLS = new Set([
   "task_list",
   "task_start",
   "task_finish",
+  // Writing something long, a section at a time. The same reasoning as
+  // skill_write: it produces one artefact in a place the turn already chose,
+  // and the alternative is one large `write` that an autonomous turn may not
+  // call at all.
+  "write_plan",
+  "write_next",
+  "write_skip",
   // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
   // directory, and it cannot replace a skill a person wrote.
   "skill_write",
