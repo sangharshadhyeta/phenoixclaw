@@ -88,3 +88,30 @@ grace timer (a run belongs to the server; the SSE cursor replays); `BC-73` the T
 store (the graph's `summary` already expresses that split); `SIS-49` a loop shell (pi owns the loop);
 `SIS-62` the response assembler (`synthesisBrief` is its successor); `SIS-43` the consolidator
 (superseded inside Sisyphean itself).
+
+---
+
+## Beyond the dropped rows
+
+The 30 above were the rows marked `DELIBERATELY DROPPED`. The inventories carry
+far more — 108 BirdClaw rows, 41 Sisyphean, 67 UI — and their statuses were
+taken before any of this work, so most of what they call MISSING or PARTIAL has
+since been built. Checked against the code rather than against the status
+column, this is what is genuinely left.
+
+| From | Idea | Note |
+| --- | --- | --- |
+| SIS-30 | Cluster isolated nodes | The graph accumulates nodes nothing links to. They are found by search and never by traversal, so they are half-remembered: present, and unreachable from anything else the agent knows. |
+| SIS-31 | Refine relations | Edges are written once, at extraction, at whatever confidence the moment suggested. Nothing revisits them when later evidence bears on one. |
+| SIS-74 | OpenAI Chat Completions passthrough | `/v1/messages` is built (SIS-73). The other dialect is the one most tools actually speak, and it is the same mapping onto the same session. |
+| UI-05 | Raw-event view and card verbosity | The transcript is rendered; the events behind it are only reachable through the API. |
+| UI-23 | Toasts for work that finishes off-screen | A run belongs to the server, so it finishes whether or not its tab is open — and nothing says so. |
+| UI-31 | Log tail | `/api/logs` does not exist; the server's own output is only visible on the host. |
+| UI-34 | Draggable pane splitters | |
+| UI-36 | Portal status strip — uptime, graph size, sessions | The health endpoint has all of it and nothing shows it. |
+| UI-38 | Graph purge | Deleting a node is possible through `graph_forget`, which is the agent's tool, not the operator's. |
+
+Verified built despite a MISSING or PARTIAL status: BC-09, BC-11, BC-13, BC-19,
+BC-21, BC-53, BC-59, BC-61, BC-62, BC-76, SIS-08, SIS-11, SIS-13, SIS-14,
+SIS-16, SIS-22, SIS-29, SIS-44, SIS-45, SIS-60, SIS-63, SIS-79, SIS-81, UI-19,
+UI-22, UI-37.
