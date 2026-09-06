@@ -249,6 +249,9 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "You have the answer now, so give it. But when something is going to take more than a couple",
       "of steps, hand it out first rather than working through it in the chat — the chat is where",
       "the result belongs, not the working.",
+      "",
+      "This is about next time. The work is done and the answer stands — give it and end the turn.",
+      "Do not start a session to redo what you have already got.",
     ].join("\n"),
   },
   {
@@ -279,7 +282,11 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "run, and is lost when this conversation is trimmed.",
       "",
       "Hand it out now. Write the brief for someone who cannot see what we have said — what to",
-      "build, and what counts as done.",
+      "build, and what counts as done. One `start_task` settles this; say what you have started",
+      "and end the turn.",
+      "",
+      "If it truly was a question rather than a piece of work — nothing to build, nothing to run",
+      "— say that plainly in a line and stop. Do not argue the point at length.",
     ].join("\n"),
   },
   {
@@ -323,6 +330,9 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
       "",
       "You are fluent enough that a wrong answer arrives with exactly the confidence of a right",
       "one. Neither you nor the person reading it can tell them apart; the shell can.",
+      "",
+      "One command that prints the number ends this. Do not run it a second way to be sure, and",
+      "if the figure turns out to be right, say so in a line and stop.",
     ].join("\n"),
     inConversation: {
       satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),

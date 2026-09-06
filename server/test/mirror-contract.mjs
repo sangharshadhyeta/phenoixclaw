@@ -117,6 +117,16 @@ ok("nor status changes", isMirrorable("portal_status") === false);
    * and delivered the answer was told it had answered without consulting
    * anything.
    */
+  /**
+   * A session that finished without saying anything still finished. Returning
+   * silently left the waiting conversation with no answer, no failure and no
+   * line in the transcript — indistinguishable from still working.
+   */
+  ok("a silent finish is reported rather than swallowed",
+     /const empty = !answer;/.test(mgr) &&
+     /finished without producing an answer/.test(mgr));
+  ok("and it is marked an error, not a result",
+     /session\.status === "error" \|\| empty \? "error" : "done"/.test(mgr));
   ok("and the delivery turn is not checked for having consulted nothing",
      /this\.delivering\.add\(target\);/.test(mgr) &&
      /if \(this\.delivering\.delete\(sessionId\)\) return false;/.test(mgr));

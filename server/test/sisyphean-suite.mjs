@@ -359,7 +359,22 @@ if (!PASSWORD) {
 }
 await api("/api/auth/login", { method: "POST", body: JSON.stringify({ password: PASSWORD }) });
 const chat = await api("/api/agent/main");
-console.log(`  conversation ${chat.id}\n`);
+console.log(`  conversation ${chat.id}`);
+
+/**
+ * Start from an empty conversation.
+ *
+ * A run that is interrupted leaves messages queued, and the next run reads
+ * one of those as its own answer — a rerun of "what is the square root of
+ * 144?" was checked against a reply about Python versions still owed from the
+ * previous attempt. The regimen builds a conversation over seventeen turns on
+ * purpose; it has to be *this* run's conversation.
+ */
+if (!args.includes("--keep")) {
+  await api(`/api/sessions/${chat.id}/prompt`, { method: "POST", body: JSON.stringify({ message: "/clear" }) });
+  await sleep(4000);
+  console.log("  cleared\n");
+} else console.log("");
 
 for (const test of REGIMEN) {
   if (only && !only.split(",").includes(test.id)) continue;

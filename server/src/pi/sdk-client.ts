@@ -652,7 +652,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
          * the loops that produced "I'll just say Paris" forty times had nothing
          * pushing against them — see sampling.ts. Local providers only.
          */
-        { name: "sampling", factory: samplingDefaults(pi.getAgentDir(), opts.provider) },
+        {
+          name: "sampling",
+          factory: samplingDefaults(pi.getAgentDir(), opts.provider, opts.thinkingLevel),
+        },
         { name: "temporal", factory: temporalContext() },
         // Identity is assembled into the system prompt once, at session
         // creation; this carries anything the agent has since concluded about

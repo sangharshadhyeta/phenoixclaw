@@ -165,6 +165,40 @@ export function providerIsLocal(agentDir: string, provider: string | undefined):
   }
 }
 
+/**
+ * Stop the model reasoning when nobody asked it to.
+ *
+ * This is a reasoning model, and its thinking comes out of the *same* token
+ * budget as its answer — the reason `llm.ts` already sends this flag for
+ * extraction calls. pi resolves a thinking level per session and clamps it to
+ * what the model supports, which for this one is `off`; nothing ever told
+ * llama.cpp. So the model deliberated on every turn regardless, and a task
+ * asked for the square root of 144 spent 8192 output tokens thinking, hit
+ * `finish_reason: length`, and produced no answer at all — the conversation
+ * waiting on it was never told anything, because there was nothing to tell.
+ *
+ * Measured on this server, same question, same everything else:
+ *
+ *     without the flag → finish_reason "length", 610 chars of reasoning, content ""
+ *     with the flag    → finish_reason "stop",   no reasoning,            content "12"
+ *
+ * Only when the level is `off`. Asking for thinking and then suppressing it
+ * would be worse than either — this makes the configured level true, it does
+ * not overrule it.
+ */
+export function withThinking(payload: unknown, thinkingLevel: string | undefined): unknown {
+  if (!isChatBody(payload)) return undefined;
+  if (thinkingLevel && thinkingLevel !== "off") return undefined;
+  const existing = (payload as { chat_template_kwargs?: Record<string, unknown> })
+    .chat_template_kwargs;
+  // An explicit value upstream wins, as everywhere else in this file.
+  if (existing && "enable_thinking" in existing) return undefined;
+  return {
+    ...payload,
+    chat_template_kwargs: { ...(existing ?? {}), enable_thinking: false },
+  };
+}
+
 /** True when this payload looks like a chat-completions body we can add to. */
 function isChatBody(payload: unknown): payload is Record<string, unknown> {
   if (typeof payload !== "object" || payload === null) return false;
@@ -184,9 +218,16 @@ export function withSampling(payload: unknown, sampling: Sampling = DEFAULT_SAMP
   return { ...payload, ...sampling };
 }
 
-export function samplingDefaults(agentDir: string, provider: string | undefined) {
+export function samplingDefaults(
+  agentDir: string,
+  provider: string | undefined,
+  thinkingLevel?: string,
+) {
   return (pi: any): void => {
     if (!providerIsLocal(agentDir, provider)) return;
-    pi.on("before_provider_request", async (event: any) => withSampling(event?.payload));
+    pi.on("before_provider_request", async (event: any) => {
+      const withDry = withSampling(event?.payload) ?? event?.payload;
+      return withThinking(withDry, thinkingLevel) ?? withDry;
+    });
   };
 }

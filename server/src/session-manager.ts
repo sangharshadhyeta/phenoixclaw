@@ -1722,7 +1722,27 @@ class SessionManager extends EventEmitter {
     } catch {
       return;
     }
-    if (!answer) return;
+    /**
+     * A session that finished without saying anything still finished.
+     *
+     * This used to return here, and the conversation that was waiting on the
+     * work was told nothing at all — no answer, no failure, no line in the
+     * transcript. Silence is indistinguishable from still working, so the
+     * chat sat there and the person had no way to tell which it was. It
+     * happens: asked for the square root of 144, a task spent its whole
+     * output budget reasoning, hit `finish_reason: length` and emitted no
+     * text (the cause of that is fixed in sampling.ts — this is what must
+     * happen when something like it occurs anyway).
+     *
+     * Reported as what it is. Whoever is waiting can then ask again, or look
+     * at the session, which does have the working in it.
+     */
+    const empty = !answer;
+    if (empty) {
+      answer =
+        `It finished without producing an answer — the working is in the session, but its ` +
+        `last turn produced no reply. Say so plainly, and offer to run it again.`;
+    }
 
     this.reported.add(sessionId);
     /**
@@ -1737,7 +1757,7 @@ class SessionManager extends EventEmitter {
     await this.mirrorToMain(sessionId, "portal_task_result", {
       title: session.title,
       sessionId,
-      status: session.status === "error" ? "error" : "done",
+      status: session.status === "error" || empty ? "error" : "done",
       text: answer,
     });
 

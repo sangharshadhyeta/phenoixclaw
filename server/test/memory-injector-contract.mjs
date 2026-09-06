@@ -153,5 +153,25 @@ const inject = mount(memoryInjector(CWD, "primary"));
   ok("and is still found in its own project", own.some((r) => r.type === "workspace_note"));
 }
 
+// --- a retrieved hit that does not fit must be droppable -------------------
+// A search returns what is near the question, not what answers it. Asked for
+// the square root of 144, the turn was handed a fact node named `25` left over
+// from an earlier 100/4 — and the block asserted that memory is yours and said
+// nothing about a miss. That is a contradiction the turn has to resolve before
+// it can answer: memory says 25, arithmetic says 12. It went round that for
+// eight thousand output tokens and never answered at all.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/pi/memory-injector.ts", import.meta.url), "utf8");
+  ok("the block admits some of it will not be about the question",
+     /some of it will simply not be about your question/.test(src));
+  ok("and says a miss is dropped rather than argued with",
+     /drop it and move on/.test(src));
+  ok("and that something just computed outranks a remembered number",
+     /wins, every time/.test(src));
+  ok("and that the turn must not be spent deciding",
+     /Do not spend the turn deciding/.test(src));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

@@ -199,6 +199,25 @@ export function arithmeticNote(message: string, conversational = false): string 
     "That is the whole problem with mental arithmetic here: you are fluent enough that a wrong",
     "answer arrives with exactly the confidence of a right one, and neither you nor the person",
     "reading it can tell them apart. `echo $((17*23))` can.",
+    "",
+    /**
+     * When this is done, it is done.
+     *
+     * The note said what to do and nothing about when it had been done, so a
+     * turn that had *already* run the command could not tell whether it had
+     * complied. Asked for the square root of 144 a session ran
+     * `echo "sqrt(144)" | bc -l`, read 12 back, and then spent eight thousand
+     * output tokens deliberating whether `bc` counted as "bash", whether
+     * `python3 -c` would be better, and rewriting the same candidate command
+     * sixty times until the budget ran out. It never answered.
+     *
+     * A rule with no completion condition is a rule that cannot be satisfied,
+     * and an unsatisfiable rule is where the loops come from. Any command that
+     * produced the number ends it.
+     */
+    "Any command that produces the number counts — `bash`, `bc`, `python3`, whichever is to",
+    "hand. Once one has run and printed an answer, this is satisfied: say the number and stop.",
+    "Do not re-run it a second way, and do not weigh up which way would have been better.",
   ].join("\n");
 }
 

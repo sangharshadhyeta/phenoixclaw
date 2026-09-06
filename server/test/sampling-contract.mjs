@@ -26,7 +26,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { isLocalUrl, providerIsLocal, withSampling, samplingDefaults, DEFAULT_SAMPLING } = await import(
+const { isLocalUrl, providerIsLocal, withSampling, withThinking, samplingDefaults, DEFAULT_SAMPLING } =
+  await import(
   path.join(here, "..", "dist", "pi", "sampling.js")
 );
 
@@ -126,6 +127,33 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   // near its request.
   ok("a cloud provider gets none at all", mount("anthropic") === undefined);
   ok("and neither does an unknown one", mount(undefined) === undefined);
+}
+
+// --- the configured thinking level must reach the server ------------------
+// This is a reasoning model whose thinking comes out of the same budget as its
+// answer. pi resolves a thinking level and clamps it to what the model
+// supports — `off` for this one — and nothing ever told llama.cpp, so it
+// deliberated on every turn regardless. A task asked for the square root of
+// 144 spent 8192 output tokens thinking, hit finish_reason "length" and
+// produced no answer at all.
+//
+// Measured on the server, same question: without the flag, finish_reason
+// "length" and empty content; with it, "12".
+{
+  const body = { messages: [{ role: "user", content: "hi" }] };
+  const off = withThinking(body, "off");
+  ok("thinking off is sent to the template",
+     off?.chat_template_kwargs?.enable_thinking === false);
+  ok("and the rest of the payload is untouched",
+     Array.isArray(off?.messages) && off.messages.length === 1);
+  ok("a level that is not off is left alone", withThinking(body, "medium") === undefined);
+  ok("an undefined level counts as off",
+     withThinking(body, undefined)?.chat_template_kwargs?.enable_thinking === false);
+  ok("an explicit value upstream wins",
+     withThinking({ ...body, chat_template_kwargs: { enable_thinking: true } }, "off") === undefined);
+  ok("other template kwargs are preserved",
+     withThinking({ ...body, chat_template_kwargs: { foo: 1 } }, "off")?.chat_template_kwargs?.foo === 1);
+  ok("something that is not a chat body is left alone", withThinking({ nope: 1 }, "off") === undefined);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

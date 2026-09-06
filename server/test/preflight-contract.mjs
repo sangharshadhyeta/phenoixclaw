@@ -168,5 +168,26 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("nor running a command", !LOOKUP_TOOLS.has("bash"));
 }
 
+// --- a rule with no completion condition cannot be satisfied ---------------
+// The arithmetic note said what to do and nothing about when it had been done.
+// A session that had already run `echo "sqrt(144)" | bc -l` and read 12 back
+// then spent eight thousand output tokens deliberating whether `bc` counted as
+// "bash" and rewriting the same candidate command sixty times, until the
+// budget ran out. It never answered.
+{
+  const note = arithmeticNote("what is the square root of 144?");
+  ok("the note still says to compute it", /bash/.test(note));
+  ok("it names more than one acceptable way",
+     /`bc`/.test(note) && /python3/.test(note));
+  ok("it says when the rule is satisfied",
+     /Once one has run and printed an answer, this is satisfied/.test(note));
+  ok("and forbids the second-guessing that follows",
+     /Do not re-run it a second way/.test(note));
+  // The conversation has no shell, so its version must not say any of this.
+  const chat = arithmeticNote("what is the square root of 144?", true);
+  ok("the conversation's version stays one line", chat.trim().split("\n").length <= 2);
+  ok("and does not tell a shell-less chat to run a command", !/`bc`/.test(chat));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1,4 +1,5 @@
 import { personalRecall, type NodeRow } from "../graph.js";
+import { asked } from "./asked.js";
 import { priorWorkBlock, priorWorkFrom } from "./prior-work.js";
 import { semanticPrune } from "../ingest.js";
 import { appendEvent } from "../db.js";
@@ -187,7 +188,13 @@ async function condense(
 export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
   return (pi: any): void => {
     pi.on("before_agent_start", async (event: any) => {
-      const prompt = String(event?.prompt ?? "").trim();
+      /**
+       * Search with what was said, not with what the portal appended to it.
+       * See asked.ts — the recall for "what is the square root of 144?" was
+       * being run against that question plus three paragraphs of arithmetic
+       * note, and returned a fact node named `25`.
+       */
+      const prompt = asked(String(event?.prompt ?? ""));
       if (prompt.length < MIN_QUERY_CHARS || TRIVIAL.test(prompt)) return undefined;
 
       let rows: NodeRow[];
@@ -209,8 +216,31 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
         "# YOUR MEMORY OF THIS",
         "",
         "Retrieved from your own memory by searching it with what was just said — you did",
-        "not have to ask for it. You remember across time and across conversations: this",
-        "is yours, and speaking from it is not guesswork.",
+        "not have to ask for it. You remember across time and across conversations, and",
+        "speaking from this is not guesswork.",
+        "",
+        /**
+         * Permission to ignore a hit that does not fit.
+         *
+         * This block used to assert that memory is yours and authoritative,
+         * and stop there. A search returns what is *near* the question, not
+         * what answers it — so asked for the square root of 144 the turn was
+         * handed a fact node named `25`, left over from an earlier 100/4.
+         * With nothing saying a hit may be irrelevant, that is a contradiction
+         * the turn has to resolve before it can answer: its own memory says 25
+         * and the arithmetic says 12. It went round that for eight thousand
+         * tokens and never answered at all.
+         *
+         * A retrieval that cannot be dismissed is worse than none. The line
+         * out has to be in the block itself, because the block is the thing
+         * doing the pushing.
+         */
+        "This is a search, so some of it will simply not be about your question. Anything",
+        "that does not fit is a near miss, not a claim you have to reconcile or argue with",
+        "— drop it and move on. A number here that disagrees with a number you just",
+        "computed is the old one being wrong or being about something else; what you ran",
+        "wins, every time. Do not spend the turn deciding: nothing below outranks the",
+        "thing in front of you.",
         "",
         "Two different things are below and they are not alike. What happened is a record",
         "— you were there, it has a time on it, and you can say so plainly. What you",
