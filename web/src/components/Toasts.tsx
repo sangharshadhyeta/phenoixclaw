@@ -56,6 +56,9 @@ export function newlySettled(
   return out;
 }
 
+/** How long a toast stays up before it clears itself. */
+const LIFETIME_MS = 8000;
+
 export function Toasts({
   sessions,
   openSessionId,
@@ -67,6 +70,19 @@ export function Toasts({
 }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const previous = useRef<Map<string, string> | undefined>(undefined);
+  // One timer per toast, not one for the whole batch — a toast added a poll
+  // tick later must not vanish early just because an earlier one's timer
+  // fired first, and dismissing one by hand must not touch the others' clocks.
+  const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const dismiss = (id: string) => {
+    const timer = timers.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timers.current.delete(id);
+    }
+    setToasts((current) => current.filter((t) => t.id !== id));
+  };
 
   useEffect(() => {
     const fresh = newlySettled(previous.current, sessions, openSessionId);
@@ -75,33 +91,80 @@ export function Toasts({
     setToasts((current) => [...current, ...fresh].slice(-4));
     // Long enough to read across the room, short enough not to stack up on a
     // busy portal.
-    const timer = setTimeout(() => {
-      setToasts((current) => current.filter((t) => !fresh.some((f) => f.id === t.id)));
-    }, 8000);
-    return () => clearTimeout(timer);
+    for (const toast of fresh) {
+      timers.current.set(
+        toast.id,
+        setTimeout(() => dismiss(toast.id), LIFETIME_MS),
+      );
+    }
   }, [sessions, openSessionId]);
+
+  // Every timer this component owns is cleared on unmount, not left running
+  // against state that no longer exists.
+  useEffect(() => () => timers.current.forEach((t) => clearTimeout(t)), []);
 
   if (!toasts.length) return null;
 
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
       {toasts.map((toast) => (
-        <button
+        <div
           key={toast.id}
+          role="button"
+          tabIndex={0}
           onClick={() => {
             onOpen(toast.sessionId);
-            setToasts((current) => current.filter((t) => t.id !== toast.id));
+            dismiss(toast.id);
           }}
-          className={`pointer-events-auto max-w-xs truncate rounded-lg border px-3 py-2 text-left text-xs shadow-lg transition hover:brightness-110 ${
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              onOpen(toast.sessionId);
+              dismiss(toast.id);
+            }
+          }}
+          title="Open this session"
+          className={`pointer-events-auto relative max-w-xs cursor-pointer overflow-hidden rounded-lg border shadow-lg transition hover:brightness-110 ${
             toast.tone === "error"
               ? "border-danger/40 bg-danger/10 text-danger"
               : "border-border bg-surface text-fg"
           }`}
-          title="Open this session"
         >
-          {toast.text}
-        </button>
+          <div className="flex items-center gap-2 px-3 py-2 pr-7 text-left text-xs">
+            <span className="truncate">{toast.text}</span>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={(e) => {
+              e.stopPropagation();
+              dismiss(toast.id);
+            }}
+            className="absolute right-1 top-1 rounded p-1 text-fg-faint transition hover:bg-fg/10 hover:text-fg"
+          >
+            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />
+            </svg>
+          </button>
+          {/* The timer, as a shrinking bar rather than a number — visible at a
+              glance, and a CSS transition needs no per-frame JS to animate. */}
+          <div
+            key={`${toast.id}-bar`}
+            className={`absolute bottom-0 left-0 h-0.5 w-full ${
+              toast.tone === "error" ? "bg-danger/50" : "bg-accent/50"
+            }`}
+            style={{
+              animation: `toast-countdown ${LIFETIME_MS}ms linear forwards`,
+              transformOrigin: "left",
+            }}
+          />
+        </div>
       ))}
+      <style>{`
+        @keyframes toast-countdown {
+          from { transform: scaleX(1); }
+          to { transform: scaleX(0); }
+        }
+      `}</style>
     </div>
   );
 }

@@ -1534,10 +1534,36 @@ class SessionManager extends EventEmitter {
     // Attached before prompting: a fast reply would otherwise finish before
     // anyone was listening.
     this.on(`session:${sessionId}`, onEvent);
-    const timer = setTimeout(
-      () => fail?.(new Error(`The agent did not finish within ${Math.round(timeoutMs / 1000)}s`)),
-      timeoutMs
-    );
+    const timer = setTimeout(() => {
+      /**
+       * A timeout used to only reject this call's promise. `finish()` in
+       * routines/supervisor.ts caught it and correctly marked the *routine*
+       * an error — but nothing here touched the *session*: its row was left
+       * exactly as `prompt()` set it, `status: "running"`, and the running pi
+       * client kept whatever it was doing. `anySessionRunning()` reads that
+       * row, and both `@idle` and `@continuous` are gated on it — so one
+       * routine run that legitimately timed out, or simply hung through a
+       * model-server outage, silently disabled the dream cycle and the
+       * learning loop for good, with nothing to notice until the next
+       * restart happened to repair orphaned rows at boot. A portal that runs
+       * for weeks does not get that restart for free.
+       *
+       * Aborting and marking the row here is the same thing prompt()'s own
+       * catch block already does for an ordinary failure — this was simply
+       * the one path that skipped it.
+       */
+      const client = this.live.get(sessionId)?.client;
+      void client?.abort()?.catch(() => {});
+      void updateSession(sessionId, {
+        status: "error",
+        last_error: `Timed out after ${Math.round(timeoutMs / 1000)}s`,
+      }).catch(() => {});
+      void this.record(sessionId, "portal_status", {
+        status: "error",
+        error: `Timed out after ${Math.round(timeoutMs / 1000)}s`,
+      }).catch(() => {});
+      fail?.(new Error(`The agent did not finish within ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
 
     try {
       const finished = new Promise<void>((resolve, reject) => {

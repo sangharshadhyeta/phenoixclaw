@@ -166,5 +166,30 @@ ok("nor status changes", isMirrorable("portal_status") === false);
      /\$\{instructions\}\\n\\nStart with/.test(mgr));
 }
 
+// --- a timed-out ask() settles the session, not only the routine ------------
+// `finish()` in routines/supervisor.ts caught a timeout and correctly marked
+// the *routine* an error, but nothing touched the *session*: its row stayed
+// `status: "running"` exactly as `prompt()` had set it. `anySessionRunning()`
+// reads that row and gates both `@idle` and `@continuous` — so one routine run
+// that legitimately timed out, or simply hung through a model-server outage,
+// silently disabled the dream cycle and the learning loop for good, with
+// nothing to notice until the next restart happened to repair orphaned rows
+// at boot. A portal that runs for weeks does not get that restart for free.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  const timeoutBlock = mgr.slice(
+    mgr.indexOf('const timer = setTimeout(() => {'),
+    mgr.indexOf('}, timeoutMs);') + 20,
+  );
+  ok("the timeout aborts the running client",
+     /void client\?\.abort\(\)\?\.catch/.test(timeoutBlock));
+  ok("and marks the session row an error, not left running",
+     /status: "error"/.test(timeoutBlock) &&
+       /Timed out after/.test(timeoutBlock));
+  ok("the abort is guarded against a client that is already gone",
+     /client\?\.abort\(\)\?\.catch\(\(\) => \{\}\)/.test(timeoutBlock));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);
