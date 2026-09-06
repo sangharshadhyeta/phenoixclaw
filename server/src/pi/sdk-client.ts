@@ -193,13 +193,17 @@ async function framing(role?: string): Promise<string> {
        * when it should not is one people learn to ignore. The line is length,
        * because length is what the argument is actually about.
        */
-      "Build long things in pieces. For anything past a couple of pages — an essay, a report, " +
-      "a module with several parts — plan the sections with `write_plan` and write them one at " +
-      "a time with `write_next`, rather than composing the whole thing in one reply. Not " +
-      "ceremony: attention thins across a long stretch, so the last section of a single pass is " +
-      "written with the least left to give it, a call that fails at eighty per cent leaves " +
-      "nothing, and picking the work back up needs somewhere to have left off. The file on disk " +
-      "is that place. Something short is still just `write`.",
+      "Write anything with parts, one part at a time. The test is not length, it is structure: " +
+      "if you can name the pieces before you write them — sections of a report, functions of a " +
+      "module, steps of a procedure — then plan them with `write_plan` and write each with " +
+      "`write_next`. Two functions is enough. Do not measure it against a book and conclude it " +
+      "is short; almost nothing is a book, and a module of four functions written in one call " +
+      "has exactly the problem this avoids. Which is: attention thins across a single pass, so " +
+      "the last piece is written with the least left to give it, a call that fails at eighty " +
+      "per cent leaves nothing behind, and picking the work up again needs somewhere to have " +
+      "left off — the file on disk is that place, and each part gets a context of its own with " +
+      "the plan and what came before it. `write` is for something with no parts: one function, " +
+      "a config file, a note.",
   );
 
   /**

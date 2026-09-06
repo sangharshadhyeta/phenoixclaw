@@ -155,7 +155,12 @@ const long = (s) => `${s} `.repeat(60);
   // Whatever the result ends on is what the model does next. The first live
   // run planned five sections, read the nudge as its closing line, and ended
   // the turn without writing anything.
-  ok("and the last thing it says is to start writing", /with write_next/.test(cold.trimEnd().split("\n").slice(-2).join(" ")));
+  // The plan hands off. With the step cap removed a capable model will
+  // otherwise work the whole plan inside one accumulating conversation, which
+  // is the thing per-step isolation exists to avoid — the plan gets written and
+  // then never used as a plan.
+  ok("planning ends the turn rather than starting the work", /Stop here/.test(cold));
+  ok("and says why the next context will be smaller", /on its own, in a context holding the plan/.test(cold));
 }
 
 // --- the verifier, which shipped missing -----------------------------------
@@ -271,6 +276,155 @@ const long = (s) => `${s} `.repeat(60);
   ok("balanced code is not", unbalanced("function f() { return [1, 2]; }") === undefined);
   ok("a brace inside a string is not counted", unbalanced('const s = "{";') === undefined);
   ok("a brace inside a comment is not counted", unbalanced("// {\nconst x = 1;") === undefined);
+}
+
+// --- task_finish must not eat a span write_next recorded --------------------
+// The two tools share the tasks table on purpose, but write_next stores where
+// the section landed and read_section/write_revise navigate by it. A model that
+// wrote a section and then also called task_finish on it — one did, saying "the
+// module has been written and verified" — replaced the span with prose, and the
+// section quietly became unreachable.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  await createSession({ id: "w11", title: "w11", workspace, executor: "host" });
+  const c11 = mount("w11", workspace);
+  const taskCalls = {};
+  taskTools("w11")({ on() {}, registerTool: (t) => (taskCalls[t.name] = t) });
+  const t = async (name, args) => (await taskCalls[name].execute("id", args)).content[0].text;
+
+  await c11("write_plan", { file: "spans.md", sections: ["One", "Two"] });
+  await c11("write_next", { content: long("The first section.") });
+  const before = (await listTasks("w11")).find((x) => x.seq === 1).result;
+
+  const out = await t("task_finish", { step: 1, result: "written and verified" });
+  ok("finishing an already-written section is refused politely", /already written and recorded/.test(out));
+  const after = (await listTasks("w11")).find((x) => x.seq === 1).result;
+  ok("and the span survives", after === before && /@\d+-\d+$/.test(after));
+  ok("so the section can still be read back", /The first section/.test(await c11("read_section", { section: 1 })));
+}
+
+// --- the plan the model thought it had ------------------------------------
+// A live run kept its own two-step task_plan in mind while write_plan silently
+// replaced it with four sections, then called task_finish on "step 2" meaning
+// something that no longer existed — and retried when refused.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  await createSession({ id: "w12", title: "w12", workspace, executor: "host" });
+  const c12 = mount("w12", workspace);
+  const tt = {};
+  taskTools("w12")({ on() {}, registerTool: (t) => (tt[t.name] = t) });
+  const t = async (name, args) => (await tt[name].execute("id", args)).content[0].text;
+
+  await t("task_plan", { steps: ["think about it", "do it"] });
+  const replaced = await c12("write_plan", { file: "replaced.md", sections: ["A", "B", "C"] });
+  ok("replacing a plan is said out loud", /replaces the 2-step plan/.test(replaced));
+  ok("and the old numbering is explicitly voided", /no longer mean anything/.test(replaced));
+
+  await c12("write_next", { content: long("Section A.") });
+  const refused = await t("task_finish", { step: 1, result: "all done" });
+  ok("a refusal shows what the plan now is", /\[1\] A/.test(refused) && /\[3\] C/.test(refused));
+}
+
+// --- the shape it actually sent -------------------------------------------
+// Asked to plan, a 26B model sent steps as objects with double-quoted keys —
+// JSON inside JSON. The schema said "must be string", echoed the malformed
+// arguments back, and it retried six times before recovering by accident.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  await createSession({ id: "w13", title: "w13", workspace, executor: "host" });
+  const tt = {};
+  taskTools("w13")({ on() {}, registerTool: (t) => (tt[t.name] = t) });
+  const t = async (name, args) => (await tt[name].execute("id", args)).content[0].text;
+
+  const out = await t("task_plan", {
+    steps: [
+      { '"step"': 1, '"description"': "Read the source" },
+      { step: 2, description: "Write it up" },
+    ],
+  });
+  ok("steps given as objects are understood", /Read the source/.test(out) && /Write it up/.test(out));
+  ok("however the keys were quoted", /\[1\] Read the source/.test(out));
+  ok("plain strings still work", /Write it up/.test(await t("task_plan", { steps: ["Write it up"] })));
+  let threw = false;
+  try { await t("task_plan", { steps: [{ step: 1 }] }); } catch { threw = true; }
+  ok("something with no text in it is still refused", threw);
+}
+
+// --- a part-written plan is not re-planned ---------------------------------
+// Working a plan step by step, the step's own context holds a file and a plan
+// and no memory of having written either — so a live run called write_plan
+// again, reset the four sections it was partway through, and stalled with
+// nothing written. From inside that context it was a reasonable call.
+{
+  await createSession({ id: "w14", title: "w14", workspace, executor: "host" });
+  const c14 = mount("w14", workspace);
+  await c14("write_plan", { file: "guard.md", sections: ["One", "Two", "Three"] });
+  await c14("write_next", { content: long("The first section.") });
+
+  const refused = await c14("write_plan", { file: "guard.md", sections: ["Different", "Sections"] });
+  ok("re-planning partway through is refused", /already partway through/.test(refused));
+  ok("and it says where you actually are", /1 of 3 sections written/.test(refused) && /"Two" is next/.test(refused));
+  ok("pointing at the tools that do work", /write_next/.test(refused) && /write_revise/.test(refused));
+  ok("with the reason", /nothing describing it/.test(refused));
+
+  const tasks = await listTasks("w14");
+  ok("the existing plan is untouched", tasks.length === 3 && tasks[0].description === "One");
+  ok("and the written section is still findable", /The first section/.test(await c14("read_section", { section: 1 })));
+
+  // A plan nothing has been written against yet is a genuine re-plan.
+  await createSession({ id: "w15", title: "w15", workspace, executor: "host" });
+  const c15 = mount("w15", workspace);
+  await c15("write_plan", { file: "fresh.md", sections: ["A", "B"] });
+  ok("re-planning before anything is written is allowed",
+     /Planned 3 section/.test(await c15("write_plan", { file: "fresh.md", sections: ["X", "Y", "Z"] })));
+}
+
+// --- the shape, shown rather than described --------------------------------
+// A live run read "give steps as a list of plain strings" five times while
+// building ever more elaborate nested objects, its own thinking quoting the
+// schema prose back and guessing.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  const tt = {};
+  taskTools("w15")({ on() {}, registerTool: (t) => (tt[t.name] = t) });
+
+  ok("the description carries a literal call", /\{"steps": \[/.test(tt.task_plan.description));
+  ok("and says steps must be followable by someone who was not there",
+     /not here when you planned it/.test(tt.task_plan.description));
+  ok("and forbids a step for planning", /Do not add a step for planning/.test(tt.task_plan.description));
+
+  let message = "";
+  try { await tt.task_plan.execute("id", { steps: [{ step: 1 }, {}] }); } catch (e) { message = e.message; }
+  ok("the failure shows the shape rather than describing it", /\{"steps": \["Read the file/.test(message));
+  ok("and names what it must not be", /Not objects, not numbered, not nested/.test(message));
+
+  // Being liberal has a floor. The live run's objects were {"step": 1,
+  // "description": 1} — no step text anywhere in them — and a plan containing
+  // a step called "1" is worse than a refusal that shows the right shape.
+  const mixed = await tt.task_plan.execute("id", { steps: [{ step: 1 }, { description: "Fix it" }] });
+  ok("a step with text is kept and a bare index is not",
+     /\[1\] Fix it/.test(mixed.content[0].text) && !/\[2\]/.test(mixed.content[0].text));
+}
+
+// --- write_next writes the section that is actually in hand ----------------
+// task_start marks a step running; write_next looked only at pending, skipped
+// it, and filed the text under the *next* section. Nothing errored — the plan
+// simply stopped describing the file, and a live run lost a whole section.
+{
+  const { taskTools } = await import(dist("pi/task-tools.js"));
+  await createSession({ id: "w16", title: "w16", workspace, executor: "host" });
+  const c16 = mount("w16", workspace);
+  const tt16 = {};
+  taskTools("w16")({ on() {}, registerTool: (t) => (tt16[t.name] = t) });
+
+  await c16("write_plan", { file: "running.md", sections: ["area", "perimeter"] });
+  await tt16.task_start.execute("id", {});
+  await c16("write_next", { content: long("The area function.") });
+
+  const rows = await listTasks("w16");
+  ok("the running step is the one written", rows[0].status === "done" && /@0-/.test(rows[0].result));
+  ok("and the next one is left alone", rows[1].status === "pending" && rows[1].result === "");
+  ok("so it reads back as itself", /The area function/.test(await c16("read_section", { section: 1 })));
 }
 
 console.log("\n  " + pass + " passed, " + fail + " failed");

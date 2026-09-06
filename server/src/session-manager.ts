@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { PersonRow, Role } from "./people.js";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { PiClient } from "./pi/types.js";
 import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
@@ -8,10 +8,16 @@ import { buildExecutor, executorSupports, unsupportedReason, type Executor, type
 import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
+import { runPlan, type StepOutcome } from "./pi/step-runner.js";
+import { checkDocument } from "./pi/writing-tools.js";
+import { supervise } from "./pi/supervisor.js";
 import {
   addUsage,
   appendEvent,
   eventsSince,
+  listTasks,
+  setTaskStatus,
+  type TaskRow,
   getSession,
   getSettings,
   markOrphanedSessionsInterrupted,
@@ -383,6 +389,115 @@ class SessionManager extends EventEmitter {
   }
 
   /** Record a portal-generated event on a session — used for run bookends. */
+  /**
+   * Work an outstanding plan, giving each step a context of its own.
+   *
+   * Runs after a turn settles, when that turn left a plan with steps in it.
+   * The turn that wrote the plan is also the one carrying every false start
+   * that went into writing it, so the first step is better off not inheriting
+   * it either — which is why the recycle happens before each step rather than
+   * between them.
+   *
+   * Guarded three ways, because this drives the model without anyone asking:
+   * it never starts if one is already running for this session, it does
+   * nothing unless there is a plan with unfinished steps, and it is skipped
+   * for a session whose steps a person is working through themselves.
+   */
+  private working = new Set<string>();
+
+  async workPlan(sessionId: string): Promise<StepOutcome | undefined> {
+    if (process.env.STEP_ISOLATION === "off") return undefined;
+    if (this.working.has(sessionId)) return undefined;
+
+    const tasks = await listTasks(sessionId);
+    if (!tasks.some((t: TaskRow) => t.status === "pending")) return undefined;
+    // Only the steps this session wrote for the work in hand. A plan that
+    // predates the current request would have the portal silently resume work
+    // the person may have moved on from.
+    const session = await getSession(sessionId);
+    if (!session || session.kind === "routine") return undefined;
+
+    this.working.add(sessionId);
+    try {
+      const goal = await this.lastRequest(sessionId);
+      return await runPlan(goal, {
+        tasks: () => listTasks(sessionId),
+        document: async () => {
+          const row = await getSession(sessionId);
+          const file = row?.writing_file;
+          return {
+            file,
+            written: file && existsSync(file) ? readFileSync(file, "utf8") : "",
+          };
+        },
+        recycle: () =>
+          this.recycleConversation(
+            sessionId,
+            "Fresh context for the next step — it gets the plan and what the earlier steps produced, " +
+              "not their working.",
+          ),
+        ask: (message) => this.ask(sessionId, message),
+        supervise: () => supervise(sessionId, goal),
+        note: (text) => this.record(sessionId, "portal_notice", { text }),
+        // The mechanical check, run by the portal rather than left to the
+        // model's own opinion of its work — see checkDocument.
+        start: async (seq) => {
+          await setTaskStatus(sessionId, seq, "running");
+        },
+        verify: async () => {
+          const row = await getSession(sessionId);
+          return row?.writing_file ? checkDocument(row.writing_file, await listTasks(sessionId)) : [];
+        },
+        // "Not deep enough" turns into steps by asking the worker to extend
+        // its own plan, so planning stays in one place.
+        extend: async (missing) => {
+          const before = (await listTasks(sessionId)).length;
+          await this.ask(
+            sessionId,
+            [
+              "Looking at what you have, this is not finished:",
+              "",
+              missing,
+              "",
+              "Add the steps that would address it to your plan with `task_plan` — keep the steps you",
+              "have already done, unchanged, and put the new ones after them. Do not do the work now;",
+              "each new step will come back to you on its own.",
+            ].join("\n"),
+          );
+          return (await listTasks(sessionId)).length > before;
+        },
+        skipRemaining: async (why) => {
+          for (const t of await listTasks(sessionId)) {
+            if (t.status === "pending") await setTaskStatus(sessionId, t.seq, "failed", `not needed: ${why}`.slice(0, 300));
+          }
+        },
+      });
+    } catch (e) {
+      await this.record(sessionId, "portal_notice", {
+        text: `Could not work the plan: ${(e as Error).message}`,
+        error: true,
+      });
+      return undefined;
+    } finally {
+      this.working.delete(sessionId);
+    }
+  }
+
+  /** What the person actually asked for, which is the goal every step serves. */
+  private async lastRequest(sessionId: string): Promise<string> {
+    try {
+      const rows = await eventsSince(sessionId, 0, 2000);
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].type !== "portal_prompt") continue;
+        const message = JSON.parse(rows[i].payload)?.message;
+        if (typeof message === "string" && message.trim()) return message;
+      }
+    } catch {
+      // Falling back to an empty goal is survivable — the plan is still there.
+    }
+    return "";
+  }
+
   async note(sessionId: string, type: string, payload: unknown): Promise<void> {
     await this.record(sessionId, type, payload);
   }
@@ -503,11 +618,47 @@ class SessionManager extends EventEmitter {
       void this.record(sessionId, msg.type, msg);
       // agent_end marks the end of a run — the task is done whether or not
       // anyone was watching.
+      /**
+       * Planning hands the work over; it does not start it.
+       *
+       * `write_plan`'s own result says to stop and let each section be given
+       * back in a context of its own. A live run read that and carried on
+       * anyway, writing all four sections in the same accumulating
+       * conversation — which is the exact thing per-step isolation exists to
+       * prevent, and leaves the plan as decoration.
+       *
+       * So the turn is ended here rather than asked to end. Nothing is wasted:
+       * the plan is written, no section has been generated yet, and workPlan
+       * picks it up from agent_end. This is the one place where enforcing
+       * beats asking — refusing a `write` after the fact throws away a
+       * generation, and ending a turn before the first section costs nothing.
+       */
+      if (
+        msg.type === "tool_execution_end" &&
+        (msg as { toolName?: string }).toolName === "write_plan" &&
+        // Only when a plan was actually set. write_plan also *refuses* — when
+        // sections are already written — and aborting on that turned a
+        // recoverable mistake into a dead run: the step could not carry on
+        // because the turn it needed had been ended under it.
+        (msg as { result?: { details?: { planned?: boolean } } }).result?.details?.planned === true &&
+        process.env.STEP_ISOLATION !== "off"
+      ) {
+        void this.record(sessionId, "portal_notice", {
+          text: "Plan set. Working it one section at a time, each in its own context.",
+        });
+        void client.abort().catch(() => {});
+      }
+
       if (msg.type === "agent_end") {
         void updateSession(sessionId, { status: "idle" });
         void this.record(sessionId, "portal_status", { status: "idle" });
         void this.harvest(sessionId);
         void this.recordUsage(sessionId);
+        // A turn that ended holding a plan with steps left is the trigger for
+        // working it, one isolated context per step — see step-runner.ts.
+        // Fire-and-forget, like everything else here: the run belongs to the
+        // server, so a browser that disconnects mid-plan loses nothing.
+        void this.workPlan(sessionId);
       }
     });
 
@@ -956,7 +1107,7 @@ class SessionManager extends EventEmitter {
    * Dropping `pi_session_file` is what does it: `ensureClient` reopens a stored
    * file by path and calls `create()` when there is none.
    */
-  async recycleConversation(sessionId: string): Promise<void> {
+  async recycleConversation(sessionId: string, reason?: string): Promise<void> {
     await this.stop(sessionId);
     // pi's counters restart with the conversation; the running totals on the
     // row do not.
@@ -966,8 +1117,14 @@ class SessionManager extends EventEmitter {
     // going in circles by something that watched a different run.
     forgetSupervision(sessionId);
     await updateSession(sessionId, { pi_session_file: null });
+    // The reason matters. This is called for two quite different things — a
+    // conversation that has actually filled up, and the deliberate recycle
+    // before each isolated step — and the fixed message written for the first
+    // reported the second as a problem that had not happened.
     await this.record(sessionId, "portal_notice", {
-      text: "Starting a fresh conversation — the previous one had filled up. What was learned is in memory.",
+      text:
+        reason ??
+        "Starting a fresh conversation — the previous one had filled up. What was learned is in memory.",
     });
   }
 

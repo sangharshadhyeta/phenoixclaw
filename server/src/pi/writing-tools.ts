@@ -179,7 +179,14 @@ export function unbalanced(text: string): string | undefined {
   return stack.length ? `${stack.length} unclosed ${stack.map((x) => x).join("")} — a section probably stopped halfway.` : undefined;
 }
 
-const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+const said = (text: string, details: Record<string, unknown> = {}) => ({
+  content: [{ type: "text" as const, text }],
+  details,
+});
+
+const MARK: Record<string, string> = { pending: "·", running: "▸", done: "✓", failed: "✗" };
+const render = (tasks: TaskRow[]): string =>
+  tasks.map((t) => `${MARK[t.status] ?? "·"} [${t.seq}] ${t.description}`).join("\n");
 
 /**
  * Has this session found anything out, or is it writing from memory?
@@ -273,6 +280,72 @@ function tail(file: string, chars = 2000): string {
   }
 }
 
+/**
+ * Everything wrong with the artefact, as a list.
+ *
+ * Extracted from `write_check` so the step runner can call it too. The tool is
+ * the model asking "how am I doing"; this is the portal asking the same
+ * question before it lets an answer be written — BirdClaw's write guard and
+ * subtask verifier, which existed because a model will finish a file, believe
+ * it is done, and be wrong in ways that are mechanically visible: a section
+ * that shrank because the file was rewritten instead of appended to, a stub
+ * left in, code that does not parse.
+ *
+ * None of those need a model to notice, which is exactly why they should not
+ * be left to one.
+ */
+export function checkDocument(file: string, tasks: TaskRow[]): string[] {
+  const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const done = tasks.filter((t) => t.status === "done");
+  const problems: string[] = [];
+
+  const expected = done.reduce((sum: number, t: TaskRow) => {
+    const m = /^(\d+) chars/.exec(String(t.result ?? ""));
+    return sum + (m ? Number(m[1]) : 0);
+  }, 0);
+  if (expected && text.length < expected * 0.8) {
+    problems.push(
+      `The file is ${text.length} characters but the sections written add up to about ` +
+        `${expected}. Something overwrote earlier work rather than appending to it.`,
+    );
+  }
+
+  const language = languageOf(file);
+  for (const stub of language
+    ? ["TODO", "FIXME", "[placeholder]", "not implemented"]
+    : ["TODO", "TBD", "...", "[placeholder]", "coming soon"]) {
+    if (text.includes(stub)) problems.push(`"${stub}" is still in the text.`);
+  }
+  if (!text.trim() && done.length) {
+    problems.push("The plan says sections are written but the file is empty.");
+  }
+
+  if (language && text.trim()) {
+    const syntax = language.check?.(file);
+    if (syntax) problems.push(`It does not parse:\n${syntax}`);
+    else {
+      const open = unbalanced(text);
+      if (open) problems.push(open);
+    }
+  }
+  return problems;
+}
+
+/**
+ * The section being written now.
+ *
+ * `running` first, then the first `pending`. Looking only at `pending` — which
+ * is what this did — silently skips a step that `task_start` has marked
+ * running, and the text intended for it is recorded against the *next* one. A
+ * live run did exactly that: `task_start` on "area", then `write_next` wrote
+ * the area function and filed it under "perimeter", leaving "area" to be closed
+ * with prose by `task_finish` and the file with one section where there should
+ * have been two. Nothing errors; the plan simply stops describing the file.
+ */
+function currentSection(tasks: TaskRow[]): TaskRow | undefined {
+  return tasks.find((t) => t.status === "running") ?? tasks.find((t) => t.status === "pending");
+}
+
 export function writingTools(sessionId: string | undefined, cwd: string) {
   return (pi: any): void => {
     if (!sessionId) return;
@@ -281,11 +354,17 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       name: "write_plan",
       label: "Plan a document",
       description:
-        "Plan a long document or program before writing it, then write it one section at a time " +
-        "with write_next. Use this for anything substantial — an essay, a report, a module with " +
-        "several functions — rather than composing the whole thing in one reply: each section gets " +
-        "your full attention, the file on disk is the state, and an interruption costs one section " +
-        "instead of everything. For something short, just use write.",
+        "Plan a document or program with named parts, then write each with write_next. The test " +
+        "is structure, not length: if you can name the pieces before writing them — sections of a " +
+        "report, functions of a module — plan them here. Two is enough. Each part is then written " +
+        "in a context of its own holding the plan and what earlier parts produced, so it gets your " +
+        "full attention rather than what is left after everything before it; the file on disk is " +
+        "the state, so an interruption costs one part instead of all of them. Use write instead " +
+        "only for something with no parts: one function, a config file, a note.\n\n" +
+        "`sections` is a flat list of plain strings, in the order they should be written:\n\n" +
+        '  {"file": "stats.mjs", "sections": ["mean", "median", "stddev", "summary"]}\n\n' +
+        "Name the parts, not the process — \"mean\", not \"write the mean function\", and never a " +
+        "step for planning: this call is the plan.",
       promptSnippet: "write_plan — plan a long document, then write it section by section",
       parameters: Type.Object({
         file: Type.String({ description: "Path to write to. Created if it does not exist." }),
@@ -313,6 +392,35 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
          * into the Phoenixclaw checkout instead of the workspace, reported
          * success, and left the agent unable to find what it had just written.
          */
+        /**
+         * A plan already part-written is not re-planned.
+         *
+         * Each section records where it landed in the file, and `read_section`
+         * and `write_revise` navigate by that. Replacing the plan throws those
+         * away while the text stays on disk, so the document silently stops
+         * corresponding to the plan describing it.
+         *
+         * It also closes a loop that cost a live run everything it had done.
+         * Working a plan step by step, the step's own context contained a file
+         * and a plan and no memory of having written either — so the model
+         * called `write_plan` again, which reset the four sections it was
+         * partway through, and the run stalled with nothing written. From
+         * inside that context it was a reasonable call. It is this tool's job
+         * to know better.
+         */
+        const inProgress = await listTasks(sessionId);
+        const written = inProgress.filter((t: TaskRow) => t.status === "done" && /@\d+-\d+$/.test(String(t.result ?? "")));
+        const stillToWrite = inProgress.filter((t: TaskRow) => t.status === "pending" || t.status === "running");
+        if (written.length && stillToWrite.length) {
+          return said(
+            `You are already partway through this — ${written.length} of ${inProgress.length} sections ` +
+              `written, and "${stillToWrite[0].description}" is next.\n\n${render(inProgress)}\n\n` +
+              `Write the next section with \`write_next\`. To change something already written, use ` +
+              `\`write_revise\`; to drop a section you no longer want, \`write_skip\`. Re-planning now ` +
+              `would leave the text on disk with nothing describing it.`,
+          );
+        }
+
         const target = path.isAbsolute(file) ? file : path.join(cwd, file);
         mkdirSync(path.dirname(target), { recursive: true });
         if (p?.overwrite === true || !existsSync(target)) writeFileSync(target, "", "utf8");
@@ -320,6 +428,9 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         await updateSession(sessionId, { writing_file: target });
         // Replaces the session's plan: writing a document *is* what this
         // session is doing, and two plans would be two answers to that.
+        // Said out loud below, because it happening silently is what let a
+        // live run finish "step 2" of a plan that no longer existed.
+        const replaced = (await listTasks(sessionId)).length;
         await clearTasks(sessionId);
         await setTasks(sessionId, sections);
 
@@ -350,8 +461,19 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
                 `source, fetch the page. A document written from recollection reads exactly like ` +
                 `one that was checked. If it is genuinely something you know or are reasoning ` +
                 `about, carry on.`) +
-            `\n\nNow write section 1, "${sections[0]}", with write_next. One section per call, ` +
-            `and keep calling it until the plan is done.`,
+            (replaced
+              ? `\n\nThis replaces the ${replaced}-step plan you had. These sections are the plan now — ` +
+                `step numbers from the old one no longer mean anything.`
+              : "") +
+            `\n\nStop here. Do not write any of it in this turn.\n\n` +
+            `Each section will be given back to you on its own, in a context holding the plan, what ` +
+            `the earlier sections produced, and the end of the file — and nothing else. That is the ` +
+            `point: section four gets the attention section one got, instead of what is left after ` +
+            `three sections of working. Say what you have planned and finish your turn.`,
+          // The portal ends the turn here rather than trusting the sentence
+          // above (session-manager.ts). Flagged rather than matched on text,
+          // so a refusal further up is not mistaken for a plan being set.
+          { planned: true },
         );
       },
     });
@@ -372,7 +494,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         const file = (await getSession(sessionId))?.writing_file;
         if (!file) return said("No document in progress. Start one with write_plan.");
 
-        const pending = (await listTasks(sessionId)).find((t: TaskRow) => t.status === "pending");
+        const pending = currentSection(await listTasks(sessionId));
         if (!pending) return said("Every planned section is written. The document is finished.");
 
         const content = String(p?.content ?? "").trimEnd();
@@ -395,7 +517,9 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         const start = existing.length + separator.length;
         await setTaskStatus(sessionId, pending.seq, "done", spanResult({ start, end: start + content.length }));
 
-        const left = (await listTasks(sessionId)).filter((t: TaskRow) => t.status === "pending");
+        const left = (await listTasks(sessionId)).filter(
+          (t: TaskRow) => t.status === "pending" || t.status === "running",
+        );
         if (!left.length) {
           // The path stays on the session. Clearing it here made the document
           // unreachable at the exact moment it was finished — read_section and
@@ -429,7 +553,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         const text = existsSync(file) ? readFileSync(file, "utf8") : "";
         const tasks = await listTasks(sessionId);
         const done = tasks.filter((t: TaskRow) => t.status === "done");
-        const left = tasks.filter((t: TaskRow) => t.status === "pending");
+        const left = tasks.filter((t: TaskRow) => t.status === "pending" || t.status === "running");
 
         /**
          * What Sisyphean's verifier checked, kept and re-aimed.
@@ -625,10 +749,12 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         why: Type.String({ description: "Why this section is not needed." }),
       }),
       async execute(_id: string, p: any) {
-        const pending = (await listTasks(sessionId)).find((t: TaskRow) => t.status === "pending");
+        const pending = currentSection(await listTasks(sessionId));
         if (!pending) return said("Nothing left to skip.");
         await setTaskStatus(sessionId, pending.seq, "failed", String(p?.why ?? "skipped").slice(0, 300));
-        const left = (await listTasks(sessionId)).filter((t: TaskRow) => t.status === "pending");
+        const left = (await listTasks(sessionId)).filter(
+          (t: TaskRow) => t.status === "pending" || t.status === "running",
+        );
         return said(
           left.length
             ? `Skipped "${pending.description}". Next: "${left[0].description}".`

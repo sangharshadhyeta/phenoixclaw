@@ -39,14 +39,80 @@ export function taskTools(sessionId: string) {
         "Write down the steps for the work in front of you, in the order you mean to do them. Call it " +
         "again to revise the plan when what you have found changes what should happen next — that is " +
         "expected, not a failure. Steps you have already finished keep their result across a rewrite, " +
-        "so repeat them unchanged if they still belong in the plan.",
+        "so repeat them unchanged if they still belong in the plan.\n\n" +
+        "`steps` is a flat list of plain strings — one sentence each, no numbering, no objects:\n\n" +
+        '  {"steps": ["Read src/parser.ts and note how tokens are produced", ' +
+        '"Add the missing case for block comments", "Run npm test and fix what breaks"]}\n\n' +
+        "Each step should say what to *do*, specifically enough to be followed by someone who was " +
+        "not here when you planned it — \"Run `npm test -w server` and fix any failure\", not " +
+        "\"continue the work\" or \"finish it off\". Do not add a step for planning; this is it.",
       promptSnippet: "task_plan — write or revise the steps for this work",
+      /**
+       * Liberal in what it accepts, because strict cost a live run six turns.
+       *
+       * Asked to plan, the model sent `steps` as an array of *objects* —
+       * `{"step": 1, "description": "..."}` — which is a perfectly reasonable
+       * reading of "one short line per step, in order", and which the schema
+       * rejected with `steps.0: must be string`. Worse, its keys arrived
+       * double-quoted (`"\"step\""`: JSON written inside JSON), so the error
+       * echoed back something that looked nothing like a fix. It retried six
+       * times, got the same message each time, and recovered by accident.
+       *
+       * BirdClaw had a response adapter for exactly this and the feature audit
+       * filed it under things only a small model needs. It is not: this was a
+       * 26B model, and the shape it chose was the sensible one. A tool that
+       * knows what was meant should accept it — the cost of being permissive
+       * here is a `String()` call, and the cost of being strict was measured.
+       */
       parameters: Type.Object({
-        steps: Type.Array(Type.String(), { description: "One short line per step, in order." }),
+        steps: Type.Array(
+          Type.Union([
+            Type.String(),
+            Type.Object({}, { additionalProperties: true }),
+          ]),
+          { description: "One short line per step, in order. Plain strings." },
+        ),
       }),
       async execute(_id: string, p: any) {
-        const steps = Array.isArray(p.steps) ? p.steps.map(String) : [];
-        if (!steps.length) throw new Error("A plan needs at least one step.");
+        const steps = (Array.isArray(p.steps) ? p.steps : [])
+          .map((raw: unknown) => {
+            if (typeof raw === "string") return raw;
+            if (raw && typeof raw === "object") {
+              // Whatever it called the field — and however many layers of
+              // quoting it arrived under.
+              for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+                const name = key.replace(/^"+|"+$/g, "").toLowerCase();
+                // Strings only. A step is a sentence, and the numbers in
+                // these objects are indices — `{"step": 1, "description": 1}`
+                // has no step text in it at all, and inventing one called "1"
+                // would put a garbage line in the plan rather than admit the
+                // call could not be read.
+                if (["description", "step", "text", "title", "name", "task"].includes(name) && typeof value === "string") {
+                  return value;
+                }
+              }
+            }
+            return "";
+          })
+          .map((x: string) => x.trim())
+          .filter(Boolean);
+        if (!steps.length) {
+          /**
+           * Show the call, do not describe it.
+           *
+           * The message this replaced said "give `steps` as a list of plain
+           * strings", which is exactly what the schema already said, and a
+           * live run read it five times while building ever more elaborate
+           * nested objects — its own thinking quoting the schema prose back
+           * and guessing. A model that has misread a shape cannot be fixed by
+           * being told the shape again in words.
+           */
+          throw new Error(
+            'A plan needs at least one step. Copy this shape exactly:\n\n' +
+              '  {"steps": ["Read the file and find the bug", "Fix it", "Run the tests"]}\n\n' +
+              "A flat list of strings. Not objects, not numbered, not nested.",
+          );
+        }
         return say(`Plan set.\n${render(await setTasks(sessionId, steps))}`);
       },
     });
@@ -94,6 +160,36 @@ export function taskTools(sessionId: string) {
       async execute(_id: string, p: any) {
         const seq = Number(p.step);
         if (!Number.isInteger(seq)) throw new Error("Which step? Give the number shown in the plan.");
+
+        /**
+         * A step already closed by write_next keeps what write_next recorded.
+         *
+         * The two tools share the `tasks` table, which is deliberate — one
+         * notion of "the steps I am working through". But `write_next` stores
+         * *where the section landed in the file* (`212 chars @0-212`), and
+         * that is what `read_section` and `write_revise` use to find it.
+         * A model that writes a section and then also calls `task_finish` on
+         * it — which one did, saying "the module has been written and
+         * verified" — overwrites the span with prose, and the section quietly
+         * becomes unreachable: not an error, just a later revise that reports
+         * it cannot locate the text.
+         *
+         * The step is already done, so there is nothing to record. Say so.
+         */
+        const plan = await listTasks(sessionId);
+        const current = plan.find((t: TaskRow) => t.seq === seq);
+        if (current?.status === "done" && /@\d+-\d+$/.test(String(current.result ?? ""))) {
+          // Showing the plan back matters here. In the run this came from, the
+          // model's own two-step plan had been replaced by write_plan's four
+          // sections without it being told, so "step 2" meant something to it
+          // that it no longer meant here — and a refusal that did not say what
+          // the plan now was left it retrying the same call.
+          return say(
+            `Step ${seq} ("${current.description}") was already written and recorded. Nothing to change.\n\n` +
+              `The plan as it now stands:\n${render(plan)}`,
+          );
+        }
+
         const row = await setTaskStatus(sessionId, seq, p.failed ? "failed" : "done", String(p.result ?? ""));
         if (!row) throw new Error(`There is no step ${seq} in this plan.`);
         return say(`${p.failed ? "Failed" : "Done"} [${seq}] ${row.description}\n\n${render(await listTasks(sessionId))}`);

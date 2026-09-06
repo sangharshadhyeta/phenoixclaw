@@ -156,10 +156,23 @@ const age = async (name, days) => {
   // Stated before the first token rather than enforced at the tool call:
   // refusing a large write after the fact only throws away a generation that
   // has already thinned.
-  ok("long output is planned in pieces", /Build long things in pieces/.test(framing));
+  ok("output with parts is planned in pieces", /one part at a time/.test(framing));
   ok("naming the tools", /write_plan/.test(framing) && /write_next/.test(framing));
   ok("with the reason, not just the rule", /attention thins/.test(framing));
-  ok("and short things are left alone", /Something short is still just/.test(framing));
+  ok("and something with no parts is left alone", /`write` is for something with no parts/.test(framing));
+
+  /**
+   * The criterion is structure, not length — and it says so explicitly.
+   *
+   * The wording it replaced said "anything past a couple of pages", and a live
+   * session reasoned its way straight out of it: "I'll just use `write` for a
+   * single file since it's not 'long' in the sense of a book, but it's a
+   * module" — then wrote four documented functions in one call. Almost nothing
+   * is a book, so a length test is a test almost nothing passes.
+   */
+  ok("the test is named as structure rather than length", /not length, it is structure/.test(framing));
+  ok("with a number low enough to bind", /Two functions is enough/.test(framing));
+  ok("and the book comparison closed off explicitly", /against a book/.test(framing));
 }
 
 // --- the graph as something you can draw ----------------------------------
