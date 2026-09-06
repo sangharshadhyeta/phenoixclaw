@@ -80,6 +80,15 @@ function Shell({
   const [error, setError] = useState<string | null>(null);
   const [uiQueue, setUiQueue] = useState<UiRequest[]>([]);
   const esRef = useRef<EventSource | null>(null);
+  /**
+   * Whether the event stream is actually connected.
+   *
+   * It reconnects itself every two seconds on failure, so a portal that has
+   * gone away looks exactly like one that is quiet — the transcript simply
+   * stops, with nothing to say whether the agent finished or the connection
+   * dropped. Those need to look different.
+   */
+  const [connected, setConnected] = useState(true);
 
   const refreshSessions = useCallback(async () => {
     const r = await api.sessions();
@@ -137,6 +146,7 @@ function Shell({
       if (cancelled) return;
       const es = new EventSource(`/api/sessions/${sessionId}/events?since=${seq}`);
       esRef.current = es;
+      es.onopen = () => setConnected(true);
       es.onmessage = (m) => {
         const ev: PortalEvent = JSON.parse(m.data);
         // Live-only events (dialogs) use a negative seq and must not move the
@@ -158,6 +168,7 @@ function Shell({
         }
       };
       es.onerror = () => {
+        setConnected(false);
         es.close();
         setTimeout(connect, 2000);
       };
@@ -255,6 +266,7 @@ function Shell({
           <Chat
             session={active}
             events={events}
+            connected={connected}
             onSend={async (msg) => {
               await api.prompt(active.id, msg);
               refreshSessions();

@@ -96,5 +96,62 @@ const prompt = (seq, message) => ({ seq, type: "portal_prompt", payload: { messa
   ok("the request is kept and marked", asked && asked.text === "Summarise the changelog");
 }
 
+// --- tool cards carry their results ---------------------------------------
+// The transcript showed which tools were reached for and nothing about what any
+// of them returned, so reading back a run you had not watched meant opening the
+// database.
+{
+  const start = (seq, name, callId, at) => ({
+    seq, at, type: "tool_execution_start",
+    payload: { toolName: name, toolCallId: callId, args: { path: "a.ts" } },
+  });
+  const end = (seq, name, callId, at, text, isError) => ({
+    seq, at, type: "tool_execution_end",
+    payload: { toolName: name, toolCallId: callId, isError, result: { content: [{ type: "text", text }] } },
+  });
+
+  const items = build([
+    start(1, "read", "c1", "2026-09-06T10:00:00.000Z"),
+    end(2, "read", "c1", "2026-09-06T10:00:01.500Z", "file contents here"),
+  ]);
+  const tool = items.find((i) => i.kind === "tool");
+  ok("the result is kept", tool.result === "file contents here");
+  ok("the call is marked done", tool.status === "done");
+  ok("and how long it took is worked out", tool.ms === 1500);
+
+  // Tools run in parallel by default, so pairing by name is a coin toss.
+  const parallel = build([
+    start(1, "read", "c1", "2026-09-06T10:00:00.000Z"),
+    start(2, "read", "c2", "2026-09-06T10:00:00.000Z"),
+    end(3, "read", "c2", "2026-09-06T10:00:00.500Z", "second result"),
+    end(4, "read", "c1", "2026-09-06T10:00:02.000Z", "first result"),
+  ]);
+  const tools = parallel.filter((i) => i.kind === "tool");
+  ok("two concurrent calls stay two cards", tools.length === 2);
+  ok("and each gets its own result",
+     tools[0].result === "first result" && tools[1].result === "second result");
+  ok("with their own durations", tools[0].ms === 2000 && tools[1].ms === 500);
+
+  const failed = build([
+    start(1, "bash", "c9", "2026-09-06T10:00:00.000Z"),
+    end(2, "bash", "c9", "2026-09-06T10:00:00.100Z", "command not found", true),
+  ]);
+  ok("an error is marked as one", failed.find((i) => i.kind === "tool").status === "error");
+  ok("and keeps what it said", /command not found/.test(failed.find((i) => i.kind === "tool").result));
+
+  // A very large result is truncated in the transcript rather than shipped
+  // whole to the browser on every replay.
+  const huge = build([
+    start(1, "read", "cx", "2026-09-06T10:00:00.000Z"),
+    end(2, "read", "cx", "2026-09-06T10:00:00.100Z", "x".repeat(20000)),
+  ]);
+  ok("an enormous result is capped", huge.find((i) => i.kind === "tool").result.length < 4100);
+
+  // A call still in flight has no result and must not claim one.
+  const running = build([start(1, "grep", "c5", "2026-09-06T10:00:00.000Z")]);
+  ok("a running call has no result", running.find((i) => i.kind === "tool").result === undefined);
+  ok("and is marked running", running.find((i) => i.kind === "tool").status === "running");
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

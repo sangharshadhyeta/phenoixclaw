@@ -3,7 +3,19 @@ import type { PortalEvent } from "./api";
 export type Item =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; thinking: string; done: boolean }
-  | { kind: "tool"; id: string; name: string; status: "running" | "done" | "error"; detail?: string }
+  | {
+      kind: "tool";
+      id: string;
+      name: string;
+      status: "running" | "done" | "error";
+      detail?: string;
+      /** What the tool actually returned, so a run can be read back afterwards. */
+      result?: string;
+      /** Milliseconds from start to end, when both were seen. */
+      ms?: number;
+      /** Set when the call was matched by id rather than by name — see below. */
+      callId?: string;
+    }
   | { kind: "notice"; id: string; text: string; tone: "info" | "error" }
   /**
    * Work from another session, shown here so one place tells you what the
@@ -40,6 +52,8 @@ export type Item =
 export function buildTranscript(events: PortalEvent[]): Item[] {
   const items: Item[] = [];
   let current: Extract<Item, { kind: "assistant" }> | null = null;
+  /** When each tool call began, so a card can say how long it took. */
+  const startedAt = new Map<string, string>();
 
   const closeCurrent = () => {
     if (current) {
@@ -135,18 +149,43 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
           name: String(p.toolName ?? p.name ?? "tool"),
           status: "running",
           detail: summarizeToolInput(p),
+          callId: typeof p.toolCallId === "string" ? p.toolCallId : undefined,
         });
+        startedAt.set(String(p.toolCallId ?? `${p.toolName}-${ev.seq}`), ev.at ?? "");
         break;
 
       case "tool_execution_end": {
-        // Close the most recent still-running tool of the same name.
+        /**
+         * Paired by call id where pi gives one, by name only as a fallback.
+         *
+         * Tools run in parallel — pi's default — so "the most recent running
+         * tool of the same name" is a guess, and with two reads in flight it
+         * is a coin toss which card gets which result. The id is exact.
+         */
         const name = String(p.toolName ?? p.name ?? "tool");
+        const callId = typeof p.toolCallId === "string" ? p.toolCallId : undefined;
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
-          if (it.kind === "tool" && it.status === "running" && it.name === name) {
-            it.status = p.isError || p.error ? "error" : "done";
-            break;
+          if (it.kind !== "tool" || it.status !== "running") continue;
+          if (callId ? it.callId !== callId : it.name !== name) continue;
+
+          it.status = p.isError || p.error ? "error" : "done";
+          /**
+           * The result itself, kept.
+           *
+           * This is the single largest thing missing from the transcript: a
+           * finished run showed which tools were reached for and nothing about
+           * what any of them found, so reading back what happened meant opening
+           * the database. BirdClaw's `cards.py` is 522 lines of exactly this,
+           * and it is what makes a run legible.
+           */
+          it.result = resultText(p);
+          const began = startedAt.get(callId ?? `${name}-unknown`);
+          if (began && ev.at) {
+            const ms = new Date(ev.at).getTime() - new Date(began).getTime();
+            if (Number.isFinite(ms) && ms >= 0) it.ms = ms;
           }
+          break;
         }
         break;
       }
@@ -215,6 +254,26 @@ function group(items: Item[]): Item[] {
   }
   flush();
   return out;
+}
+
+/**
+ * A tool's output as text.
+ *
+ * pi returns content as an array of parts, the same shape the mirror had to
+ * learn about. Capped generously — a card is for reading, and a file that runs
+ * to thousands of lines is better truncated here than sent to the browser in
+ * full on every replay.
+ */
+function resultText(p: any): string | undefined {
+  const content = p?.result?.content ?? p?.content ?? p?.result;
+  const text = Array.isArray(content)
+    ? content.map((part: any) => (part?.type === "text" ? String(part.text ?? "") : "")).join("")
+    : typeof content === "string"
+      ? content
+      : undefined;
+  if (!text) return undefined;
+  const trimmed = text.trim();
+  return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}\n…` : trimmed;
 }
 
 function summarizeToolInput(p: any): string | undefined {

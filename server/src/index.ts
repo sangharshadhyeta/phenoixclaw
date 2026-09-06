@@ -546,12 +546,26 @@ app.get("/api/sessions/:id/events", async (req, res) => {
     "X-Accel-Buffering": "no",
   });
 
-  const write = (row: { seq: number; type: string; payload: string }) => {
-    res.write(`id: ${row.seq}\ndata: ${JSON.stringify({
-      seq: row.seq,
-      type: row.type,
-      payload: JSON.parse(row.payload),
-    })}\n\n`);
+  const write = (row: { seq: number; type: string; payload: string; created_at?: string }) => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      // A malformed row is one lost event, not a dead stream. Throwing here
+      // rejects inside an async handler with no catch, which takes the whole
+      // connection down mid-replay and loses everything after it.
+      return;
+    }
+    res.write(
+      `id: ${row.seq}\ndata: ${JSON.stringify({
+        seq: row.seq,
+        type: row.type,
+        payload,
+        // The client cannot say how long a tool took, or when anything
+        // happened, without this — and the row has carried it all along.
+        at: row.created_at,
+      })}\n\n`,
+    );
   };
 
   // Replaying is now a sequence of awaits (DuckDB is async, unlike

@@ -17,6 +17,11 @@ export interface Session {
   thinking_level: string | null;
   /** How the session came to exist. */
   kind?: "task" | "agent" | "routine";
+  /**
+   * What this session has cost, accumulated across every conversation it has
+   * had — including ones retired for filling up, which reset pi's own counters.
+   */
+  usage?: { tokensIn: number; tokensOut: number; cost: number };
 }
 
 /** A set of instructions the agent pulls in when the description matches. */
@@ -118,6 +123,8 @@ export interface PortalEvent {
   seq: number;
   type: string;
   payload: any;
+  /** When the server recorded it. Absent on live-only events (negative seq). */
+  at?: string;
 }
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {

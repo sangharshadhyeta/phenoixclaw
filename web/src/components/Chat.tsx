@@ -73,6 +73,102 @@ function ContextChip({ label, body }: { label: string; body: string }) {
  * The summary line always says what the session was asked to do when that is
  * known, because it is the one line that explains the rest.
  */
+/**
+ * A tool call, with what it found.
+ *
+ * The transcript used to show which tools were reached for and nothing about
+ * what any of them returned, so reading back a run you had not watched meant
+ * opening the database. This is BirdClaw's `cards.py` in miniature: the call on
+ * one line, the result behind a click.
+ *
+ * Shut by default. A finished run has dozens of these and most are `read` doing
+ * what `read` does; the one that matters is the one you go looking for, and it
+ * is one click away. An error opens itself, because that one you were not
+ * looking for.
+ */
+/** Compact enough to sit in a header: 3.8k rather than 3799. */
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * How long the current run has been going.
+ *
+ * "working…" says the agent is alive and nothing about whether it has been
+ * alive for four seconds or forty minutes — which is the difference between
+ * waiting and intervening.
+ */
+function Elapsed({ since }: { since: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const ms = now - new Date(since).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const s = Math.floor(ms / 1000);
+  return (
+    <span className="font-mono text-[11px] text-fg-faint">
+      {s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}
+    </span>
+  );
+}
+
+function ToolCard({ item }: { item: Extract<Item, { kind: "tool" }> }) {
+  const [open, setOpen] = useState(item.status === "error");
+  const tone =
+    item.status === "error"
+      ? "text-danger"
+      : item.status === "running"
+        ? "text-accent"
+        : "text-fg-faint";
+
+  // A diff reads as a diff and a listing reads as a listing. Nothing clever —
+  // just enough that the shape of the output is recognisable at a glance.
+  const monospace = item.name !== "web_search";
+
+  return (
+    <div className="py-0.5">
+      <button
+        type="button"
+        onClick={() => item.result && setOpen((v) => !v)}
+        disabled={!item.result}
+        className={`flex w-full items-center gap-2 text-left font-mono text-[11px] text-fg-faint ${
+          item.result ? "hover:text-fg-muted" : "cursor-default"
+        }`}
+      >
+        <span className={`shrink-0 ${tone}`}>
+          {item.status === "running" ? "◇" : item.status === "error" ? "✕" : "◆"}
+        </span>
+        <span className="shrink-0 text-fg-subtle">{item.name}</span>
+        {item.detail && <span className="min-w-0 truncate opacity-60">{item.detail}</span>}
+        <span className="ml-auto flex shrink-0 items-center gap-2 opacity-50">
+          {item.ms !== undefined && <span>{formatMs(item.ms)}</span>}
+          {item.result && <span>{open ? "▾" : "▸"}</span>}
+        </span>
+      </button>
+      {open && item.result && (
+        <pre
+          className={`mt-1 max-h-80 overflow-auto rounded border border-line bg-raised/40 px-2 py-1.5 text-[11px] leading-relaxed text-fg-muted ${
+            monospace ? "font-mono" : ""
+          } whitespace-pre-wrap`}
+        >
+          {item.result}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** Sub-second in milliseconds, then seconds — a run's shape, not a benchmark. */
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 60_000)}m`;
+}
+
 function Thread({ item }: { item: Extract<Item, { kind: "thread" }> }) {
   const asked = item.items.find((i) => i.mode === "asked");
   const long = item.items.length > 4;
@@ -130,9 +226,12 @@ export function Chat({
   onSend,
   onAbort,
   onClientCommand,
+  connected = true,
 }: {
   session: Session;
   events: PortalEvent[];
+  /** False while the event stream is reconnecting — see the header strip. */
+  connected?: boolean;
   onSend: (message: string) => Promise<void>;
   onAbort: () => Promise<void>;
   /** Builtins the portal itself services — /settings, /new, /name. */
@@ -144,6 +243,21 @@ export function Chat({
   const bottomRef = useRef<HTMLDivElement>(null);
   const items = useMemo(() => buildTranscript(events), [events]);
   const running = session.status === "running";
+
+  /**
+   * When this run began, for the elapsed clock in the header.
+   *
+   * Taken from the events rather than the wall clock at mount, so a page opened
+   * mid-run still shows how long the agent has been at it rather than starting
+   * from zero.
+   */
+  const runStartedAt = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.type === "portal_prompt" && ev.at) return ev.at;
+    }
+    return undefined;
+  }, [events]);
 
   // Commands come from pi at runtime, so anything a newly installed package
   // registers shows up here without the portal knowing about it in advance.
@@ -199,9 +313,51 @@ export function Chat({
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-medium text-fg">{session.title}</h2>
-          <p className="truncate font-mono text-[11px] text-fg-faint">{session.workspace}</p>
+          {/*
+            * What this session is and what it has cost, always visible.
+            *
+            * The model and the running total were reachable — in a settings
+            * panel, or by asking — and so in practice went unread. An agent
+            * left to work unattended is exactly the case where "which model is
+            * this, and how much has it spent" wants answering at a glance
+            * rather than on request.
+            */}
+          <p className="flex items-center gap-2 truncate font-mono text-[11px] text-fg-faint">
+            <span className="truncate">{session.workspace}</span>
+            {session.model && (
+              <>
+                <span className="opacity-40">·</span>
+                <span className="truncate">{session.model.split("/").pop()}</span>
+              </>
+            )}
+            {session.usage && session.usage.tokensIn > 0 && (
+              <>
+                <span className="opacity-40">·</span>
+                <span title="tokens in / out for this session, across every conversation it has had">
+                  {formatTokens(session.usage.tokensIn)}↑ {formatTokens(session.usage.tokensOut)}↓
+                </span>
+                {session.usage.cost > 0 && <span>${session.usage.cost.toFixed(3)}</span>}
+              </>
+            )}
+          </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {/*
+            * Reconnecting looks exactly like quiet otherwise: the transcript
+            * simply stops, with nothing to say whether the agent finished or
+            * the connection dropped. Only shown when something is wrong —
+            * a green light nobody needs is a light nobody reads.
+            */}
+          {!connected && (
+            <span
+              className="flex items-center gap-1.5 rounded-md bg-warn/10 px-2 py-0.5 text-[11px] text-warn"
+              title="The event stream dropped and is retrying. Nothing is lost — it resumes from where it left off."
+            >
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warn" />
+              reconnecting
+            </span>
+          )}
+          {running && runStartedAt && <Elapsed since={runStartedAt} />}
           {session.status === "interrupted" && (
             <span className="rounded-md bg-warn/10 px-2 py-0.5 text-[11px] text-warn">
               interrupted — send a message to resume
@@ -283,26 +439,7 @@ export function Chat({
               </div>
             );
           }
-          if (item.kind === "tool") {
-            const tone =
-              item.status === "error"
-                ? "text-danger"
-                : item.status === "running"
-                  ? "text-accent"
-                  : "text-fg-faint";
-            return (
-              <div
-                key={item.id}
-                className="flex items-center gap-2 py-0.5 font-mono text-[11px] text-fg-faint"
-              >
-                <span className={`shrink-0 ${tone}`}>
-                  {item.status === "running" ? "◇" : item.status === "error" ? "✕" : "◆"}
-                </span>
-                <span className="shrink-0 text-fg-subtle">{item.name}</span>
-                {item.detail && <span className="truncate opacity-60">{item.detail}</span>}
-              </div>
-            );
-          }
+          if (item.kind === "tool") return <ToolCard key={item.id} item={item} />;
           if (item.kind === "self") {
             /**
              * Work from elsewhere — a routine on its own initiative, or a task
