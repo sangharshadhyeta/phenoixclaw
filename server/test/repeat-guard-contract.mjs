@@ -73,7 +73,27 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("the learning loop no longer instructs the ceremony that looped",
      !/"Call `task_start`, then do that step/.test(seeds));
 
+  /**
+   * And an unattended run cannot call it at all.
+   *
+   * Removing the instruction was not enough — the tool still existed and the
+   * model still reached for it. Its only effect is to mark the next pending
+   * step running for anyone watching, and the plan block already shows which
+   * that is: a call that can only succeed trivially or fail is pure loop
+   * surface in a turn nobody is watching.
+   */
+  const { autonomousDenial } = await import(path.join(here, "..", "dist", "pi", "constitution.js"));
+  ok("task_start is refused to an autonomous turn", Boolean(autonomousDenial("task_start")));
+  ok("but planning and finishing are not",
+     !autonomousDenial("task_plan") && !autonomousDenial("task_finish"));
+
   const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  /**
+   * A routine's calls reach the main conversation as a list of tool names,
+   * which says something is happening and nothing about what. The plan is the
+   * answer, and it was only ever inside a tool result.
+   */
+  ok("setting a plan says what it is for", /Working on: \$\{steps\[0\]\.description\}/.test(mgr));
   // Blocking alone is not enough: the model still has the turn, and a hundred
   // refusals read much like a hundred dead ends.
   ok("a looping turn is ended, not merely refused",

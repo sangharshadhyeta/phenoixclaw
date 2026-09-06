@@ -88,6 +88,16 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
           });
           break;
         }
+        /**
+         * What a routine is working on, in the main conversation.
+         *
+         * Its calls arrive as a list of tool names, which says something is
+         * happening and nothing about what. This is the line that says.
+         */
+        if (p.type === "portal_notice" && typeof inner.text === "string" && inner.text.trim()) {
+          items.push({ kind: "self", id: `m${ev.seq}`, source, mode: "said", text: inner.text.trim() });
+          break;
+        }
         if (p.type === "tool_execution_start") {
           items.push({
             kind: "self",

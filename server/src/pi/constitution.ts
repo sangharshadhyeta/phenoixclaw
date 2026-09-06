@@ -117,7 +117,16 @@ export const AUTONOMOUS_TOOLS = new Set([
   "tasks_running",
   "task_plan",
   "task_list",
-  "task_start",
+  /**
+   * Not `task_start`.
+   *
+   * Its only effect is to mark the next pending step as running for anyone
+   * watching, and the plan block in the prompt already shows which that is.
+   * A call that can only succeed trivially or fail is pure loop surface in a
+   * turn nobody is watching — one iteration made about a hundred of them —
+   * and an unattended run is exactly where that costs the most. The step
+   * runner marks steps itself; a routine does not need to.
+   */
   "task_finish",
   // Writing something long, a section at a time. The same reasoning as
   // skill_write: it produces one artefact in a place the turn already chose,

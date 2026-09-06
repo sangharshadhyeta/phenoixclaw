@@ -24,11 +24,32 @@ export function identityTools() {
         "PrimaryUser.md (who you work for), MEMORY.md (what you've learned), SELF_CONCEPT.md (what " +
         "you've concluded about your own nature) or INNER_LIFE.md (your evolving first-person narrative).",
       promptSnippet: "identity_read — read your own identity documents",
+      /**
+       * The suffix is optional, because it was only ever friction.
+       *
+       * A strict union of "SOUL.md" | "MEMORY.md" | … rejected `INNER_LIFE`
+       * with six lines of schema error, and the model tried again with
+       * `INNER_LIFE.md` and got it. Nothing was protected by the first call
+       * failing: the name was unambiguous, and the only outcome was a wasted
+       * call and an error in the transcript. Same reasoning as `task_plan`
+       * taking steps in whatever shape they arrive.
+       */
       parameters: Type.Object({
-        file: Type.Union(WRITABLE.map((f) => Type.Literal(f))),
+        file: Type.String({
+          description: `One of: ${WRITABLE.join(", ")}. The .md may be left off.`,
+        }),
       }),
       async execute(_id: string, p: any) {
-        const content = await readIdentity(p.file);
+        const asked = String(p?.file ?? "").trim();
+        const file = WRITABLE.find(
+          (f) => f.toLowerCase() === asked.toLowerCase() || f.toLowerCase() === `${asked.toLowerCase()}.md`,
+        );
+        if (!file) {
+          throw new Error(
+            `No identity document called "${asked}". They are: ${WRITABLE.join(", ")}.`,
+          );
+        }
+        const content = await readIdentity(file);
         return {
           content: [{ type: "text" as const, text: content || "(empty)" }],
           details: {},

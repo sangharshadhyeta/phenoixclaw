@@ -84,7 +84,16 @@ export const isMirrorable = (type: string): boolean =>
   // A finished task's answer. Everything else mirrored is a notice that
   // something happened; this is the thing itself, which is why it is exempt
   // from the clip below — see mirrorResult.
-  type === "portal_task_result";
+  type === "portal_task_result" ||
+  /**
+   * What a routine is working on.
+   *
+   * Its tool calls arrive here as a list of names — `self_review`,
+   * `task_list`, `task_start` — which says something is happening and nothing
+   * about what. The notice recorded when a plan is set is the answer to "what
+   * is it working on", and it is the one line worth having.
+   */
+  type === "portal_notice";
 
 /** Enough of a message to follow the thread; the source session has all of it. */
 const MIRRORED_TEXT = 500;
@@ -144,6 +153,8 @@ function trim(type: string, payload: unknown): unknown | undefined {
    * the main conversation a place that tells you your answer exists.
    */
   if (type === "portal_task_result") return p;
+  // A notice is already one line; clipping it would only remove the end of it.
+  if (type === "portal_notice") return p;
 
   if (type === "portal_prompt" && typeof p.message === "string") {
     return { ...p, message: clip(p.message, MIRRORED_TEXT) };

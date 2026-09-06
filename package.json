@@ -16,7 +16,7 @@
     "docs:build": "npm run build -w docs",
     "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs",
     "test:prune": "node server/test/prune-contract.mjs",
-    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard && npm run test:trust && npm run test:self-update && npm run test:injector && npm run test:harvest && npm run test:assembler && npm run test:temporal && npm run test:executor && npm run test:curation && npm run test:mirror && npm run test:transcript && npm run test:health && npm run test:tools && npm run test:schedule && npm run test:ingest && npm run test:outline && npm run test:identity && npm run test:graph-server && npm run test:writing && npm run test:plan && npm run test:recovery && npm run test:supervisor && npm run test:steps && npm run test:prior && npm run test:artefacts && npm run test:step-text && npm run test:driving && npm run test:preflight && npm run test:messages && npm run test:graph-maintenance && npm run test:ui && npm run test:after-turn && npm run test:task-sessions && npm run test:sampling && npm run test:tasks-context && npm run test:chat-budget && npm run test:repeat-guard",
+    "test": "npm run test:graph && npm run test:prune && npm run test:web && npm run test:symbols && npm run test:llm && npm run test:cleanup && npm run test:self-concept && npm run test:guard && npm run test:trust && npm run test:self-update && npm run test:injector && npm run test:harvest && npm run test:assembler && npm run test:temporal && npm run test:executor && npm run test:curation && npm run test:mirror && npm run test:transcript && npm run test:health && npm run test:tools && npm run test:schedule && npm run test:ingest && npm run test:outline && npm run test:identity && npm run test:graph-server && npm run test:writing && npm run test:plan && npm run test:recovery && npm run test:supervisor && npm run test:steps && npm run test:prior && npm run test:artefacts && npm run test:step-text && npm run test:driving && npm run test:preflight && npm run test:messages && npm run test:graph-maintenance && npm run test:ui && npm run test:after-turn && npm run test:task-sessions && npm run test:sampling && npm run test:tasks-context && npm run test:chat-budget && npm run test:repeat-guard && npm run test:identity-context",
     "test:web": "node server/test/web-contract.mjs",
     "test:symbols": "node server/test/code-index-contract.mjs",
     "test:llm": "node server/test/llm-contract.mjs",
@@ -60,6 +60,7 @@
     "test:sampling": "node server/test/sampling-contract.mjs",
     "test:tasks-context": "node server/test/tasks-context-contract.mjs",
     "test:chat-budget": "node server/test/chat-budget-contract.mjs",
-    "test:repeat-guard": "node server/test/repeat-guard-contract.mjs"
+    "test:repeat-guard": "node server/test/repeat-guard-contract.mjs",
+    "test:identity-context": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/identity-context-contract.mjs"
   }
 }

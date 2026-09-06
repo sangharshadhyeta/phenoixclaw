@@ -971,6 +971,34 @@ class SessionManager extends EventEmitter {
        * document by hand is not interrupted between sections.
        */
       /**
+       * Say what a plan is for, where somebody can see it.
+       *
+       * A routine's tool calls reach the main conversation as a list of names
+       * — `self_review`, `task_list`, `task_start` — which says that something
+       * is happening and nothing about what. The plan is the answer to "what
+       * is it working on", and it was only ever inside a tool result.
+       *
+       * Recorded when the plan is set rather than described in the
+       * instructions, because a routine that is *told* to announce its focus
+       * may not, and this is the moment the focus actually exists.
+       */
+      if (
+        msg.type === "tool_execution_end" &&
+        (msg as { toolName?: string }).toolName === "task_plan" &&
+        !(msg as { isError?: boolean }).isError
+      ) {
+        void (async () => {
+          const steps = await listTasks(sessionId).catch(() => []);
+          if (!steps.length) return;
+          await this.record(sessionId, "portal_notice", {
+            text:
+              `Working on: ${steps[0].description}` +
+              (steps.length > 1 ? ` — then ${steps.slice(1).map((t) => t.description).join(", ")}` : ""),
+          });
+        })();
+      }
+
+      /**
        * A turn that is looping is ended, not merely refused.
        *
        * Blocking the repeated call is not enough: the model still has the

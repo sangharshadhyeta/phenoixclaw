@@ -21,6 +21,7 @@ import { writingTools } from "./writing-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
 import { temporalContext } from "./temporal-context.js";
+import { identityContext } from "./identity-context.js";
 import { samplingDefaults } from "./sampling.js";
 import { tasksContext } from "./tasks-context.js";
 import { contextAssembler } from "./context-assembler.js";
@@ -624,6 +625,11 @@ export class SdkPiClient extends EventEmitter implements PiClient {
          */
         { name: "sampling", factory: samplingDefaults(pi.getAgentDir(), opts.provider) },
         { name: "temporal", factory: temporalContext() },
+        // Identity is assembled into the system prompt once, at session
+        // creation; this carries anything the agent has since concluded about
+        // itself into a conversation that is already open. See
+        // identity-context.ts.
+        { name: "identity-context", factory: identityContext() },
         { name: "memory-injector", factory: memoryInjector(opts.cwd, opts.role, opts.sessionId) },
         // Assembles each request from the system prompt, what the injector
         // just retrieved, and the recent window — rather than sending the
