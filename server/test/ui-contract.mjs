@@ -110,5 +110,36 @@ function loadFn(file, name) {
   ok("and clicking one opens that session", /onOpen=\{\(id\) => navigate/.test(app));
 }
 
+// --- the events behind the transcript --------------------------------------
+// The rendered conversation is an interpretation — tool calls grouped, results
+// paired with their calls, framing hidden. Right almost always, and wrong
+// exactly when something is behaving oddly, which is when the question becomes
+// "what did the portal actually record?" The only answer was curl.
+{
+  const chat = readFileSync(web("components/Chat.tsx"), "utf8");
+  ok("there is a raw event view", /\{raw \?/.test(chat));
+  ok("with a toggle to reach it", /setRaw\(\(v\) => !v\)/.test(chat));
+  ok("showing the payload", /JSON\.stringify\(ev\.payload/.test(chat));
+  ok("and the seq, which is what a cursor is made of", /ev\.seq/.test(chat));
+  // For a moment of confusion, not a way of working: left on, it would replace
+  // a readable conversation with a wall of JSON on the next visit.
+  ok("it is not remembered between visits", !/sessionStorage|localStorage/.test(chat));
+}
+
+// --- the one boundary worth moving ------------------------------------------
+{
+  const sidebar = readFileSync(web("components/Sidebar.tsx"), "utf8");
+  ok("the sidebar can be dragged", /cursor-col-resize/.test(sidebar));
+  ok("its width is state, not a class", /style=\{\{ width \}\}/.test(sidebar));
+  // A sidebar dragged to nothing is a sidebar nobody can find again, and the
+  // handle goes with it.
+  ok("bounded at both ends", /Math\.min\(520, Math\.max\(180/.test(sidebar));
+  ok("and remembered", /localStorage\.setItem\(WIDTH_KEY/.test(sidebar));
+  ok("but survives a browser that refuses storage", /catch \{/.test(sidebar));
+  // The listener closes over the width at mousedown, so what it saves has to
+  // come from somewhere current.
+  ok("it saves the width it ended on", /widthRef\.current/.test(sidebar));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -252,6 +252,14 @@ export function Chat({
   const [searching, setSearching] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const allItems = useMemo(() => buildTranscript(events), [events]);
+  /**
+   * Per session and not remembered.
+   *
+   * The raw view is for a moment of confusion, not a way of working — leaving
+   * it on would replace a readable conversation with a wall of JSON the next
+   * time the tab opened.
+   */
+  const [raw, setRaw] = useState(false);
 
   /** Everything a line holds, so a match inside a collapsed result still counts. */
   const haystack = (item: Item): string => {
@@ -429,6 +437,15 @@ export function Chat({
               Stop
             </button>
           )}
+          <button
+            onClick={() => setRaw((v) => !v)}
+            className={`rounded-lg border px-2.5 py-1 text-xs transition hover:bg-fg/5 ${
+              raw ? "border-accent text-accent" : "border-line text-fg-muted hover:text-fg"
+            }`}
+            title="Show the events behind the transcript"
+          >
+            {raw ? "Transcript" : "Events"}
+          </button>
         </div>
         </div>
       </header>
@@ -438,6 +455,34 @@ export function Chat({
           make it scroll away exactly when it is worth seeing. */}
       <TaskPanel sessionId={session.id} running={running} />
 
+      {/*
+        * The events behind the transcript.
+        *
+        * The rendered conversation is an interpretation — tool calls grouped,
+        * results paired with their calls, framing hidden. That is right almost
+        * always and wrong exactly when something is behaving oddly, which is
+        * when the question becomes "what did the portal actually record?"
+        * Until now the only answer was curl against the SSE endpoint.
+        */}
+      {raw ? (
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="mx-auto w-full max-w-5xl space-y-1 font-mono text-[11px] leading-snug">
+            {events.length === 0 && <div className="text-fg-subtle">No events recorded yet.</div>}
+            {events.map((ev) => (
+              <details key={ev.seq} className="rounded border border-line bg-surface/40 px-2 py-1">
+                <summary className="cursor-pointer truncate text-fg-muted">
+                  <span className="text-fg-subtle">{String(ev.seq).padStart(6, " ")} </span>
+                  <span className="text-accent">{ev.type}</span>
+                  <span className="text-fg-subtle"> {ev.at ?? ""}</span>
+                </summary>
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all text-fg-muted">
+                  {JSON.stringify(ev.payload, null, 2)}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto w-full max-w-3xl space-y-3">
         {items.length === 0 && (
@@ -562,6 +607,7 @@ export function Chat({
           <div ref={bottomRef} />
         </div>
       </div>
+      )}
 
       <form
         onSubmit={(e) => {

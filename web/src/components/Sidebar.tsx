@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, useRef } from "react";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import {
   LuBot,
@@ -47,6 +47,18 @@ function slugify(input: string): string {
 // Sentinel for the dropdown — a new workspace is the default choice.
 const NEW = "__new__";
 
+/** Remembered per browser; the server has no opinion about your window. */
+const WIDTH_KEY = "phoenixclaw.sidebarWidth";
+
+function storedWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(raw) && raw >= 180 && raw <= 520 ? raw : 256;
+  } catch {
+    return 256;
+  }
+}
+
 export function Sidebar({
   sessions,
   workspaces,
@@ -77,6 +89,12 @@ export function Sidebar({
   onOpenSettings: () => void;
   onNavigate: (to: "sessions" | "agent" | "routines" | "audit" | "memory") => void;
 }) {
+  const [width, setWidth] = useState(storedWidth);
+  // The mouseup handler closes over the width at mousedown, so the value it
+  // saves has to come from somewhere current.
+  const widthRef = useRef(width);
+  widthRef.current = width;
+
   const [creating, setCreating] = useState(false);
   const [choice, setChoice] = useState<string>(NEW);
   const [name, setName] = useState("");
@@ -123,7 +141,10 @@ export function Sidebar({
   );
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
+    <aside
+      className="relative flex shrink-0 flex-col border-r border-line bg-surface"
+      style={{ width }}
+    >
       <div className="flex items-center gap-2 px-3 pb-3 pt-4">
         <img
           src="/phenoixclaw-192.png"
@@ -269,6 +290,43 @@ export function Sidebar({
       </div>
       {/* What the portal knows about itself — see StatusStrip. */}
       <StatusStrip />
+      {/*
+        * The one boundary in this layout worth moving.
+        *
+        * BirdClaw's TUI had three panes and splitters between them; here there
+        * is a sidebar and everything else, so this is the only edge that means
+        * anything. It earns its place because the sidebar's content is a list
+        * of session titles, and how wide it should be depends entirely on what
+        * you have called them.
+        *
+        * Bounded, because a sidebar dragged to nothing is a sidebar nobody can
+        * find again, and the handle goes with it.
+        */}
+      <div
+        onMouseDown={(e) => {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startWidth = width;
+          const move = (ev: MouseEvent) => {
+            const next = Math.min(520, Math.max(180, startWidth + ev.clientX - startX));
+            setWidth(next);
+          };
+          const up = () => {
+            window.removeEventListener("mousemove", move);
+            window.removeEventListener("mouseup", up);
+            try {
+              localStorage.setItem(WIDTH_KEY, String(widthRef.current));
+            } catch {
+              // A browser that refuses storage still gets a working splitter,
+              // it just forgets between visits.
+            }
+          };
+          window.addEventListener("mousemove", move);
+          window.addEventListener("mouseup", up);
+        }}
+        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-accent/40"
+        title="Drag to resize"
+      />
     </aside>
   );
 }

@@ -102,16 +102,16 @@ column, this is what is genuinely left.
 | From | Idea | Note |
 | --- | --- | --- |
 | ~~SIS-30~~ | Cluster isolated nodes | **Done.** | The graph accumulates nodes nothing links to. They are found by search and never by traversal, so they are half-remembered: present, and unreachable from anything else the agent knows. |
-| SIS-31 | Refine relations | Edges are written once, at extraction, at whatever confidence the moment suggested. Nothing revisits them when later evidence bears on one. |
-| SIS-74 | OpenAI Chat Completions passthrough | `/v1/messages` is built (SIS-73). The other dialect is the one most tools actually speak, and it is the same mapping onto the same session. |
-| UI-05 | Raw-event view and card verbosity | The transcript is rendered; the events behind it are only reachable through the API. |
+| ~~SIS-31~~ | Refine relations | **Done.** A short focused question replaces `related_to`, bounded per run, and the answer is taken only if it is short, verb-like and not the placeholder. |
+| ~~SIS-74~~ | OpenAI Chat Completions passthrough | **Done.** `POST /api/v1/chat/completions`, keyed on `user`. Same mapping, same auth, same refusal to fake streaming. |
+| ~~UI-05~~ | Raw-event view | **Done.** An Events toggle in the chat header. The transcript is an interpretation, right almost always and wrong exactly when something is behaving oddly. Not remembered between visits — it is for a moment of confusion, not a way of working. |
 | ~~UI-23~~ | Toasts for work that finishes off-screen | **Done.** `Toasts.tsx`. Only for sessions you are *not* looking at — the open one already shows its state every possible way — and silent on first render, since everything looks new when there is nothing to compare against. |
-| UI-31 | Log tail | `/api/logs` does not exist; the server's own output is only visible on the host. |
-| UI-34 | Draggable pane splitters | |
+| ~~UI-31~~ | Log tail | **Done.** `logbuffer.ts` wraps console into a ring buffer, `GET /api/logs` serves it, and the status strip shows it. A ring rather than a file: the audit table is the durable record, this is "what has the server said recently". |
+| ~~UI-34~~ | Draggable pane splitters | **Done**, as the one boundary this layout has. Bounded at both ends, because a sidebar dragged to nothing takes its own handle with it. |
 | ~~UI-36~~ | Portal status strip — uptime, graph size, sessions | **Done.** `StatusStrip.tsx` in the sidebar, expanding to every dependency and the running cost. `off` is shown as a choice rather than a fault, matching health.ts — colouring it red teaches people to ignore the row. |
-| UI-38 | Graph purge | Deleting a node is possible through `graph_forget`, which is the agent's tool, not the operator's. |
+| ~~UI-38~~ | Graph purge | **Done.** Per-node forget already existed; this is the bulk case — an extraction pass that wrote ninety junk facts. Bounded by type, refusing `anchor` and `project`, and deliberately no "purge everything". |
 
-Verified built despite a MISSING or PARTIAL status: BC-09, BC-11, BC-13, BC-19,
+All nine are now built. Verified built despite a MISSING or PARTIAL status: BC-09, BC-11, BC-13, BC-19,
 BC-21, BC-53, BC-59, BC-61, BC-62, BC-76, SIS-08, SIS-11, SIS-13, SIS-14,
 SIS-16, SIS-22, SIS-29, SIS-44, SIS-45, SIS-60, SIS-63, SIS-79, SIS-81, UI-19,
 UI-22, UI-37.
