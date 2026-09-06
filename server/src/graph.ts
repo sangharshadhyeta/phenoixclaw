@@ -8,6 +8,9 @@ import {
   timestampTZValue,
   type DuckDBConnection,
 } from "@duckdb/node-api";
+// llm.ts imports nothing from here, so this is not a cycle. It is the same
+// local model the extraction and pruning passes use — see refineRelations.
+import { complete } from "./llm.js";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import path from "node:path";
 
@@ -1189,6 +1192,212 @@ export async function pruneExpired(): Promise<number> {
  * for the same reason they are exempt from pruning: identity and the person
  * are not claims that go stale.
  */
+/**
+ * Link up the nodes nothing points at.
+ *
+ * Ports Sisyphean's `_cluster_isolated_nodes` (`memory/dream.py`). Extraction
+ * writes a node per fact, and a run of web searches on one subject produces a
+ * handful of them that share nothing but the minute they were written in. They
+ * are findable by search and unreachable by traversal, which makes them
+ * half-remembered: the agent can retrieve "Absurdism" if it happens to ask for
+ * it by name, and will never arrive there from "Existentialism".
+ *
+ * The heuristic is Sisyphean's and it is deliberately crude: nodes with no
+ * edges, created close together in time, are almost certainly from the same
+ * piece of work. Their shared words name a topic, a concept node is created
+ * for it, and each member is attached. Nothing here is a claim about the world
+ * — `part_of` a topic node is a statement about how these were gathered, which
+ * is exactly what the timestamps support and no more.
+ *
+ * Runs from the dream cycle, where a wrong grouping is cheap: it adds an edge
+ * that recall may follow, not a fact the agent will assert.
+ */
+const CLUSTERABLE = new Set(["fact", "concept", "page", "episode"]);
+
+/** Words too common to name a topic. */
+const TOPIC_STOP = new Set([
+  "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "is", "are", "was", "were", "for",
+  "with", "that", "this", "it", "its", "how", "what", "why", "can", "does", "has", "have", "been",
+  "meaning", "means", "mean", "view", "views", "about", "from", "into", "their", "there", "which",
+  "using", "used", "use", "when", "where", "than", "then", "them", "they", "some", "more", "most",
+]);
+
+/** The words a majority of these names share, best first. */
+export function topicWords(names: string[], minShare = 0.5): string[] {
+  if (names.length < 2) return [];
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    const words = new Set(
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !TOPIC_STOP.has(w)),
+    );
+    for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  const threshold = Math.max(2, Math.ceil(names.length * minShare));
+  return [...counts.entries()]
+    .filter(([, n]) => n >= threshold)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([w]) => w)
+    .slice(0, 3);
+}
+
+export async function clusterIsolatedNodes(
+  windowMinutes = 15,
+  minMembers = 3,
+): Promise<{ clusters: number; linked: number }> {
+  const conn = await getConn();
+  const rows = (
+    await conn.runAndReadAll(
+      `SELECT n.id, n.name, n.type, n.created_at FROM nodes n
+       WHERE n.id NOT IN (SELECT source_id FROM edges UNION SELECT target_id FROM edges)
+       ORDER BY n.created_at ASC`,
+    )
+  ).getRowObjectsJson() as unknown as Array<{ id: string; name: string; type: string; created_at: string }>;
+
+  const candidates = rows.filter((r) => CLUSTERABLE.has(r.type) && r.created_at);
+  if (candidates.length < minMembers) return { clusters: 0, linked: 0 };
+
+  // Buckets of nodes written close together — the same piece of work.
+  const buckets: Array<typeof candidates> = [];
+  let current: typeof candidates = [];
+  let anchorAt = 0;
+  for (const row of candidates) {
+    const at = new Date(row.created_at.replace(" ", "T")).getTime();
+    if (!Number.isFinite(at)) continue;
+    if (!current.length || at - anchorAt <= windowMinutes * 60_000) {
+      if (!current.length) anchorAt = at;
+      current.push(row);
+    } else {
+      if (current.length >= minMembers) buckets.push(current);
+      current = [row];
+      anchorAt = at;
+    }
+  }
+  if (current.length >= minMembers) buckets.push(current);
+
+  let clusters = 0;
+  let linked = 0;
+  for (const bucket of buckets) {
+    const words = topicWords(bucket.map((r) => r.name));
+    // No shared vocabulary means these were written at the same time and are
+    // about nothing in common — a coincidence of scheduling, not a topic.
+    if (!words.length) continue;
+    const topic = words.join(" ");
+    await upsertNode(
+      topic,
+      "concept",
+      `A topic these were gathered under: ${bucket.map((r) => r.name).slice(0, 8).join(", ")}.`,
+      // Low: this is an observation about when things were written, not a
+      // claim that they belong together.
+      0.4,
+      { source: "clustering" },
+    );
+    clusters++;
+    for (const member of bucket) {
+      await upsertEdge(member.name, "part_of", topic, 0.5);
+      linked++;
+    }
+  }
+  return { clusters, linked };
+}
+
+/**
+ * Say what a placeholder edge actually means.
+ *
+ * Ports Sisyphean's `_refine_relations`. The extractor writes `related_to`
+ * when it sees two things mentioned together and cannot tell how they relate —
+ * which is honest, and useless to anyone reading the graph afterwards. An edge
+ * that says "these co-occurred" carries no more than the fact that both nodes
+ * exist.
+ *
+ * A short focused question answers it far better than extraction could, because
+ * extraction was reading a page and this is looking at two summaries with
+ * nothing else competing for attention. Sisyphean sized the prompt for a 0.6B
+ * model; the constraint here is not capability but cost, so it is bounded per
+ * run and skips anything already specific.
+ *
+ * Failure is silence throughout. An unrefined edge is exactly what it was
+ * before, and a graph maintenance pass must never be able to damage the graph
+ * it is tidying: the answer is accepted only if it is short, verb-like, and not
+ * the placeholder it replaces.
+ */
+const RELATION_SYSTEM = [
+  "You are given two things from a knowledge graph and asked how the first relates to the second.",
+  "",
+  "Answer with a short verb phrase, two to four words, lower case, no punctuation — the label for",
+  'an arrow from the first to the second: "is a kind of", "was written by", "depends on",',
+  '"contradicts", "is part of", "caused".',
+  "",
+  'If you cannot tell from what you are given, answer exactly: unknown',
+].join("\n");
+
+/** A label worth storing: short, verb-like, and not the placeholder itself. */
+export function usableRelation(answer: string | undefined): string | undefined {
+  if (!answer) return undefined;
+  const text = answer.trim().toLowerCase().replace(/^["'`]|["'`.]+$/g, "").trim();
+  if (!text || text === "unknown" || text === "related_to" || text === "related to") return undefined;
+  const words = text.split(/\s+/);
+  if (words.length > 5 || text.length > 40) return undefined;
+  // A single noun is not a relation; a label has to say what one thing does to
+  // the other, or the edge is no better than the placeholder.
+  if (words.length < 2 && !/(s|ed|es)$/.test(text)) return undefined;
+  if (/[<>{}[\]|]/.test(text)) return undefined;
+  return text.replace(/\s+/g, "_");
+}
+
+export async function refineRelations(
+  limit = 20,
+  ask: (system: string, user: string) => Promise<string | undefined> = (system, user) =>
+    complete(system, user, { maxTokens: 24, temperature: 0.1 }),
+): Promise<number> {
+  const conn = await getConn();
+  const rows = (
+    await conn.runAndReadAll(
+      `SELECT e.source_id, e.target_id, s.name AS source_name, s.summary AS source_summary,
+              t.name AS target_name, t.summary AS target_summary
+       FROM edges e
+       JOIN nodes s ON s.id = e.source_id
+       JOIN nodes t ON t.id = e.target_id
+       WHERE e.relation = 'related_to'
+         AND s.type NOT IN ('anchor', 'tool_cache')
+         AND t.type NOT IN ('anchor', 'tool_cache')
+       LIMIT $limit`,
+      { limit },
+    )
+  ).getRowObjectsJson() as unknown as Array<Record<string, string>>;
+
+  let refined = 0;
+  for (const row of rows) {
+    let answer: string | undefined;
+    try {
+      answer = await ask(
+        RELATION_SYSTEM,
+        `First: ${row.source_name}\n${(row.source_summary ?? "").slice(0, 300)}\n\n` +
+          `Second: ${row.target_name}\n${(row.target_summary ?? "").slice(0, 300)}\n\n` +
+          `How does the first relate to the second?`,
+      );
+    } catch {
+      continue;
+    }
+    const relation = usableRelation(answer);
+    if (!relation) continue;
+    try {
+      await conn.run(
+        `UPDATE edges SET relation = $relation
+         WHERE source_id = $source AND target_id = $target AND relation = 'related_to'`,
+        { relation, source: row.source_id, target: row.target_id },
+      );
+      refined++;
+    } catch {
+      // A row that will not update is left as it was.
+    }
+  }
+  return refined;
+}
+
 export async function decayStaleBeliefs(
   olderThanDays = 30,
   factor = 0.9,

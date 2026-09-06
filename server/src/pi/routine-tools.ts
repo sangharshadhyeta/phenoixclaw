@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { nanoid } from "nanoid";
 import { pruneOldRecords, trimEventLog } from "../db.js";
-import { decayStaleBeliefs, pruneByAge, pruneExpired } from "../graph.js";
+import { clusterIsolatedNodes, decayStaleBeliefs, pruneByAge, pruneExpired, refineRelations } from "../graph.js";
 import { getDb, type SessionRow } from "../db.js";
 import { unscopeKey } from "../agent.js";
 import { channelSupervisor } from "../channels/supervisor.js";
@@ -409,6 +409,24 @@ export function selfMaintenanceTools() {
          * re-observed even occasionally, stays where it is.
          */
         const decayed = await decayStaleBeliefs(days);
+        /**
+         * Two passes that make the graph navigable rather than merely full.
+         *
+         * Decay is about what is *true*; these are about what is *reachable*.
+         * Extraction writes a node per fact, so a run of searches on one
+         * subject leaves a handful connected to nothing — findable by name and
+         * unreachable from anything else the agent knows. And it writes
+         * `related_to` whenever it sees two things together and cannot say how,
+         * which records that both exist and nothing more.
+         *
+         * Both belong here rather than anywhere nearer the moment: they need
+         * several nodes to have accumulated before there is a pattern to see,
+         * and a wrong grouping in an unattended pass costs an edge that recall
+         * may follow, not a claim the agent will assert.
+         */
+        const { clusters, linked } = await clusterIsolatedNodes();
+        const refined = await refineRelations();
+
         const expired = await pruneExpired();
         const aged = (
           await Promise.all(
@@ -418,7 +436,8 @@ export function selfMaintenanceTools() {
         return ok(
           `Cleanup complete. Pruned ${sessions} sessions, ${expired} expired and ${aged} ` +
             `aged-out memory nodes, trimmed ${events} old event(s) from the log, and let ` +
-            `${decayed} unrepeated belief(s) lose confidence.`,
+            `${decayed} unrepeated belief(s) lose confidence. Linked ${linked} unconnected ` +
+            `node(s) under ${clusters} topic(s), and gave ${refined} vague edge(s) a real name.`,
         );
       },
     });
