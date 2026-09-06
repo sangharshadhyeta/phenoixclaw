@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import {
   clearTasks,
@@ -45,6 +46,138 @@ import {
 
 /** Long enough that a section is worth its own turn; short enough not to nag. */
 const MIN_SECTION_CHARS = 200;
+
+/**
+ * Where each written section actually sits in the file.
+ *
+ * The first version of this recorded only a length, which was enough to notice
+ * that the file had shrunk and nothing else. It meant the only way back into
+ * what had been written was `tail()` — a blind slice of the last N bytes,
+ * usually starting mid-sentence — so a model that needed section three could
+ * not have it, and a section that came out wrong could not be fixed. Append was
+ * the only operation.
+ *
+ * Prose mostly survives that. Code does not: the point of writing a module
+ * function by function is that you find out, at function seven, that function
+ * three had the wrong signature. Without a range there is nothing to go back
+ * to, and the model's only recourse is to rewrite the whole file with `write` —
+ * which is both the thing this tool exists to avoid and the thing write_check's
+ * shrink detector then reports as data loss.
+ *
+ * Stored in the task's `result`, which is where the plan already keeps what
+ * came of a step. Offsets shift when an earlier section is revised, so
+ * `write_revise` moves the later ones by the delta rather than leaving them
+ * pointing at the wrong text.
+ */
+interface Span {
+  start: number;
+  end: number;
+}
+
+const spanOf = (result: string | null): Span | undefined => {
+  const m = /@(\d+)-(\d+)$/.exec(String(result ?? ""));
+  return m ? { start: Number(m[1]), end: Number(m[2]) } : undefined;
+};
+
+const spanResult = (span: Span): string => `${span.end - span.start} chars @${span.start}-${span.end}`;
+
+/**
+ * Is this file code, and if so what kind?
+ *
+ * It decides two things that genuinely differ between a report and a module:
+ * what counts as a leftover stub, and whether the file can be *checked* rather
+ * than merely measured. "TODO" in an essay is an unfinished essay; in code it
+ * is often a deliberate note. `...` is an ellipsis in prose and a spread
+ * operator in JavaScript — the stub scan used to report every `foo(...args)`
+ * as an unfinished document.
+ */
+const LANGUAGES: Record<string, { check?: (file: string) => string | undefined }> = {
+  ".js": { check: (f) => nodeCheck(f) },
+  ".mjs": { check: (f) => nodeCheck(f) },
+  ".cjs": { check: (f) => nodeCheck(f) },
+  ".json": {
+    check: (f) => {
+      try {
+        JSON.parse(readFileSync(f, "utf8"));
+        return undefined;
+      } catch (err) {
+        return String((err as Error).message);
+      }
+    },
+  },
+  ".py": {
+    check: (f) => {
+      const out = spawnSync("python3", ["-m", "py_compile", f], { encoding: "utf8", timeout: 10_000 });
+      return out.status === 0 ? undefined : (out.stderr || out.stdout || "").trim().slice(0, 400) || undefined;
+    },
+  },
+  // No cheap syntax-only check for TypeScript — `tsc` wants the project. The
+  // delimiter balance below still catches the failure that matters here, which
+  // is a section that stopped halfway.
+  ".ts": {},
+  ".tsx": {},
+  ".jsx": {},
+  ".go": {},
+  ".rs": {},
+  ".c": {},
+  ".h": {},
+  ".cpp": {},
+  ".java": {},
+  ".rb": {},
+  ".sh": {
+    check: (f) => {
+      const out = spawnSync("bash", ["-n", f], { encoding: "utf8", timeout: 10_000 });
+      return out.status === 0 ? undefined : (out.stderr || "").trim().slice(0, 400) || undefined;
+    },
+  },
+};
+
+const languageOf = (file: string) => LANGUAGES[path.extname(file).toLowerCase()];
+
+function nodeCheck(file: string): string | undefined {
+  const out = spawnSync(process.execPath, ["--check", file], { encoding: "utf8", timeout: 10_000 });
+  return out.status === 0 ? undefined : (out.stderr || "").trim().split("\n").slice(0, 6).join("\n") || undefined;
+}
+
+/**
+ * Unbalanced brackets, ignoring strings and comments.
+ *
+ * The universal symptom of a section that stopped halfway — which is exactly
+ * what incremental writing risks and exactly what a length check cannot see.
+ * Deliberately crude: it reports a count, not a position, and it is only ever
+ * used as a warning in write_check.
+ */
+export function unbalanced(text: string): string | undefined {
+  const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  const stack: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const rest = text.slice(i, i + 3);
+    if (c === "\"" || c === "'" || c === "`") {
+      const quote = c;
+      i++;
+      while (i < text.length && text[i] !== quote) i += text[i] === "\\" ? 2 : 1;
+      i++;
+      continue;
+    }
+    if (rest.startsWith("//") || c === "#") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (rest.startsWith("/*")) {
+      const end = text.indexOf("*/", i + 2);
+      i = end === -1 ? text.length : end + 2;
+      continue;
+    }
+    if (c === "(" || c === "[" || c === "{") stack.push(c);
+    else if (pairs[c]) {
+      if (stack.pop() !== pairs[c]) return `A ${c} closes something that was never opened.`;
+    }
+    i++;
+  }
+  return stack.length ? `${stack.length} unclosed ${stack.map((x) => x).join("")} — a section probably stopped halfway.` : undefined;
+}
 
 const said = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
@@ -105,12 +238,36 @@ async function hasLookedAnythingUp(sessionId: string): Promise<boolean> {
  * The tail rather than the whole file: what a section needs is what immediately
  * precedes it, and handing back a novel to write its last chapter is the
  * problem this exists to avoid.
+ *
+ * The cut moves forward to the next structural boundary — a heading, a blank
+ * line, a top-level definition — rather than landing wherever the byte count
+ * fell. A slice that opens mid-sentence is read as the sentence's beginning,
+ * and the model continues a thought whose first half it never saw; in code it
+ * is worse, because half a function body looks like a function to imitate.
+ * Better to show less and have it start somewhere real.
  */
+export function boundaryTail(text: string, chars = 2000): string {
+  if (text.length <= chars) return text;
+  const window = text.slice(-chars);
+  // Search only the first third: past that, honouring the boundary would cost
+  // most of what was asked for.
+  const limit = Math.floor(window.length / 3);
+  let best = -1;
+  for (const re of [/\n#{1,6} /g, /\n(?:export |function |class |def |const |async )/g, /\n\n/g]) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(window))) {
+      if (m.index > limit) break;
+      if (m.index > best) best = m.index;
+    }
+    if (best >= 0) break;
+  }
+  return `…\n${window.slice(best >= 0 ? best + 1 : 0)}`;
+}
+
 function tail(file: string, chars = 2000): string {
   if (!existsSync(file)) return "";
   try {
-    const text = readFileSync(file, "utf8");
-    return text.length <= chars ? text : `…\n${text.slice(-chars)}`;
+    return boundaryTail(readFileSync(file, "utf8"), chars);
   } catch {
     return "";
   }
@@ -166,11 +323,25 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         await clearTasks(sessionId);
         await setTasks(sessionId, sections);
 
-        const looked = await hasLookedAnythingUp(sessionId);
+        /**
+         * The nudge, and where it goes.
+         *
+         * Not for code. It asks whether a document's claims about the world
+         * were checked, and a module of arithmetic makes none — a `mean`
+         * function is not a factual assertion that could be looked up. Firing
+         * it there is a warning that is wrong every time, which trains the
+         * model to skip the ones that are right.
+         *
+         * And it goes *before* the instruction, not after. The first live run
+         * of this planned five sections, read a closing paragraph about not
+         * writing from recollection, and ended the turn without writing a
+         * line. Whatever a tool result ends on is what the model does next, so
+         * it ends on the thing to do.
+         */
+        const looked = languageOf(target) ? true : await hasLookedAnythingUp(sessionId);
         return said(
           `Planned ${sections.length} section(s) of ${target}:\n` +
             sections.map((s: string, i: number) => `  ${i + 1}. ${s}`).join("\n") +
-            `\n\nWrite the first with write_next. One section per call.` +
             (looked
               ? ""
               : `\n\nYou have not looked anything up in this conversation. If any of this states ` +
@@ -178,7 +349,9 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
                 `out first rather than writing what you believe: search your memory, read the ` +
                 `source, fetch the page. A document written from recollection reads exactly like ` +
                 `one that was checked. If it is genuinely something you know or are reasoning ` +
-                `about, carry on.`),
+                `about, carry on.`) +
+            `\n\nNow write section 1, "${sections[0]}", with write_next. One section per call, ` +
+            `and keep calling it until the plan is done.`,
         );
       },
     });
@@ -215,12 +388,21 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         }
 
         const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
-        appendFileSync(file, `${existing && !existing.endsWith("\n\n") ? "\n\n" : ""}${content}\n`, "utf8");
-        await setTaskStatus(sessionId, pending.seq, "done", `${content.length} chars`);
+        const separator = existing && !existing.endsWith("\n\n") ? "\n\n" : "";
+        appendFileSync(file, `${separator}${content}\n`, "utf8");
+        // Where it landed, not just how long it was — see Span. This is what
+        // makes read_section and write_revise possible at all.
+        const start = existing.length + separator.length;
+        await setTaskStatus(sessionId, pending.seq, "done", spanResult({ start, end: start + content.length }));
 
         const left = (await listTasks(sessionId)).filter((t: TaskRow) => t.status === "pending");
         if (!left.length) {
-          await updateSession(sessionId, { writing_file: null });
+          // The path stays on the session. Clearing it here made the document
+          // unreachable at the exact moment it was finished — read_section and
+          // write_revise both answered "no document in progress" once the last
+          // section landed, which is when you are most likely to look back at
+          // what you wrote. Completion is already visible in the plan: every
+          // step done, and write_next says so before it gets this far.
           return said(`Wrote "${pending.description}". The document is complete: ${file}`);
         }
 
@@ -260,7 +442,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
          */
         const problems: string[] = [];
         const expected = done.reduce((sum: number, t: TaskRow) => {
-          const m = /^(\d+) chars$/.exec(t.result);
+          const m = /^(\d+) chars/.exec(String(t.result ?? ""));
           return sum + (m ? Number(m[1]) : 0);
         }, 0);
         if (expected && text.length < expected * 0.8) {
@@ -269,11 +451,39 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
               `${expected}. Something overwrote earlier work rather than appending to it.`,
           );
         }
-        for (const stub of ["TODO", "TBD", "...", "[placeholder]", "coming soon"]) {
+        /**
+         * Stubs, judged by what the file is.
+         *
+         * `...` is an ellipsis in an essay and a spread operator in
+         * JavaScript, so scanning for it in code reported every
+         * `foo(...args)` as an unfinished document — a warning that is wrong
+         * often enough to be ignored, which is the worst kind.
+         */
+        const language = languageOf(file);
+        for (const stub of language
+          ? ["TODO", "FIXME", "[placeholder]", "not implemented"]
+          : ["TODO", "TBD", "...", "[placeholder]", "coming soon"]) {
           if (text.includes(stub)) problems.push(`"${stub}" is still in the text.`);
         }
         if (!text.trim() && done.length) {
           problems.push("The plan says sections are written but the file is empty.");
+        }
+
+        /**
+         * For code, whether it actually parses.
+         *
+         * The check a document cannot have and a program must: a module
+         * assembled a function at a time can be the right length, have every
+         * planned section, and not compile. `write_check` was reporting
+         * "nothing looks wrong" about files that would not load.
+         */
+        if (language && text.trim()) {
+          const syntax = language.check?.(file);
+          if (syntax) problems.push(`It does not parse:\n${syntax}`);
+          else {
+            const open = unbalanced(text);
+            if (open) problems.push(open);
+          }
         }
 
         return said(
@@ -285,6 +495,120 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
           ]
             .filter(Boolean)
             .join("\n"),
+        );
+      },
+    });
+
+    /**
+     * Reading one section back, by its number.
+     *
+     * Not `read`: the model would have to know the file's path and then find
+     * the section in it, and the tail it was given does not say where anything
+     * starts. This is the operation the plan already has the information for.
+     */
+    pi.registerTool({
+      name: "read_section",
+      label: "Read a written section",
+      description:
+        "Read back one section you have already written, by its number in the plan. Use it when a " +
+        "later section has to match an earlier one — a function's signature, a term you defined, a " +
+        "claim you are about to build on — rather than working from what you remember writing.",
+      promptSnippet: "read_section — read back a section you already wrote",
+      parameters: Type.Object({
+        section: Type.Number({ description: "The section's number, as shown in the plan." }),
+      }),
+      async execute(_id: string, p: any) {
+        const file = (await getSession(sessionId))?.writing_file;
+        if (!file) return said("No document in progress.");
+        const seq = Number(p?.section);
+        const task = (await listTasks(sessionId)).find((t: TaskRow) => t.seq === seq);
+        if (!task) return said(`There is no section ${seq} in this plan.`);
+        if (task.status !== "done") return said(`Section ${seq} ("${task.description}") is not written yet.`);
+
+        const span = spanOf(task.result);
+        const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+        if (!span || span.end > text.length) {
+          // Written before spans were recorded, or the file has been edited
+          // from outside. Say so rather than returning a confident wrong slice.
+          return said(
+            `Section ${seq} ("${task.description}") is written but I cannot locate it in the file — ` +
+              `it may have been edited outside this plan. Read ${file} directly.`,
+          );
+        }
+        return said(`Section ${seq} — "${task.description}":\n\n${text.slice(span.start, span.end)}`);
+      },
+    });
+
+    /**
+     * Rewriting a section in place.
+     *
+     * The gap that made this an append-only tool. Writing a module one function
+     * at a time means discovering at function seven that function three had the
+     * wrong signature — and until now the only way to fix it was a whole-file
+     * `write`, which is the thing this exists to avoid and which write_check
+     * then reports as data loss.
+     *
+     * Later sections move, so their spans move with it. Getting that wrong
+     * would leave read_section returning text that has drifted a few hundred
+     * characters, which is worse than not having it.
+     */
+    pi.registerTool({
+      name: "write_revise",
+      label: "Revise a section",
+      description:
+        "Replace a section you have already written, keeping everything around it. Use it when " +
+        "later work shows an earlier section was wrong — a signature that changed, a claim you have " +
+        "since checked — instead of rewriting the whole file.",
+      promptSnippet: "write_revise — replace one already-written section in place",
+      parameters: Type.Object({
+        section: Type.Number({ description: "The section's number, as shown in the plan." }),
+        content: Type.String({ description: "The section's new full text, replacing the old." }),
+      }),
+      async execute(_id: string, p: any) {
+        const file = (await getSession(sessionId))?.writing_file;
+        if (!file) return said("No document in progress.");
+        const seq = Number(p?.section);
+        const tasks = await listTasks(sessionId);
+        const task = tasks.find((t: TaskRow) => t.seq === seq);
+        if (!task) return said(`There is no section ${seq} in this plan.`);
+        if (task.status !== "done") return said(`Section ${seq} is not written yet — write_next writes it.`);
+
+        const span = spanOf(task.result);
+        const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+        if (!span || span.end > text.length) {
+          return said(
+            `I cannot locate section ${seq} in the file — it may have been edited outside this plan. ` +
+              `Read ${file} and edit it directly.`,
+          );
+        }
+        const content = String(p?.content ?? "").trimEnd();
+        if (content.length < MIN_SECTION_CHARS) {
+          return said(
+            `That is ${content.length} characters — too short to replace "${task.description}". ` +
+              `Use write_skip if the section should go.`,
+          );
+        }
+
+        writeFileSync(file, text.slice(0, span.start) + content + text.slice(span.end), "utf8");
+
+        // Everything after it shifts. Left unmoved, read_section would start
+        // returning text a few hundred characters off — confidently wrong,
+        // which is worse than refusing.
+        const delta = content.length - (span.end - span.start);
+        await setTaskStatus(sessionId, seq, "done", spanResult({ start: span.start, end: span.start + content.length }));
+        if (delta !== 0) {
+          for (const other of tasks) {
+            const s = spanOf(other.result);
+            if (other.seq === seq || !s || s.start < span.end) continue;
+            await setTaskStatus(sessionId, other.seq, other.status, spanResult({ start: s.start + delta, end: s.end + delta }));
+          }
+        }
+
+        const language = languageOf(file);
+        const syntax = language?.check?.(file);
+        return said(
+          `Revised section ${seq} ("${task.description}") — ${span.end - span.start} chars became ${content.length}.` +
+            (syntax ? `\n\nBut the file no longer parses:\n${syntax}` : ""),
         );
       },
     });

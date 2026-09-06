@@ -299,6 +299,48 @@ async function attachDuckDB(file: string): Promise<DuckDBInstance> {
     return await DuckDBInstance.create(file);
   } catch (e) {
     const message = (e as Error).message ?? "";
+    /**
+     * The main file's own checkpoint metadata, not the WAL.
+     *
+     *     INTERNAL Error: Failed to load metadata pointer (id 31, idx 0, ptr 31)
+     *
+     * A checkpoint that was interrupted partway through leaves the block
+     * metadata pointing at blocks that were never written, and DuckDB cannot
+     * open the file at all — not even READ_ONLY, so there is nothing to
+     * salvage in place and no query that recovers it.
+     *
+     * The WAL quarantine below already chose this shape and the reasoning is
+     * the same, only sharper: refusing to start leaves the portal dead until
+     * somebody logs into the host, and the alternative is not data loss —
+     * the file is renamed, not deleted, so whatever a future DuckDB can make
+     * of it is still there. What is *in* portal.duckdb is sessions, their
+     * event logs and the audit trail; identity and memory are in graph.duckdb
+     * and are a separate file precisely so that one of these can fail without
+     * taking the agent with it.
+     *
+     * It is loud on purpose. A portal that silently came up with no history
+     * would be worse than one that did not come up.
+     */
+    // Several messages, one condition: the file exists, claims to be a DuckDB
+    // database, and cannot be read. Which one you get depends on which block
+    // the interrupted write happened to leave inconsistent — a metadata
+    // pointer into a block that was never written, or a block whose checksum
+    // does not match what the header says it should be. Deliberately *not*
+    // matched: "not a valid DuckDB database file", which is what a wrong path
+    // gives you. Renaming somebody's notes.txt aside because we were pointed
+    // at it is the one outcome worse than refusing to start.
+    if (/Failed to load metadata pointer|Corrupt database file|does not match stored checksum|INTERNAL Error.*[Cc]heckpoint/.test(message)) {
+      const aside = `${file}.corrupt-${Date.now()}`;
+      renameSync(file, aside);
+      if (existsSync(`${file}.wal`)) renameSync(`${file}.wal`, `${aside}.wal`);
+      console.error(
+        `[duckdb] ${path.basename(file)} could not be opened — the file is damaged, which happens ` +
+          `when a checkpoint is interrupted partway through writing. It has been moved ` +
+          `to ${path.basename(aside)} and a new empty database created in its place, so the portal ` +
+          `can start. Nothing has been deleted. Original error: ${message.split("\n")[0]}`,
+      );
+      return DuckDBInstance.create(file);
+    }
     if (!/replaying WAL|WAL file/i.test(message)) throw e;
     const wal = `${file}.wal`;
     if (!existsSync(wal)) throw e;

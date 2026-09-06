@@ -151,6 +151,11 @@ const long = (s) => `${s} `.repeat(60);
   // stage is the pipeline shape this port rejected, and plenty of documents are
   // legitimately written from what is known.
   ok("but the plan is still made", /Planned 2 section/.test(cold));
+
+  // Whatever the result ends on is what the model does next. The first live
+  // run planned five sections, read the nudge as its closing line, and ended
+  // the turn without writing anything.
+  ok("and the last thing it says is to start writing", /with write_next/.test(cold.trimEnd().split("\n").slice(-2).join(" ")));
 }
 
 // --- the verifier, which shipped missing -----------------------------------
@@ -176,6 +181,96 @@ const long = (s) => `${s} `.repeat(60);
 
   writeFileSync(path.join(workspace, "checked.md"), `${long("Restored.")}\n\nTODO: finish this\n`);
   ok("a stub left behind is caught", /"TODO" is still in the text/.test(await c6("write_check", {})));
+}
+
+// --- reading a section back, and revising it -------------------------------
+// The gap that made these tools append-only. Writing a module a function at a
+// time means finding out at function seven that function three was wrong, and
+// until spans were recorded the only way back in was a whole-file `write` —
+// the thing this exists to avoid, which write_check then reports as data loss.
+{
+  await createSession({ id: "w7", title: "w7", workspace, executor: "host" });
+  const c7 = mount("w7", workspace);
+  await c7("write_plan", { file: "revise.md", sections: ["Alpha", "Beta", "Gamma"] });
+  await c7("write_next", { content: long("Alpha says one thing.") });
+  await c7("write_next", { content: long("Beta says another.") });
+  await c7("write_next", { content: long("Gamma concludes.") });
+
+  const read = await c7("read_section", { section: 2 });
+  ok("a written section can be read back exactly", /Beta says another/.test(read) && !/Alpha says/.test(read));
+  ok("and it says which section it is", /Section 2/.test(read) && /Beta/.test(read));
+
+  await createSession({ id: "w8", title: "w8", workspace, executor: "host" });
+  const c8 = mount("w8", workspace);
+  await c8("write_plan", { file: "unwritten.md", sections: ["One", "Two"] });
+  ok("an unwritten section says so", /not written yet/.test(await c8("read_section", { section: 2 })));
+  ok("a section that is not in the plan says so", /no section 9/.test(await c8("read_section", { section: 9 })));
+
+  // The revision itself, and the thing that would be worse than not having it:
+  // later sections must move, or read_section starts returning drifted text.
+  const before = readFileSync(path.join(workspace, "revise.md"), "utf8");
+  await c7("write_revise", { section: 1, content: long("Alpha, corrected and much longer now.") });
+  const after = readFileSync(path.join(workspace, "revise.md"), "utf8");
+  ok("the revision replaces the section", /Alpha, corrected/.test(after) && !/Alpha says one thing/.test(after));
+  ok("and leaves the rest of the file standing", /Beta says another/.test(after) && /Gamma concludes/.test(after));
+  ok("the file actually changed length", after.length !== before.length);
+
+  const shifted = await c7("read_section", { section: 3 });
+  ok("later sections still read back correctly after a shift",
+     /Gamma concludes/.test(shifted) && !/Beta says another/.test(shifted));
+  const stillBeta = await c7("read_section", { section: 2 });
+  ok("and so do the ones in between", /Beta says another/.test(stillBeta) && !/Alpha, corrected/.test(stillBeta));
+
+  ok("a revision that is really a deletion is refused",
+     /too short/.test(await c7("write_revise", { section: 1, content: "no" })));
+  ok("revising an unwritten section is refused",
+     /not written yet/.test(await c8("write_revise", { section: 1, content: long("x") })));
+}
+
+// --- code is not prose ------------------------------------------------------
+// A module assembled a function at a time can be the right length, have every
+// planned section, and not compile. write_check said "nothing looks wrong".
+{
+  const { writeFileSync } = await import("node:fs");
+  await createSession({ id: "w9", title: "w9", workspace, executor: "host" });
+  const c9 = mount("w9", workspace);
+  await c9("write_plan", { file: "mod.mjs", sections: ["helpers", "main"] });
+  await c9("write_next", { content: `// helpers\nexport function add(a, b) {\n  return a + b;\n}\n${"// padding comment line\n".repeat(12)}` });
+  ok("valid code passes the check", /Nothing looks wrong/.test(await c9("write_check", {})));
+
+  // The research nudge asks whether a document's claims about the world were
+  // checked. A mean() function makes none, so firing there is a warning that
+  // is wrong every time.
+  await createSession({ id: "w10", title: "w10", workspace, executor: "host" });
+  const c10 = mount("w10", workspace);
+  ok("code is not nagged about research",
+     !/have not looked anything up/.test(await c10("write_plan", { file: "fresh.mjs", sections: ["a", "b"] })));
+
+  // `...` is an ellipsis in prose and a spread operator in JavaScript. The stub
+  // scan reported every foo(...args) as an unfinished document.
+  writeFileSync(path.join(workspace, "mod.mjs"), `export const f = (...args) => args.length;\n${"// pad\n".repeat(40)}`);
+  const spread = await c9("write_check", {});
+  ok("a spread operator is not reported as a stub", !/"\.\.\." is still in the text/.test(spread));
+
+  writeFileSync(path.join(workspace, "mod.mjs"), `export function broken( {\n${"// pad\n".repeat(40)}`);
+  ok("code that does not parse is reported", /does not parse/.test(await c9("write_check", {})));
+
+  // The other half: prose still gets the prose rules.
+}
+
+// --- the tail starts somewhere real -----------------------------------------
+{
+  const { boundaryTail, unbalanced } = await import(dist("pi/writing-tools.js"));
+  const doc = `${"filler ".repeat(200)}\n## A Real Heading\n${"body ".repeat(60)}`;
+  const t = boundaryTail(doc, 400);
+  ok("the tail starts at a heading rather than mid-word", /^…\n## A Real Heading/.test(t));
+  ok("a short file is returned whole", boundaryTail("short", 400) === "short");
+  ok("with no boundary to find it still returns something", boundaryTail("x".repeat(900), 100).length > 50);
+
+  ok("unbalanced brackets are noticed", /unclosed/.test(unbalanced("function f() { if (x) {") ?? ""));
+  ok("balanced code is not", unbalanced("function f() { return [1, 2]; }") === undefined);
+  ok("a brace inside a string is not counted", unbalanced('const s = "{";') === undefined);
+  ok("a brace inside a comment is not counted", unbalanced("// {\nconst x = 1;") === undefined);
 }
 
 console.log("\n  " + pass + " passed, " + fail + " failed");

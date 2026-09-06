@@ -16,6 +16,7 @@ import { webTools } from "./web-tools.js";
 import { userTools } from "./user-tools.js";
 import { taskTools } from "./task-tools.js";
 import { planContext } from "./plan-context.js";
+import { loopSupervisor } from "./loop-supervisor.js";
 import { writingTools } from "./writing-tools.js";
 import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
@@ -568,6 +569,11 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // one — see plan-context.ts. After the assembler, so the plan sits
         // below its note rather than being cut with the old turns.
         factories.push({ name: "plan-context", factory: planContext(opts.sessionId) });
+        // The outer loop — a separate call, with the agent's own self-concept
+        // in it, that watches the work rather than doing it and nudges when
+        // the worker is repeating itself, gathering past sufficiency, or off
+        // the thing that was asked. See supervisor.ts.
+        factories.push({ name: "loop-supervisor", factory: loopSupervisor(opts.sessionId) });
         // Writing something long, one section at a time — see writing-tools.ts
         // for why that is better than one large call even for a capable model.
         factories.push({ name: "writing", factory: writingTools(opts.sessionId, opts.cwd) });
@@ -731,11 +737,52 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         ? pi.SessionManager.open(opts.sessionFile, opts.sessionDir, opts.cwd)
         : pi.SessionManager.create(opts.cwd, opts.sessionDir);
 
+    /**
+     * How many assistant turns one prompt may take.
+     *
+     * pi learns this from history when the caller does not say
+     * (`core/step-budget.ts`): the 75th percentile of past run lengths, times
+     * 1.5. That is a sound backstop for a coding CLI, where every run is the
+     * same kind of thing. It is wrong here, because this agent's history is
+     * not one distribution — it is thousands of one-turn chat replies ("hi",
+     * "what are my plans for Thursday?") arriving through channels, and a
+     * handful of long pieces of work.
+     *
+     * Measured, not guessed: 1855 recorded runs, p75 = 2, so **maxSteps was
+     * 3**. Every session in the portal was cut off after three assistant
+     * turns. A session asked to write a module planned it, planned it again,
+     * called write_plan, and was stopped before it could write a single
+     * section — which reads exactly like a model that lost interest, and is
+     * not. The more short chats the agent has, the harder it becomes for it
+     * to do any long work at all: a budget that learns from conversation
+     * spends itself on conversation.
+     *
+     * So the portal says — and what it says is effectively "no cap".
+     *
+     * A number that stops a run is the wrong instrument. It cannot tell the
+     * difference between a session doing forty turns of real work and one
+     * doing forty turns of nothing, so wherever it is set it is both too low
+     * for the first and too high for the second. What actually distinguishes
+     * them is *progress*, which is observable — the same call with the same
+     * arguments returning the same result, a plan that has not moved — and
+     * that is loop-supervisor.ts's job. A stuck run should be told it is
+     * stuck, not silently truncated mid-sentence.
+     *
+     * One exception, and it is a judgement call rather than something the
+     * user asked for: an autonomous run keeps a finite ceiling. Nobody is
+     * watching it, there is no one to notice the nudge is not landing, and
+     * this codebase has already had a routine reach 774 iterations overnight.
+     * An interactive session has a person in front of it who can stop it.
+     */
+    const maxSteps =
+      Number(process.env.PI_MAX_STEPS || 0) || (opts.autonomous ? 400 : Number.MAX_SAFE_INTEGER);
+
     const { session } = await pi.createAgentSession({
       cwd: opts.cwd,
       sessionManager,
       modelRuntime,
       settingsManager,
+      maxSteps,
       ...(excludeTools ? { excludeTools } : {}),
       ...(resourceLoader ? { resourceLoader } : {}),
       ...(model ? { model } : {}),

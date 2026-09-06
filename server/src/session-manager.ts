@@ -7,6 +7,7 @@ import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
 import { buildExecutor, executorSupports, unsupportedReason, type Executor, type ExecutorKind } from "./executors/index.js";
 import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
+import { forgetSupervision } from "./pi/loop-supervisor.js";
 import {
   addUsage,
   appendEvent,
@@ -960,6 +961,10 @@ class SessionManager extends EventEmitter {
     // pi's counters restart with the conversation; the running totals on the
     // row do not.
     this.lastUsage.delete(sessionId);
+    // The supervisor's cached opinion is about a conversation that no longer
+    // exists. Carrying it into the fresh one would have the worker told it is
+    // going in circles by something that watched a different run.
+    forgetSupervision(sessionId);
     await updateSession(sessionId, { pi_session_file: null });
     await this.record(sessionId, "portal_notice", {
       text: "Starting a fresh conversation — the previous one had filled up. What was learned is in memory.",

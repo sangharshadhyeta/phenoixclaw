@@ -827,7 +827,38 @@ const server = app.listen(PORT, "0.0.0.0", () => {
     .catch((e) => console.error(`[portal] channel startup failed: ${e.message}`));
 });
 
+/**
+ * Exiting without cutting a checkpoint in half.
+ *
+ * Closing the databases means checkpointing them, and a checkpoint's duration
+ * is a function of the file's size — portal.duckdb reaches hundreds of
+ * megabytes on a busy agent and DuckDB never shrinks a file, so it stays there.
+ * Interrupt one partway and the block metadata points at blocks that were never
+ * written; the database then cannot be opened at all, not even read-only. There
+ * is no repair for that, only the quarantine in graph.ts's attachDuckDB.
+ *
+ * So nothing may call process.exit while a close is in flight. The watchdog
+ * that gives up on lingering HTTP connections must not become the thing that
+ * kills the write — and a second Ctrl-C, which is exactly what an impatient
+ * operator does when a shutdown seems slow, must not either.
+ */
+let closingDatabases = false;
+let shuttingDown = false;
+
+function exitWhenSafe(code = 0) {
+  if (!closingDatabases) process.exit(code);
+  // Re-arm rather than exit. Unbounded on purpose: a checkpoint that has not
+  // finished is not a reason to corrupt it, and closeDb has its own failure
+  // path if the database is truly stuck.
+  setTimeout(() => exitWhenSafe(code), 250).unref();
+}
+
 async function shutdown(signal: string) {
+  if (shuttingDown) {
+    console.log(`${signal} received — already shutting down; the database is still being written.`);
+    return;
+  }
+  shuttingDown = true;
   console.log(`${signal} received — stopping running sessions`);
   routineSupervisor.stop();
   await channelSupervisor.shutdown();
@@ -835,9 +866,17 @@ async function shutdown(signal: string) {
   // Both databases are single-writer, and the lock outlives the signal unless
   // it is handed back. A restart inside that window could not open them at all
   // — see openDuckDB's lock wait, which is the other half of this.
-  await Promise.all([closeDb().catch(() => {}), closeGraph().catch(() => {})]);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 10_000).unref();
+  closingDatabases = true;
+  try {
+    await Promise.all([closeDb().catch(() => {}), closeGraph().catch(() => {})]);
+  } finally {
+    closingDatabases = false;
+  }
+  server.close(() => exitWhenSafe(0));
+  // An open SSE stream keeps server.close from ever calling back, so this is
+  // the real exit path most of the time. It runs after the databases are shut,
+  // and exitWhenSafe is the guard for the case where that is not yet true.
+  setTimeout(() => exitWhenSafe(0), 10_000).unref();
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

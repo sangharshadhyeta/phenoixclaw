@@ -788,6 +788,38 @@ export async function eventsSince(sessionId: string, since = 0, limit = 5000): P
 }
 
 /**
+ * The last few tool calls a session made, newest last.
+ *
+ * The loop supervisor's evidence. Read from the event log rather than kept in
+ * memory: a run belongs to the server and survives a restart, so anything that
+ * decides whether it is stuck has to survive one too. Bounded and indexed by
+ * seq, so this is a small query even on a session with a long history.
+ */
+export async function recentToolCalls(
+  sessionId: string,
+  limit = 20,
+): Promise<Array<{ toolName: string; args: string }>> {
+  const conn = await getDb();
+  const rows = await all<EventRow>(
+    conn,
+    `SELECT * FROM events WHERE session_id = $sessionId AND type = 'tool_execution_start'
+     ORDER BY seq DESC LIMIT $limit`,
+    { sessionId, limit },
+  );
+  return rows
+    .reverse()
+    .map((row) => {
+      try {
+        const payload = JSON.parse(row.payload);
+        return { toolName: String(payload?.toolName ?? ""), args: JSON.stringify(payload?.args ?? payload?.arguments ?? {}) };
+      } catch {
+        return { toolName: "", args: "" };
+      }
+    })
+    .filter((c) => c.toolName);
+}
+
+/**
  * A session marked `running` at boot cannot actually be running — the process
  * that owned it died with the previous server. Mark them interrupted so the UI
  * can offer a resume instead of showing a spinner forever.
@@ -1260,7 +1292,12 @@ export async function setTasks(sessionId: string, descriptions: string[]): Promi
   );
 
   await conn.run("DELETE FROM tasks WHERE session_id = $sessionId", { sessionId });
-  let seq = 0;
+  // 1-based. The plan is rendered to the model as "[1] research", and the model
+  // is asked to hand a step number back — to task_finish, read_section,
+  // write_revise. write_plan echoed its sections as "1. 2. 3." while the plan
+  // itself said "[0] [1] [2]", so the two numberings disagreed about which
+  // section was which and the model had no way to tell which one was wanted.
+  let seq = 1;
   for (const raw of descriptions) {
     const description = raw.trim();
     if (!description) continue;

@@ -118,6 +118,12 @@ export const AUTONOMOUS_TOOLS = new Set([
   "write_next",
   "write_skip",
   "write_check",
+  // Reading back and revising what it already wrote, both bounded to the file
+  // this session's own plan is for. `write_revise` writes, but only inside a
+  // span it recorded itself — the alternative is an autonomous turn that finds
+  // an error in section three and must reach for `write`, which is refused.
+  "read_section",
+  "write_revise",
   // The shaped stand-in for `write` — see skill-tools.ts. One artefact, one
   // directory, and it cannot replace a skill a person wrote.
   "skill_write",
