@@ -18,6 +18,7 @@ import {
   runningQuietRoutineSessions,
   runningSessions,
   updateSession,
+  type SessionRow,
 } from "./db.js";
 
 /**
@@ -173,13 +174,33 @@ class SessionManager extends EventEmitter {
 
   /**
    * Routine slugs by session, so a mirrored line can say which routine it came
-   * from. Populated at launch; a session with no entry is not a routine and is
-   * not mirrored.
+   * from. Populated at launch; a session with no entry is not a routine.
    */
   private routineOf = new Map<string, string>();
 
   /**
-   * Put a routine's milestones into the agent's main conversation.
+   * What to call a session in the main conversation, or nothing if it should
+   * not appear there.
+   *
+   * Task sessions used to be excluded, so the only work visible in one place
+   * was the work nobody asked for: routines mirrored, and a task you started
+   * yourself did not. That is the wrong way round — a person watching the
+   * agent's own conversation could see it dreaming and could not see it doing
+   * the thing they had asked for.
+   *
+   * The main conversation itself is excluded, or it would mirror into itself.
+   * Agent sessions are too: those *are* conversations with somebody, and
+   * folding one person's chat into another's is not a display decision, it is
+   * a disclosure.
+   */
+  private mirrorLabel(session: SessionRow): string | undefined {
+    if (session.kind === "routine") return session.routine_slug ?? undefined;
+    if (session.kind === "task") return session.title || "task";
+    return undefined;
+  }
+
+  /**
+   * Put a session's milestones into the agent's main conversation.
    *
    * On the same chain as the append above, so the mirror keeps the order the
    * original had. Failures are swallowed: not being able to show something is
@@ -187,15 +208,23 @@ class SessionManager extends EventEmitter {
    * still the authoritative record.
    */
   private async mirrorToMain(sessionId: string, type: string, payload: unknown): Promise<void> {
-    const slug = this.routineOf.get(sessionId);
-    if (!slug || !isMirrorable(type)) return;
+    const label = this.mirrorOf.get(sessionId);
+    if (!label || !isMirrorable(type)) return;
     try {
-      const mirrored = await mirror(EXECUTOR_KIND, { slug, sessionId }, type, payload);
+      const mirrored = await mirror(EXECUTOR_KIND, { slug: label, sessionId }, type, payload);
       if (mirrored) this.emit(`session:${mirrored.sessionId}`, mirrored.row);
     } catch {
       // See above.
     }
   }
+
+  /**
+   * What each live session is called in the mirror.
+   *
+   * Remembered at launch rather than looked up per event: record() is on the
+   * hot path for every streamed delta and must not do a database read.
+   */
+  private mirrorOf = new Map<string, string>();
 
   /**
    * Put right any session the database thinks is running that is not.
@@ -348,6 +377,8 @@ class SessionManager extends EventEmitter {
     if (session.kind === "routine" && session.routine_slug) {
       this.routineOf.set(sessionId, session.routine_slug);
     }
+    const label = this.mirrorLabel(session);
+    if (label) this.mirrorOf.set(sessionId, label);
     const client = await executor.launch({
       sessionId,
       workspacePath: session.workspace,

@@ -60,15 +60,98 @@ export async function mainConversation(executor: string): Promise<string> {
 }
 
 /** True for the events worth showing — boundaries and results, not deltas. */
+/**
+ * What reaches the main conversation.
+ *
+ * `tool_execution_end` is deliberately absent, and its removal is the whole
+ * re-budget. It carries the tool's *result* — a file's contents, a page, a
+ * directory listing — and once task sessions mirror as well as routines, that
+ * is the entire working output of every session in the portal landing in one
+ * place. Which is the failure this module already names: "mirroring every token
+ * would bury a conversation under an inner monologue that never stops, which is
+ * hiding by volume."
+ *
+ * What is left is the shape of the work rather than its substance: what was
+ * asked, what the agent said back, which tools it reached for, and the bookends
+ * of a routine run. Enough to follow along and to notice something going wrong;
+ * the session's own transcript is one click away for the rest.
+ */
 export const isMirrorable = (type: string): boolean =>
   type === "portal_prompt" ||
   type === "message_end" ||
   type === "tool_execution_start" ||
-  type === "tool_execution_end" ||
   type === "portal_routine";
 
+/** Enough of a message to follow the thread; the source session has all of it. */
+const MIRRORED_TEXT = 500;
+
 /**
- * Show something a routine did in the main conversation.
+ * The assistant's own words out of a `message_end`, or nothing.
+ *
+ * pi emits `message_end` for every message in the exchange, not only the
+ * agent's: a `user` role for the prompt and a `toolResult` role carrying a
+ * tool's entire output. Mirroring those put every file the agent read back into
+ * the main conversation through the side door — the exact bulk removing
+ * `tool_execution_end` was meant to keep out, arriving under a different name.
+ *
+ * `content` is an array of parts rather than a string, which is why the first
+ * version of this quietly matched nothing and let all of it through.
+ */
+function assistantText(p: Record<string, unknown>): { text: string } | undefined {
+  const message = p.message as Record<string, unknown> | undefined;
+  if (message?.role !== "assistant") return undefined;
+
+  const content = message.content;
+  const text = Array.isArray(content)
+    ? content
+        .map((part) =>
+          part && typeof part === "object" && (part as Record<string, unknown>).type === "text"
+            ? String((part as Record<string, unknown>).text ?? "")
+            : "",
+        )
+        .join("")
+        .trim()
+    : typeof content === "string"
+      ? content.trim()
+      : "";
+  return text ? { text: clip(text, MIRRORED_TEXT) } : undefined;
+}
+
+/**
+ * Keep the shape, drop the bulk.
+ *
+ * A mirrored line is a *notice* that something happened, not a copy of it. An
+ * assistant message can be pages long and a tool's arguments can be a whole
+ * file, and neither belongs in a conversation that is trying to show a dozen
+ * sessions at once.
+ */
+function trim(type: string, payload: unknown): unknown | undefined {
+  if (!payload || typeof payload !== "object") return payload;
+  const p = payload as Record<string, unknown>;
+
+  if (type === "portal_prompt" && typeof p.message === "string") {
+    return { ...p, message: clip(p.message, MIRRORED_TEXT) };
+  }
+  if (type === "tool_execution_start") {
+    // The name and a short subject — "read src/index.ts" reads at a glance
+    // where whole arguments do not. The *shape* is preserved (`args` stays
+    // `args`) because the web transcript's summarizeToolInput reads it; only
+    // the size changes.
+    const args = (p.args ?? p.input ?? {}) as Record<string, unknown>;
+    const first = args.command ?? args.path ?? args.file_path ?? args.pattern ?? args.query;
+    return {
+      toolName: p.toolName ?? p.name,
+      args: typeof first === "string" ? { command: clip(first, 120) } : {},
+    };
+  }
+  if (type === "message_end") return assistantText(p);
+  return p;
+}
+
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/**
+ * Show something a session did in the main conversation.
  *
  * Wrapped in its own event type rather than replayed as the original, so the
  * transcript can render it as something the agent did on its own initiative
@@ -85,11 +168,16 @@ export async function mirror(
   const target = await mainConversation(executor);
   // Never mirror the main conversation into itself.
   if (target === source.sessionId) return undefined;
+  // Nothing worth showing — a tool result, or the user's own message coming
+  // back as a message_end. Dropped rather than stored empty.
+  const trimmed = trim(type, payload);
+  if (trimmed === undefined) return undefined;
+
   const row = await appendEvent(target, "mirrored", {
     source: source.slug,
     sourceSessionId: source.sessionId,
     type,
-    payload,
+    payload: trimmed,
   });
   return { sessionId: target, row };
 }

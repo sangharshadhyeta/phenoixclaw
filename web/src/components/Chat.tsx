@@ -246,21 +246,41 @@ export function Chat({
           }
           if (item.kind === "self") {
             /**
-             * The agent working on its own initiative, mirrored in from a
-             * routine. Set to one side and dimmed: it is here so nothing it
-             * does is hidden, not because it was said to you — and a reader
-             * should never have to work out which of the two they are looking
-             * at. Type into the box and it stops and answers you.
+             * Work from elsewhere — a routine on its own initiative, or a task
+             * session you started in another tab. Set to one side and dimmed:
+             * it is here so nothing the agent does is hidden, not because it
+             * was said to you, and a reader should never have to work out
+             * which of the two they are looking at. Type into the box and it
+             * stops and answers you.
+             *
+             * A request and a reply are shown in full and wrapped; a tool call
+             * stays on one truncated line. The asymmetry is the point — what a
+             * session was asked to do explains everything under it, where the
+             * twentieth `read` does not.
              */
+            const prose = item.mode === "asked" || item.mode === "said";
             return (
               <div
                 key={item.id}
                 className="flex gap-2 border-l-2 border-line py-0.5 pl-3 text-[11px] text-fg-faint"
               >
                 <span className="shrink-0 font-medium text-fg-subtle">
-                  {item.phase === "start" ? "▸" : item.phase === "end" ? "■" : "·"} {item.source}
+                  {item.phase === "start"
+                    ? "▸"
+                    : item.phase === "end"
+                      ? "■"
+                      : item.mode === "asked"
+                        ? "▹"
+                        : item.mode === "said"
+                          ? "◂"
+                          : "·"}{" "}
+                  {item.source}
                 </span>
-                {item.text && <span className="min-w-0 truncate">{item.text}</span>}
+                {item.text && (
+                  <span className={prose ? "min-w-0 whitespace-pre-wrap" : "min-w-0 truncate"}>
+                    {item.text}
+                  </span>
+                )}
               </div>
             );
           }

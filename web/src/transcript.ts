@@ -5,8 +5,20 @@ export type Item =
   | { kind: "assistant"; id: string; text: string; thinking: string; done: boolean }
   | { kind: "tool"; id: string; name: string; status: "running" | "done" | "error"; detail?: string }
   | { kind: "notice"; id: string; text: string; tone: "info" | "error" }
-  /** Something the agent did on its own initiative, mirrored in from a routine. */
-  | { kind: "self"; id: string; source: string; text: string; phase?: "start" | "end" };
+  /**
+   * Work from another session, shown here so one place tells you what the
+   * agent is doing. `said` distinguishes what it wrote from what it ran, and
+   * `asked` is somebody's request in a task session — both look wrong rendered
+   * as ordinary turns, because neither was said to the reader.
+   */
+  | {
+      kind: "self";
+      id: string;
+      source: string;
+      text: string;
+      phase?: "start" | "end";
+      mode?: "tool" | "said" | "asked";
+    };
 
 /**
  * Fold pi's event stream into renderable turns.
@@ -58,10 +70,28 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
             kind: "self",
             id: `m${ev.seq}`,
             source,
+            mode: "tool",
             text: `${String(inner.toolName ?? inner.name ?? "tool")}${
               summarizeToolInput(inner) ? ` — ${summarizeToolInput(inner)}` : ""
             }`,
           });
+          break;
+        }
+        /**
+         * What was asked, and what came back.
+         *
+         * Both were being mirrored and neither was rendered, so the main
+         * conversation showed a stream of tool names with no sense of what any
+         * of it was for — "read, grep, edit" with nothing saying why. The task
+         * a person started is the most useful line in the whole mirror.
+         */
+        if (p.type === "portal_prompt" && typeof inner.message === "string" && inner.message.trim()) {
+          items.push({ kind: "self", id: `m${ev.seq}`, source, mode: "asked", text: inner.message.trim() });
+          break;
+        }
+        if (p.type === "message_end") {
+          const said = typeof inner.text === "string" ? inner.text.trim() : "";
+          if (said) items.push({ kind: "self", id: `m${ev.seq}`, source, mode: "said", text: said });
         }
         break;
       }
