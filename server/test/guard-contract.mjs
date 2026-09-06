@@ -172,5 +172,37 @@ const blocked = (r) => Boolean(r && r.block);
   ok("a clean session may still publish", !blocked(await g.call("bash", { command: "git push origin main" })));
 }
 
+// --- 7. an autonomous run may read to learn, not to gather secrets ---------
+// read-credentials is a *taint* rule, so it only fires once a session has read
+// something untrusted. An autonomous loop that has not touched the web is never
+// tainted — so it could read anything the process could reach, including the
+// machine's private keys, while doing nothing anybody asked for.
+{
+  const auto = mount(guardExtension("s", () => ({ role: "autonomous" }), undefined, true, REPO, false));
+
+  ok("reading source to learn is still allowed",
+     !blocked(await auto.call("read", { path: path.join(REPO, "package.json") })));
+  ok("and so is reading its own notes",
+     !blocked(await auto.call("read", { path: path.join(agentHome(), "CONSTITUTION.md") })));
+
+  for (const secret of ["/root/.ssh/id_rsa", "/root/.aws/credentials", "/etc/shadow", "/srv/app/.env"]) {
+    ok(`refuses ${secret}`, blocked(await auto.call("read", { path: secret })));
+  }
+  ok("the refusal cites privacy rather than the taint rules",
+     /private|exfiltrate|credentials/i.test(
+       (await auto.call("read", { path: "/root/.ssh/id_rsa" })).reason ?? "",
+     ));
+  ok("and via a shell command too",
+     blocked(await auto.call("bash", { command: "cat /root/.ssh/id_rsa" })));
+}
+{
+  // An ordinary session is unaffected: someone asking their own agent to look
+  // at their own .env is a normal thing to want, and the taint gate is the
+  // right place for that judgement.
+  const owner = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, REPO));
+  ok("a person may still ask about their own .env",
+     !blocked(await owner.call("read", { path: "/srv/app/.env" })));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

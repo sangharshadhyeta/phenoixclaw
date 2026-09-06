@@ -6,7 +6,7 @@ import { listToolRules, markSessionTainted, recordAudit, useGrant, type ToolRule
 import { CONSTITUTION_FILE } from "../agent-setup.js";
 import { agentHome } from "../agent.js";
 import { IDENTITY_FILES, writeIdentity } from "../identity.js";
-import { autonomousDenial } from "./constitution.js";
+import { autonomousDenial, CLAUSES } from "./constitution.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -228,6 +228,22 @@ function protectedTargetInCommand(
   }
   return undefined;
 }
+
+/**
+ * System credential stores, refused to autonomous runs on top of the
+ * `read-credentials` pattern.
+ *
+ * That pattern is written for a developer's own secrets — .env, id_rsa,
+ * auth.json — and misses the machine's, because an ordinary session has no
+ * business being stopped from reading /etc at all and the rule is shared. A
+ * turn nobody asked for is a different case: /etc/shadow is not something it
+ * could need and is exactly what it should never be gathering.
+ *
+ * Kept narrow and specific rather than "anything under /etc", which a loop
+ * reading its own deployment's config would legitimately trip.
+ */
+const SYSTEM_SECRETS =
+  /(\/etc\/(shadow|gshadow|sudoers|krb5\.keytab)|\/proc\/\d+\/environ|\/root\/\.(aws|docker|kube|gnupg)\/|\.pem$|\.p12$|\.pfx$|id_ecdsa|id_ed25519)/i;
 
 const RULES: Rule[] = [
   {
@@ -607,6 +623,45 @@ export function guardExtension(
               `time somebody speaks to you. Do not look for another way to do it.`,
           };
         }
+        /**
+         * Credentials are off-limits to a run nobody asked for, tainted or not.
+         *
+         * `read-credentials` is one of the taint rules below, so it only fires
+         * once a session has read something untrusted. An autonomous loop that
+         * has not touched the web is never tainted, and so could read anything
+         * the process can reach:
+         *
+         *     read /root/.ssh/id_rsa        -> allowed
+         *     read .pi/auth.json            -> allowed
+         *     read /etc/shadow              -> allowed
+         *
+         * The constitution's allowlist has `read` on it deliberately — a loop
+         * that cannot read cannot learn — but "may read" was never meant to
+         * mean "may read the machine's private keys". The clause it breaches is
+         * already written down: user data and workspace files are private, and
+         * are not to be gathered without being asked.
+         *
+         * Unconditional here rather than promoted out of RULES, because for an
+         * ordinary session the taint gate is right: a person asking their agent
+         * to look at their own `.env` is a normal thing to want, and refusing
+         * it would be the guard getting in the way of the work. Nobody asked
+         * for this one.
+         */
+        const credentialRule = RULES.find((r) => r.name === "read-credentials");
+        const target_ = event.toolName === "bash" ? cmd(event.input ?? {}) : target(event.input ?? {});
+        if (credentialRule?.hit(event.toolName, event.input ?? {}) || SYSTEM_SECRETS.test(target_)) {
+          console.warn(`[guard ${sessionId}] blocked ${event.toolName}: autonomous read-credentials`);
+          note("refused", "read-credentials — nobody asked, and these are not yours to gather");
+          return {
+            block: true,
+            reason:
+              `Refused: nobody asked for this turn, and it is reading something that holds ` +
+              `credentials. Your constitution says: "${CLAUSES.privacy}" Reading to learn is ` +
+              `fine; collecting secrets on your own initiative is not. Say plainly that you ` +
+              `stopped, and do not look for another way to it.`,
+          };
+        }
+
         note("autonomous", "Acting on its own initiative");
         // Deliberately falls through to the taint rules rather than returning:
         // `read` is on the autonomous allowlist and read-credentials is a rule
