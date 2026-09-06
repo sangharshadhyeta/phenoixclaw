@@ -47,11 +47,16 @@ export interface TurnCall {
   args: string;
 }
 
+export interface TurnContext {
+  /** True for the main chat or a channel conversation — not a task or routine. */
+  conversational: boolean;
+}
+
 export interface AfterTurnCheck {
   /** Short name, for the audit line. */
   name: string;
   /** Does this request call for the check at all? */
-  applies: (request: string) => boolean;
+  applies: (request: string, context: TurnContext) => boolean;
   /** Did the turn satisfy it? */
   satisfied: (calls: TurnCall[]) => boolean;
   /** What to hand back. */
@@ -75,7 +80,55 @@ export function selfConfirming(command: string): boolean {
   return !/\b(curl|wget|cat|ls|find|grep\s+-r|python|node|date|uname)\b/.test(text.replace(/^echo\s+["'][^"']*["']/, ""));
 }
 
+/**
+ * A request to build something, as opposed to a question about something.
+ *
+ * Deliberately about the *verb*. "Write a module", "build me a script", "create
+ * a report" is work; "what does this do", "how would I", "explain" is a
+ * question, and a conversation answers questions itself.
+ */
+const ASKS_FOR_WORK =
+  /\b(?:write|build|create|make|implement|generate|refactor|add|fix|port|set up|scaffold)\b[^.?!]{0,80}\b(?:module|script|file|program|class|function|report|guide|document|test|suite|page|component|endpoint|\w+\.(?:py|mjs|js|ts|tsx|md|json|sh|go|rs))\b/i;
+
+export function asksForWork(message: string): boolean {
+  const text = message.trim();
+  if (!text || text.length > 600) return false;
+  // A question about work is still a question.
+  if (/^\s*(?:what|why|how|when|where|which|who|is|are|does|do|can|should|would)\b/i.test(text)) return false;
+  return ASKS_FOR_WORK.test(text);
+}
+
 export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
+  {
+    /**
+     * A conversation asked to build something must hand it out.
+     *
+     * BirdClaw's soul layer force-created the task in Python when routing
+     * failed (`soul_loop._force_create_task`) — not a prompt, a decision the
+     * code made. Here the tool exists, is described, and was reasoned past
+     * three times in a row: first the model wrote the file into the agent's
+     * home, then into a workspace it did not own, and when both were refused it
+     * pasted the module into the reply and called nothing at all.
+     *
+     * That last one is why this is an after-turn check rather than a guard: a
+     * guard needs a tool call to intercept, and the failure mode is calling no
+     * tool. What the turn *did not do* is only visible once it is done.
+     */
+    name: "work-not-handed-out",
+    applies: (request, context) => context.conversational && asksForWork(request),
+    satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),
+    message: [
+      "That was a request to build something, and you answered it here.",
+      "",
+      "This is a conversation. Work gets a session of its own: `start_task` gives it an id, a",
+      "workspace and a plan, it runs while you carry on talking, and its answer comes back here",
+      "when it has one. Pasting a module into a reply produces no file, leaves nothing anyone can",
+      "run, and is lost when this conversation is trimmed.",
+      "",
+      "Hand it out now. Write the brief for someone who cannot see what we have said — what to",
+      "build, and what counts as done.",
+    ].join("\n"),
+  },
   {
     name: "world-question-unchecked",
     applies: isWorldQuestion,
@@ -138,9 +191,13 @@ function argOf(call: TurnCall, key: string): string {
 }
 
 /** The first check this turn failed, or undefined when it is sound. */
-export function failedCheck(request: string, calls: TurnCall[]): AfterTurnCheck | undefined {
+export function failedCheck(
+  request: string,
+  calls: TurnCall[],
+  context: TurnContext = { conversational: false },
+): AfterTurnCheck | undefined {
   for (const check of AFTER_TURN_CHECKS) {
-    if (!check.applies(request)) continue;
+    if (!check.applies(request, context)) continue;
     if (check.satisfied(calls)) continue;
     return check;
   }

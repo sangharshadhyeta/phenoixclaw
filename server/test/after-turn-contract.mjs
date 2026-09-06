@@ -19,13 +19,51 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { failedCheck, selfConfirming, AFTER_TURN_CHECKS } = await import(
+const { failedCheck, selfConfirming, asksForWork, AFTER_TURN_CHECKS } = await import(
   path.join(here, "..", "dist", "pi", "after-turn.js")
 );
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
 const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) });
+
+// --- a conversation asked to build something must hand it out --------------
+// BirdClaw force-created the task in Python when routing failed — a decision
+// the code made, not a prompt. Here the tool exists, is described, and was
+// reasoned past three times: the model wrote the file into the agent's home,
+// then into a workspace it did not own, and when both were refused it pasted
+// the module into the reply and called nothing at all.
+{
+  const chat = { conversational: true };
+  const task = { conversational: false };
+
+  ok("building a module is work", asksForWork("Build me a small Python module called areas.py"));
+  ok("so is writing a report", asksForWork("write a report on the deployment options"));
+  ok("and fixing a file", asksForWork("fix the parser in lexer.ts"));
+
+  // A question about work is still a question, and a conversation answers it.
+  ok("a question is not work", !asksForWork("what does this module do?"));
+  ok("nor is how-to", !asksForWork("how would I write a parser?"));
+  ok("nor a greeting", !asksForWork("hi"));
+
+  const q = "Build me a small Python module called areas.py with two functions.";
+  ok("answering it in the chat is handed back",
+     failedCheck(q, [], chat)?.name === "work-not-handed-out");
+  ok("handing it out satisfies the check",
+     failedCheck(q, [call("start_task", { title: "areas" })], chat) === undefined);
+  // The failure mode is calling *no* tool, which a guard cannot intercept —
+  // only an after-turn check sees what a turn did not do.
+  ok("pasting code with no tool at all is caught", failedCheck(q, [], chat) !== undefined);
+  ok("and writing the file itself does not count",
+     failedCheck(q, [call("write", { path: "areas.py" })], chat)?.name === "work-not-handed-out");
+
+  // A task session *is* the work; it must not be told to delegate its own job.
+  ok("a task doing the work is left alone", failedCheck(q, [call("write", {})], task) === undefined);
+
+  const message = failedCheck(q, [], chat).message;
+  ok("the hand-back names the tool", /start_task/.test(message));
+  ok("and says why a pasted module is not an answer", /produces no file/.test(message));
+}
 
 // --- a world question answered from memory ----------------------------------
 {

@@ -473,7 +473,9 @@ class SessionManager extends EventEmitter {
       return false;
     }
     const calls = await recentToolCalls(sessionId, 40).catch(() => []);
-    const failed = failedCheck(request, calls);
+    const failed = failedCheck(request, calls, {
+      conversational: this.kindOf.get(sessionId) === "agent",
+    });
     if (!failed) return false;
 
     this.askedTwice.add(sessionId);
