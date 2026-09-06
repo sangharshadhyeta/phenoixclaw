@@ -1285,39 +1285,59 @@ class SessionManager extends EventEmitter {
     await this.record(sessionId, "portal_status", { status: "running" });
     const outgoing = `${message}${note ? `\n${note}` : ""}${handedOut}`;
 
-    try {
-      /**
-       * Steering, for something a person typed while it was working; followUp
-       * for anything the portal generates, which belongs after the turn it is
-       * about rather than inside it. Without either, pi refuses a prompt that
-       * arrives mid-run and the message is simply lost — see PiClient.prompt.
-       */
-      await client.prompt(outgoing, opts.internal ? "followUp" : "steer");
-      /**
-       * A slash command completes inside prompt() without starting an agent
-       * turn, so no agent_end arrives to clear the status. Settle it here
-       * rather than leaving "working" on screen forever.
-       *
-       * Not while the runner is driving a plan. `client.prompt()` resolves
-       * when the turn ends, and a step's turn is *deliberately* ended the
-       * moment its section is written — so this heuristic found an idle client
-       * and settled a session with three sections still to write. The status
-       * then flickered idle between every step, which is what the UI and the
-       * e2e harness both read as "finished".
-       */
-      const idle = this.working.has(sessionId)
-        ? false
-        : (client as { isIdle?: () => boolean }).isIdle?.();
-      if (idle) {
+    /**
+     * Not awaited to completion — that is the whole contract.
+     *
+     * `client.prompt()` resolves when the *turn* ends, so awaiting it made
+     * `POST /api/sessions/:id/prompt` hold the request open for as long as the
+     * agent worked: a message queued behind a running turn took 144 seconds to
+     * come back with `{ok: true}`. The doc comment on `ask()` below has said
+     * for a long time that this "returns the moment pi accepts a message";
+     * that was the intent and not the behaviour.
+     *
+     * Steering, for something a person typed while it was working; followUp
+     * for anything the portal generates, which belongs after the turn it is
+     * about rather than inside it. Without either, pi refuses a prompt that
+     * arrives mid-run and the message is lost — see PiClient.prompt.
+     *
+     * Errors still land on the session rather than being thrown at whoever
+     * sent the message: by the time one happens the request is long answered,
+     * and the session row plus the event log are where a failure has to show
+     * up for a browser that reconnects.
+     */
+    const accepted = client.prompt(outgoing, opts.internal ? "followUp" : "steer");
+    const settled = accepted
+      .then(async () => {
+        /**
+         * Only a slash command. It completes inside prompt() without starting
+         * an agent turn, so no agent_end arrives to clear the status and it
+         * would sit at "working" forever.
+         *
+         * Nothing else may use this. A queued message resolves the moment it
+         * is accepted — the run it joined is still going — and the client
+         * reads idle in that instant because the next turn has not begun. A
+         * steered "and now backwards" settled the session while the previous
+         * answer was still streaming, which is the same wrong "finished" that
+         * the plan runner had to be excluded from. The turn's own end is what
+         * ends a turn; afterTurn does that.
+         */
+        if (!isCommand) return;
         await updateSession(sessionId, { status: "idle" });
         await this.record(sessionId, "portal_status", { status: "idle" });
-      }
-    } catch (e) {
-      const message = (e as Error).message;
-      await updateSession(sessionId, { status: "error", last_error: message });
-      await this.record(sessionId, "portal_status", { status: "error", error: message });
-      throw e;
-    }
+      })
+      .catch(async (e) => {
+        const failure = (e as Error).message;
+        await updateSession(sessionId, { status: "error", last_error: failure }).catch(() => {});
+        await this.record(sessionId, "portal_status", { status: "error", error: failure });
+      });
+
+    /**
+     * A slash command is the one thing the caller is entitled to wait for: it
+     * runs inside prompt() without an agent turn, so returning before it has
+     * finished would answer a `/model` with nothing having happened yet.
+     */
+    if (isCommand) await settled;
+    else void settled;
   }
 
   /**

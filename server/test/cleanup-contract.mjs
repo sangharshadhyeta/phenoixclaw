@@ -189,8 +189,22 @@ ok("sessions.tainted exists and defaults to 0",
   const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
   ok("afterTurn leaves the status alone while a plan is being driven",
      /private async afterTurn[\s\S]{0,900}this\.working\.has\(sessionId\)\) return;/.test(mgr));
-  ok("and the prompt heuristic does not settle mid-plan",
-     /this\.working\.has\(sessionId\)\s*\?\s*false/.test(mgr));
+  /**
+   * Stronger than the exclusion it replaced.
+   *
+   * The heuristic used to run for every prompt and skip only while a plan was
+   * being driven. It now runs for nothing but a slash command, which is the
+   * only thing it was ever for — a command completes inside prompt() without
+   * an agent turn, so nothing else would clear its status. Everything else,
+   * plan steps included, is settled by the turn actually ending.
+   *
+   * The exclusion was not enough on its own: a *queued* message resolves the
+   * moment it is accepted, and the client reads idle in that instant because
+   * the next turn has not begun. A steered follow-up settled the session while
+   * the previous answer was still streaming.
+   */
+  ok("and the prompt heuristic settles nothing but a slash command",
+     /if \(!isCommand\) return;\s*\n\s*await updateSession\(sessionId, \{ status: "idle" \}\);/.test(mgr));
 
   /**
    * The after-turn check must read a turn that has finished being written

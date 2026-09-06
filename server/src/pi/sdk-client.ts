@@ -1076,10 +1076,37 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     // design. Steering is the default because that is what a person typing
     // during a run means; a portal-generated prompt asks for followUp so it
     // lands after the turn it is commenting on rather than inside it.
-    await this.session.prompt(message, {
-      expandPromptTemplates: true,
-      streamingBehavior: whileRunning,
-    });
+    try {
+      await this.session.prompt(message, {
+        expandPromptTemplates: true,
+        streamingBehavior: whileRunning,
+      });
+    } catch (e) {
+      /**
+       * The window where the session is not streaming and the run is not over.
+       *
+       * `AgentSession.prompt` only queues when its own `isStreaming` is true;
+       * the agent underneath refuses whenever `activeRun` is set, and those
+       * two are not the same instant. A message sent between the steps of a
+       * plan — or in the beat after the last token — fell through the queueing
+       * branch, hit `agent.prompt`, and came back as "Agent is already
+       * processing a prompt", which the portal recorded as a failed run.
+       *
+       * Queue it the way pi queues it. This is the same call its own
+       * streaming branch makes, and the only thing skipped is prompt-template
+       * expansion, which has already happened for anything that needed it.
+       */
+      if (!/already processing/i.test((e as Error).message)) throw e;
+      const queued = {
+        role: "user",
+        content: [{ type: "text", text: message }],
+        timestamp: Date.now(),
+      };
+      const agent = (this.session as { agent?: { steer?: Function; followUp?: Function } }).agent;
+      const queue = whileRunning === "followUp" ? agent?.followUp : agent?.steer;
+      if (!queue) throw e;
+      queue.call(agent, queued);
+    }
   }
 
   async abort(): Promise<void> {
