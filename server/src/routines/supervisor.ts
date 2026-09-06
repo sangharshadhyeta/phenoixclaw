@@ -17,6 +17,8 @@ import { afterRun, beforeRun, summarise, treesFor, type Snapshot } from "./self-
  */
 
 export interface RoutineRow {
+  /** Which phase a multi-phase routine resumes at; null means from the start. */
+  phase?: string | null;
   id: string;
   slug: string;
   name: string;
@@ -467,6 +469,16 @@ async function prompt(row: RoutineRow, trigger: "schedule" | "manual"): Promise<
     ...(reporting ? ["", reporting] : []),
     "</routine>",
     "",
+    /**
+     * The phase to resume at, in front of the *whole* instruction set.
+     *
+     * `dream_progress` used to write this by rewriting the instructions —
+     * slicing off everything before the new phase and saving the remainder —
+     * so each advance permanently destroyed the earlier phases and by phase 8
+     * the routine was one line that could only ever report. The phase is a
+     * column now, and the instructions are never touched.
+     */
+    ...(row.phase ? [`You are continuing this cycle. Resume at: ${row.phase}`, ""] : []),
     row.instructions.trim(),
   ].join("\n");
 }

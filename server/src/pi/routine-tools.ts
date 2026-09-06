@@ -361,18 +361,27 @@ export function selfMaintenanceTools() {
         const row = await byName(slug);
         if (!row) return bad(`No routine called "${slug}"`);
 
-        const instructions = row.instructions;
-        const index = instructions.indexOf(p.phase);
-        if (index === -1) return bad(`Phase "${p.phase}" not found in current instructions. Please use an exact header from the instructions.`);
-
-        const newInstructions = instructions.slice(index);
-        const prefix = "You are continuing a Dream Cycle. The next phase is: ";
+        /**
+         * The phase is recorded; the instructions are never touched.
+         *
+         * This used to slice the instructions at the phase header and save the
+         * remainder, so every advance permanently destroyed the phases before
+         * it. By phase 8 the routine was the single line "You are continuing a
+         * Dream Cycle. The next phase is: PHASE 8: REPORT" — it could never
+         * return to phase 1, and the cycle was over for good. A routine must
+         * not be able to eat its own instructions.
+         */
+        if (!row.instructions.includes(p.phase)) {
+          return bad(
+            `Phase "${p.phase}" is not one of this routine's phases. Use an exact header from the instructions.`,
+          );
+        }
 
         const conn = await getDb();
-        await conn.run(
-          "UPDATE routines SET instructions = $instructions, updated_at = now() WHERE id = $id",
-          { instructions: prefix + newInstructions, id: row.id },
-        );
+        await conn.run("UPDATE routines SET phase = $phase, updated_at = now() WHERE id = $id", {
+          phase: p.phase,
+          id: row.id,
+        });
 
         await routineSupervisor.refreshSchedules();
 

@@ -439,6 +439,17 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
   const routineCols = await tableColumns(conn, "routines");
   for (const [col, ddl] of [
     ["run_at", "TEXT"],
+    /**
+     * Which phase of a multi-phase routine to resume at.
+     *
+     * A column rather than a marker written into `instructions`, because
+     * `dream_progress` used to rewrite the instructions themselves — slicing
+     * off everything before the new phase and saving the remainder. Each
+     * advance permanently destroyed the earlier phases, so by phase 8 the
+     * routine was a single line and could never return to phase 1. The cycle
+     * ate itself.
+     */
+    ["phase", "TEXT"],
     ["report_channel", "TEXT"],
     ["report_target", "TEXT"],
     ["last_report_at", "TEXT"],

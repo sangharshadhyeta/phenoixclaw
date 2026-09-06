@@ -157,7 +157,6 @@ const labelFor = (targets: ReportTarget[], to: ReportTo) =>
 export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) => void }) {
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -232,22 +231,15 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
             Scheduled
           </h3>
-          <button onClick={() => setAdding(!adding)} className={adding ? btnCls : primaryCls}>
-            <LuPlus className="h-4 w-4" /> {adding ? "Cancel" : "New routine"}
-          </button>
+          {/*
+            * No "New routine" button, for the same reason there is no "New
+            * session": a routine is something the agent decides to keep doing
+            * and writes the instructions for. Ask in Chat — it has
+            * `routine_create`, and it is the one that has to live with what it
+            * wrote. This page is where you watch them and decide which may
+            * run.
+            */}
         </div>
-
-        {adding && (
-          <NewRoutine
-            onCancel={() => setAdding(false)}
-            onError={setError}
-            onCreated={async (created) => {
-              setAdding(false);
-              await load();
-              setOpenId(created.id);
-            }}
-          />
-        )}
 
         {loading ? (
           <p className="py-10 text-center text-sm text-fg-subtle">Loading…</p>
@@ -373,85 +365,6 @@ function SchedulePicker({
   );
 }
 
-function NewRoutine({
-  onCancel,
-  onCreated,
-  onError,
-}: {
-  onCancel: () => void;
-  onCreated: (r: Routine) => Promise<void>;
-  onError: (e: string) => void;
-}) {
-  const [name, setName] = useState("");
-  const [mode, setMode] = useState<"repeats" | "once">("repeats");
-  const [schedule, setSchedule] = useState("0 9 * * *");
-  const [runAt, setRunAt] = useState(toLocalInput(null));
-  const [instructions, setInstructions] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const create = async () => {
-    setBusy(true);
-    try {
-      await onCreated(
-        await api.createRoutine(
-          mode === "repeats"
-            ? { name, schedule, instructions }
-            : { name, runAt: new Date(runAt).toISOString(), instructions }
-        )
-      );
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mt-3 space-y-3 rounded-xl border border-line bg-raised/40 p-3">
-      <label className="block">
-        <span className="text-xs text-fg-muted">Name</span>
-        <input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Morning summary"
-          className={`${inputCls} mt-1`}
-        />
-      </label>
-
-      <Timing
-        mode={mode}
-        schedule={schedule}
-        runAt={runAt}
-        onMode={setMode}
-        onSchedule={setSchedule}
-        onRunAt={setRunAt}
-      />
-
-      <label className="block">
-        <span className="text-xs text-fg-muted">Instructions</span>
-        <textarea
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-          rows={5}
-          placeholder="What to do when it fires. Written as an instruction, not a question — nobody is there to answer one."
-          className={`${inputCls} mt-1 resize-y text-xs leading-relaxed`}
-        />
-      </label>
-
-      <div className="flex items-center gap-2">
-        <button disabled={!name.trim() || busy} onClick={create} className={primaryCls}>
-          {busy ? <LuRefreshCw className="h-4 w-4 animate-spin" /> : <LuCheck className="h-4 w-4" />}
-          Create
-        </button>
-        <button onClick={onCancel} className={btnCls}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function RoutineDetail({
   routine: r,
   onBack,
@@ -469,7 +382,6 @@ function RoutineDetail({
   const [mode, setMode] = useState<"repeats" | "once">(r.mode);
   const [schedule, setSchedule] = useState(r.schedule || "0 9 * * *");
   const [runAt, setRunAt] = useState(toLocalInput(r.runAt));
-  const [instructions, setInstructions] = useState(r.instructions);
   const [fresh, setFresh] = useState(r.freshSession);
   const [guard, setGuard] = useState(r.guard);
   const [autonomous, setAutonomous] = useState(r.autonomous);
@@ -486,7 +398,6 @@ function RoutineDetail({
     setMode(r.mode);
     setSchedule(r.schedule || "0 9 * * *");
     setRunAt(toLocalInput(r.runAt));
-    setInstructions(r.instructions);
     setFresh(r.freshSession);
     setGuard(r.guard);
     setAutonomous(r.autonomous);
@@ -514,7 +425,6 @@ function RoutineDetail({
     name !== r.name ||
     mode !== r.mode ||
     (mode === "repeats" ? schedule !== r.schedule : toLocalInput(r.runAt) !== runAt) ||
-    instructions !== r.instructions ||
     fresh !== r.freshSession ||
     guard !== r.guard ||
     autonomous !== r.autonomous ||
@@ -586,19 +496,31 @@ function RoutineDetail({
           onRunAt={setRunAt}
         />
 
-        <label className="block">
+        {/*
+          * Read-only.
+          *
+          * A routine's instructions are the agent's own work — it writes them
+          * with `routine_create`, and asking for one in Chat is how you get a
+          * new one. Editing them here was a second, unwatched way to change
+          * what the agent does on its own initiative, and the routine that
+          * rewrote its own instructions destructively (`dream_progress`, which
+          * sliced off every phase it had passed) is the argument: instructions
+          * are hard to get right and easy to destroy, and the agent is the one
+          * that has to live with them.
+          *
+          * Shown in full, because what an unattended run has been told is
+          * exactly the thing a person should be able to read.
+          */}
+        <div className="block">
           <span className="text-xs text-fg-muted">Instructions</span>
-          <textarea
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-            rows={8}
-            className={`${inputCls} mt-1 resize-y text-xs leading-relaxed`}
-          />
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-canvas p-2 text-xs leading-relaxed text-fg-muted">
+            {r.instructions}
+          </pre>
           <p className="mt-1 text-[11px] text-fg-faint">
-            Given to the agent verbatim, with a note that it was woken by a schedule and that
-            nobody is waiting on a reply.
+            Written by the agent. Ask in Chat to change what a routine does, or to add one — it
+            writes the instructions and lives with them.
           </p>
-        </label>
+        </div>
 
         <button
           type="button"
@@ -767,7 +689,8 @@ function RoutineDetail({
                 ...(mode === "repeats"
                   ? { schedule, runAt: "" }
                   : { schedule: "", runAt: new Date(runAt).toISOString() }),
-                instructions,
+                // Not `instructions`: what a routine is told is the agent's to
+                // write. This page changes when it runs and whether it may.
                 freshSession: fresh,
                 guard,
                 autonomous,
