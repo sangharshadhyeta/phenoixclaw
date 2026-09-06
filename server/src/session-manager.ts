@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { PiClient } from "./pi/types.js";
 import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
-import { buildExecutor, type Executor, type ExecutorKind } from "./executors/index.js";
+import { buildExecutor, executorSupports, unsupportedReason, type Executor, type ExecutorKind } from "./executors/index.js";
 import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import {
@@ -318,6 +318,21 @@ class SessionManager extends EventEmitter {
     if (!this.harvested.has(sessionId)) {
       const seen = await eventsSince(sessionId, 0, 1_000_000);
       this.harvested.set(sessionId, seen.length ? seen[seen.length - 1].seq : 0);
+    }
+
+    /**
+     * Refuse rather than run unguarded — see executorSupports.
+     *
+     * Thrown at launch, which is where it can still be reported: by the time a
+     * channel message is being answered there is nobody left to tell, and a
+     * silently unguarded session is precisely the failure this exists to
+     * prevent.
+     */
+    if (!executorSupports(EXECUTOR_KIND, session.kind)) {
+      const why = unsupportedReason(session.kind);
+      await updateSession(sessionId, { status: "error", last_error: why });
+      await this.record(sessionId, "portal_status", { status: "error", error: why });
+      throw new Error(`This session cannot run under EXECUTOR=${EXECUTOR_KIND}: ${why}`);
     }
 
     const executor = buildExecutor(EXECUTOR_KIND, SESSION_ROOT);

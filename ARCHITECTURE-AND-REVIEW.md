@@ -650,7 +650,7 @@ on a conversation they have looked at — a portal builtin alongside `/client` i
 Deliberately not built here: an escape hatch that clears a security flag deserves its
 own decision about who may use it, not a bundled one.
 
-### N3 — The `container` executor has no guard at all *(open)*
+### N3 — The `container` executor has no guard at all **[RESOLVED — bounded, not closed]**
 
 `server/src/pi/rpc-client.ts` contains no reference to `guardExtension`,
 `enforceTaint` or `autonomous`. The whole injection guard, the role allowlist and the
@@ -663,8 +663,11 @@ is not defensible for the people layer, which is not about isolation: on a
 all. `LaunchOptions` carries `role`, `whoNow`, `enforceTaint`, `autonomous` and now
 `tainted`, and `ContainerExecutor.launch` reads none of them.
 
-Not fixed here — it is a design question (does the RPC transport grow a guard, or do
-channel sessions refuse to run under `container`?) rather than a patch.
+**Resolved by bounding it rather than closing it.** `container` now runs `task` sessions
+only; `agent` and `routine` sessions are refused at launch with a reason, and the boot log
+announces the limitation. The gap in `rpc-client.ts` is unchanged and still real — what
+has changed is that it can no longer be met silently. A full RPC-side guard is still the
+answer if channels must run containerised.
 
 ### G1 — The guard has a one-batch blind spot when tools run in parallel **[FIXED — `576268458`]**
 
@@ -757,7 +760,7 @@ Called out because they look like defects until you know the history:
 3. ~~**H2 → H5**~~ — done 2026-09-05.
 4. ~~**H6 / M1**~~ — done 2026-09-05, and see N1–N3 for what that turned up.
 5. ~~**G1**~~ — done 2026-09-05, pessimistic taint at `tool_call`.
-6. **N3** — the container executor's missing guard is the largest thing still open.
+6. ~~**N3**~~ — bounded 2026-09-06: container runs task sessions only.
 7. **M2** — one warning line turns a silent degradation into a visible one.
 6. Everything in §2.5 is cleanup.
 

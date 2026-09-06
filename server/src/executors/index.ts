@@ -180,6 +180,47 @@ export class ContainerExecutor implements Executor {
   }
 }
 
+/**
+ * Which session kinds may run under a given executor.
+ *
+ * `container` registers no guard at all — rpc-client.ts contains no reference
+ * to guardExtension, roles, taint or the constitution, and ContainerExecutor
+ * reads only `sessionId` and `workspacePath` from its LaunchOptions, silently
+ * discarding `role`, `whoNow`, `enforceTaint`, `autonomous`, `tainted` and
+ * `projectTrusted`.
+ *
+ * For a **task** session that is defensible, and is arguably the point: the
+ * container *is* the boundary, only the workspace is mounted, capabilities are
+ * dropped, and there is no speaker whose role could need checking.
+ *
+ * For an **agent** session it is not. A channel serves colleagues and
+ * strangers, and the role check is what stops a colleague getting primary-level
+ * access to the machine. Containerising the process protects the host; it does
+ * nothing whatever about who is allowed to ask. The same holds for an
+ * **autonomous routine**, where the constitution's allowlist is the only thing
+ * bounding a turn nobody asked for.
+ *
+ * So those kinds are refused rather than run unguarded. Refusing is the
+ * conservative reading of a genuine trade: falling back to `host` would keep
+ * the feature working while quietly removing the isolation the operator
+ * deliberately asked for, and running unguarded would keep it working while
+ * quietly removing the guard. Neither is a decision to take on somebody's
+ * behalf at runtime. The escape is one setting — EXECUTOR=host — and the boot
+ * log names it.
+ */
+export function executorSupports(kind: ExecutorKind, session: "task" | "agent" | "routine"): boolean {
+  return kind !== "container" || session === "task";
+}
+
+/** Why a kind is refused, in words an operator can act on. */
+export function unsupportedReason(session: "task" | "agent" | "routine"): string {
+  return session === "agent"
+    ? "channel conversations need the people/roles check, which the container executor does not register — " +
+        "a colleague or a stranger would get the same access as you. Set EXECUTOR=host to use channels."
+    : "autonomous routines are bounded by the constitution's allowlist, which the container executor does " +
+        "not register — a run nobody asked for would be unbounded. Set EXECUTOR=host to use them.";
+}
+
 export function buildExecutor(kind: ExecutorKind, sessionRoot: string): Executor {
   if (kind === "container") {
     return new ContainerExecutor(

@@ -92,14 +92,24 @@ The routine edits Phoenixclaw's and pi's source with no snapshot and no revert.
 - Refuse to run on a dirty tree.
 - It ships disabled; keep it disabled until this lands.
 
-### 0.6 Container executor: decide `[PORTAL]` — L ⏸ **awaiting decision**
+### 0.6 Container executor: decide `[PORTAL]` — L ✅ decided and implemented
 
 `rpc-client.ts` registers no guard, so `EXECUTOR=container` has no roles and no taint.
-**Decision required before code.** Recommendation: refuse `agent`-kind (channel) sessions
-under `container` and say so loudly at boot; isolation answers the task case, not the
-people case. Full RPC-side guard only if channels must run containerised.
+**Decided: refuse, do not degrade.** `container` runs `task` sessions only. Channel
+conversations and autonomous routines are refused at launch with a reason naming the
+missing control and the way out, and the limitation is announced at boot.
 
-**Phase 0 gate:** ✅ met for 0.1–0.5. `npm test` is ten contracts / 174 assertions, including a
+The two alternatives were both worse, and in the same way — each would keep the feature
+working while quietly removing a guarantee the operator had asked for. Falling back to
+`host` removes the isolation they chose `container` for; running unguarded removes the
+roles check and the constitution ceiling. Neither is a decision to take on somebody's
+behalf at runtime, and a silently unguarded channel session is exactly what this was
+opened to prevent.
+
+A full RPC-side guard remains the answer if channels must run containerised. Nothing here
+forecloses it; it just is not owed before the gap stops being silent.
+
+**Phase 0 gate:** ✅ met — 0.1 through 0.6 complete. `npm test` is ten contracts / 174 assertions, including a
 hostile-repo fixture for 0.1, batch cases for 0.2, and real git repos for 0.5.
 0.4 deferred its token half to 3.3, which shares the same event plumbing.
 

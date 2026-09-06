@@ -665,6 +665,19 @@ const server = app.listen(PORT, "0.0.0.0", () => {
    * never set, and nothing anywhere said so: the feature looked like it worked
    * and the graph simply stayed empty.
    */
+  /**
+   * The container executor's guard gap, said once where somebody will see it.
+   *
+   * Not a warning about configuration that might be wrong — this one is a
+   * capability the deployment does not have, and finding out when a colleague's
+   * message fails is finding out too late.
+   */
+  if (EXECUTOR_KIND === "container") {
+    console.warn("  limited:  EXECUTOR=container registers no guard, so it runs task sessions only.");
+    console.warn("            Channel conversations and autonomous routines are refused — they need the");
+    console.warn("            roles check and the constitution's allowlist. Set EXECUTOR=host for those.");
+  }
+
   for (const [env, effect] of [
     ["LLAMA_BASE_URL", "no fact extraction from conversations or pages"],
     ["EMBEDDING_BASE_URL", "memory search is keyword-only, no semantic recall"],
