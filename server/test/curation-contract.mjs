@@ -155,5 +155,41 @@ const age = async (name, days) => {
   ok("and memory is framed as a start, not an authority", /not an authority/.test(framing));
 }
 
+// --- the graph as something you can draw ----------------------------------
+// `neighbors` answers "what is next to this", which is right for the agent and
+// wrong for a picture: drawing a hundred nodes that way is a hundred round
+// trips, and what you get depends on where you started.
+{
+  const { graphSnapshot, upsertEdge } = await import(dist("graph.js"));
+
+  await g.upsertNode("alpha module", "concept", "A module.", 0.9);
+  await g.upsertNode("beta module", "concept", "Another module.", 0.9);
+  await g.upsertNode("lonely thought", "concept", "Connected to nothing.", 0.9);
+  await upsertEdge("alpha module", "imports", "beta module");
+
+  const snap = await graphSnapshot(200);
+  ok("nodes come back", snap.nodes.length > 0);
+  ok("edges come back", snap.edges.length > 0);
+  ok("an edge names both ends",
+     snap.edges.some((e) => e.source === "alpha module" && e.target === "beta module"));
+  ok("with its relation", snap.edges.some((e) => e.relation === "imports"));
+
+  // An edge to a node that was cut is a line to nowhere, not a hint of
+  // something beyond the frame.
+  const ids = new Set(snap.nodes.map((n) => n.id));
+  ok("no edge dangles",
+     snap.edges.every((e) => ids.has(e.source) && ids.has(e.target)));
+
+  // A truncated graph should be the interesting part of it, not the first
+  // rows on disk.
+  const small = await graphSnapshot(3);
+  ok("the limit is respected", small.nodes.length === 3);
+  ok("and the strongest come first",
+     small.nodes[0].confidence >= small.nodes[small.nodes.length - 1].confidence);
+
+  const typed = await graphSnapshot(50, "concept");
+  ok("filtering by type works", typed.nodes.every((n) => n.type === "concept"));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

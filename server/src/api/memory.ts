@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   getNode,
+  graphSnapshot,
   neighbors,
   removeNode,
   nodeCount,
@@ -110,6 +111,21 @@ export function memoryRouter(): Router {
     }
     await removeNode(name);
     res.json({ ok: true, forgotten: name, type: node.type });
+  });
+
+  /**
+   * The graph as a picture rather than a list.
+   *
+   * The memory page shows what the agent knows as rows, which answers "does it
+   * know X" and not "how is any of this connected" — and connection is what a
+   * graph is for. An unattended loop writing into it makes that the more useful
+   * question: a cluster of nodes nothing links to is a subject it read about
+   * and never related to anything else.
+   */
+  router.get("/memory/graph", async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 150, 10), 500);
+    const type = typeof req.query.type === "string" ? (req.query.type as NodeType) : undefined;
+    res.json(await graphSnapshot(limit, type));
   });
 
   router.get("/memory/neighbors", async (req, res) => {

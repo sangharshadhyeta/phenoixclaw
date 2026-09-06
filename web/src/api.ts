@@ -325,6 +325,19 @@ export const api = {
     json<{ total: number; counts: Record<string, number>; nodes: MemoryNode[] }>(
       `/api/memory?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`,
     ),
+  /** Enough of the graph to draw — see graphSnapshot for why edges are filtered. */
+  memoryGraph: (type = "", limit = 150) =>
+    json<{
+      nodes: MemoryNode[];
+      edges: { source: string; relation: string; target: string; weight: number }[];
+    }>(`/api/memory/graph?type=${encodeURIComponent(type)}&limit=${limit}`),
+
+  /** Remove a belief. The agent has graph_forget; this is the person's version. */
+  forgetMemory: (name: string) =>
+    json<{ ok: true; forgotten: string }>(`/api/memory/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+
   memoryNeighbors: (name: string) =>
     json<{ neighbors: Neighbor[] }>(`/api/memory/neighbors?name=${encodeURIComponent(name)}`).then(
       (r) => r.neighbors,

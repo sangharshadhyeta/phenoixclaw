@@ -795,6 +795,51 @@ export async function traverse(name: string, depth = 2): Promise<NodeRow[]> {
  */
 
 /** Every node of one type. */
+/**
+ * Enough of the graph to draw, in one query rather than a walk.
+ *
+ * `neighbors` answers "what is next to this", which is the right shape for the
+ * agent and the wrong one for a picture: drawing a hundred nodes that way is a
+ * hundred round trips, and the result depends on where you happened to start.
+ *
+ * Ordered by confidence and recency so a truncated graph is the *interesting*
+ * part of it rather than an arbitrary slice — a picture of a memory should show
+ * what the agent is most sure of and most recently thought about, not the first
+ * two hundred rows on disk.
+ *
+ * Edges are filtered to the nodes returned, so nothing dangles: an edge to a
+ * node that was cut is not a hint of something beyond the frame, it is a line
+ * to nowhere.
+ */
+export async function graphSnapshot(
+  limit = 200,
+  type?: NodeType,
+): Promise<{ nodes: NodeRow[]; edges: { source: string; relation: string; target: string; weight: number }[] }> {
+  const conn = await getConn();
+  const nodeRows = await conn.runAndReadAll(
+    `SELECT * FROM nodes ${type ? "WHERE type = $type" : ""}
+      ORDER BY confidence DESC, last_seen DESC LIMIT $limit`,
+    type ? { type, limit } : { limit },
+  );
+  const nodes = nodeRows.getRowObjectsJson() as unknown as NodeRow[];
+  if (!nodes.length) return { nodes: [], edges: [] };
+
+  const ids = new Set(nodes.map((n) => n.id));
+  const edgeRows = await conn.runAndReadAll(
+    "SELECT source_id, relation, target_id, weight FROM edges LIMIT 5000",
+  );
+  const edges = (edgeRows.getRowObjectsJson() as unknown as {
+    source_id: string;
+    relation: string;
+    target_id: string;
+    weight: number;
+  }[])
+    .filter((e) => ids.has(e.source_id) && ids.has(e.target_id))
+    .map((e) => ({ source: e.source_id, relation: e.relation, target: e.target_id, weight: Number(e.weight) }));
+
+  return { nodes, edges };
+}
+
 export async function nodesByType(type: NodeType, limit = 1000): Promise<NodeRow[]> {
   const conn = await getConn();
   const reader = await conn.runAndReadAll(

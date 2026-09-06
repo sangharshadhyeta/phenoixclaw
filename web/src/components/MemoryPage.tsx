@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LuBrain, LuSearch } from "react-icons/lu";
 import { api, type MemoryNode, type Neighbor } from "../api";
+import { MemoryGraph } from "./MemoryGraph";
 
 /**
  * What the agent knows.
@@ -60,6 +61,12 @@ export function MemoryPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [links, setLinks] = useState<Neighbor[]>([]);
   const [busy, setBusy] = useState(false);
+  /**
+   * A list answers "does it know X"; a picture answers "how is this connected".
+   * Both are wanted and neither replaces the other, so they are tabs rather
+   * than one view trying to be both.
+   */
+  const [view, setView] = useState<"list" | "graph">("list");
 
   useEffect(() => {
     let cancelled = false;
@@ -100,8 +107,22 @@ export function MemoryPage() {
           </div>
           <p className="mt-1 text-xs text-fg-subtle">
             What the agent has taken away from its work. It writes this itself — if something here is
-            wrong, tell it rather than editing around it.
+            wrong, tell it, or forget it here and let it learn the right thing.
           </p>
+
+          <div className="mt-3 flex gap-1">
+            {(["list", "graph"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`rounded-lg px-2.5 py-1 text-xs transition ${
+                  view === v ? "bg-fg/10 text-fg" : "text-fg-muted hover:bg-fg/5"
+                }`}
+              >
+                {v === "list" ? "List" : "Connections"}
+              </button>
+            ))}
+          </div>
 
           <div className="mt-3 flex items-center gap-2">
             <div className="relative flex-1">
@@ -129,6 +150,11 @@ export function MemoryPage() {
         </div>
       </header>
 
+      {view === "graph" ? (
+        // The search box stays above, but filtering a picture by keyword makes
+        // a picture of nothing — the graph has its own type filter instead.
+        <MemoryGraph onSelect={(name) => { setView("list"); setQ(name); }} />
+      ) : (
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto w-full max-w-3xl space-y-1.5">
           {!data.nodes.length && (
@@ -189,6 +215,36 @@ export function MemoryPage() {
                     ) : (
                       <p className="text-[11px] text-fg-faint">Not connected to anything yet.</p>
                     )}
+
+                    {/*
+                      * Reading the graph without being able to correct it is
+                      * half a window. The agent has graph_forget for a belief
+                      * it notices is wrong; this is the same for a belief you
+                      * notice. Identity and projects refuse — those are
+                      * rewritten, not deleted — and the server enforces that
+                      * rather than trusting this button.
+                      */}
+                    {!["anchor", "project"].includes(n.type) && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Forget "${n.name}"? The agent will no longer recall it.`)) return;
+                          try {
+                            await api.forgetMemory(n.name);
+                            setOpen(null);
+                            setData((d) => ({
+                              ...d,
+                              total: Math.max(0, d.total - 1),
+                              nodes: d.nodes.filter((x) => x.id !== n.id),
+                            }));
+                          } catch (e) {
+                            alert(String(e));
+                          }
+                        }}
+                        className="mt-2 rounded-lg border border-line px-2 py-0.5 text-[11px] text-fg-faint transition hover:border-danger/40 hover:text-danger"
+                      >
+                        Forget this
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -196,6 +252,7 @@ export function MemoryPage() {
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }
