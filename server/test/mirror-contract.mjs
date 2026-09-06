@@ -14,6 +14,7 @@
  *     npm run test:mirror
  */
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,31 @@ ok("nor status changes", isMirrorable("portal_status") === false);
   // chat into another's is not a display decision, it is a disclosure.
   ok("channel conversations do not", /return undefined;\s*\}$/m.test(fn.trim()));
   ok("and the reason is written down", /disclosure/.test(sm));
+}
+
+/**
+ * A task's answer reaches the conversation once.
+ *
+ * `portal_task_result` carries the whole thing, exempt from the clip every
+ * other mirrored line gets — it is not a notice that something happened, it is
+ * what was asked for. Reported by a live run: the answer appeared twice, once
+ * as the reply the task gave and again underneath as "finished", verbatim.
+ */
+{
+  ok("a finished task's answer is mirrorable", isMirrorable("portal_task_result"));
+  ok("and a tool result still is not", !isMirrorable("tool_execution_end"));
+
+  const src = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  // record() writes into the session *and* mirrors, which put the answer in
+  // the task's own transcript underneath the reply it had just given.
+  ok("the result is not recorded back into the session that produced it",
+     /await this\.mirrorToMain\(sessionId, "portal_task_result"/.test(src));
+  ok("and a task's prose does not follow it to the conversation",
+     /type === "message_end" && this\.kindOf\.get\(sessionId\) === "task"/.test(src));
+
+  const mirrorSrc = readFileSync(new URL("../src/mirror.ts", import.meta.url), "utf8");
+  ok("the answer itself is exempt from the clip",
+     /if \(type === "portal_task_result"\) return p;/.test(mirrorSrc));
 }
 
 console.log("\n  " + pass + " passed, " + fail + " failed");

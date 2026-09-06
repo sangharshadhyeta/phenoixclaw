@@ -171,6 +171,8 @@ class SessionManager extends EventEmitter {
    * behind every other.
    */
   private appends = new Map<string, Promise<void>>();
+  /** Session kinds, cached for the event path. See mirrorToMain. */
+  private kindOf = new Map<string, string>();
 
   private record(sessionId: string, type: string, payload: unknown): Promise<void> {
     if (EPHEMERAL_EVENTS.has(type)) {
@@ -241,6 +243,17 @@ class SessionManager extends EventEmitter {
   private async mirrorToMain(sessionId: string, type: string, payload: unknown): Promise<void> {
     const label = this.mirrorOf.get(sessionId);
     if (!label || !isMirrorable(type)) return;
+    /**
+     * A task's prose stays in the task; its answer comes to the conversation.
+     *
+     * The chat is meant to be one place where a person asks and the result
+     * appears. Mirroring a task's assistant messages as well as its result put
+     * the same text there twice — clipped as it was said, then in full as
+     * `portal_task_result` — and filled the conversation with a task's
+     * working-out either way. Tool activity still mirrors, so you can see it
+     * is moving; what it *concluded* arrives once, when it has concluded.
+     */
+    if (type === "message_end" && this.kindOf.get(sessionId) === "task") return;
     try {
       const mirrored = await mirror(EXECUTOR_KIND, { slug: label, sessionId }, type, payload);
       if (mirrored) this.emit(`session:${mirrored.sessionId}`, mirrored.row);
@@ -719,6 +732,9 @@ class SessionManager extends EventEmitter {
     }
     const label = this.mirrorLabel(session);
     if (label) this.mirrorOf.set(sessionId, label);
+    // Read on the event path, which must not do a database read — same reason
+    // as mirrorOf above.
+    this.kindOf.set(sessionId, session.kind);
     /**
      * A session whose workspace has gone is repaired, not left broken.
      *
@@ -1420,7 +1436,16 @@ class SessionManager extends EventEmitter {
     if (!answer) return;
 
     this.reported.add(sessionId);
-    await this.record(sessionId, "portal_task_result", {
+    /**
+     * Sent to the main conversation, not recorded here.
+     *
+     * `record` writes the event into this session *and* mirrors it, which put
+     * the answer in the task's own transcript twice — once as the reply the
+     * session actually gave, and again underneath as "finished", verbatim.
+     * The session already contains its answer; the only place that does not
+     * have it is the conversation that asked.
+     */
+    await this.mirrorToMain(sessionId, "portal_task_result", {
       title: session.title,
       sessionId,
       status: session.status === "error" ? "error" : "done",
