@@ -430,6 +430,28 @@ const long = (s) => `${s} `.repeat(60);
   // Depth-bounded, so a self-referential shape cannot spin.
   const deep = { a: { b: { c: { d: { e: ["too deep"] } } } } };
   ok("it does not descend forever", collectSteps([deep]).length === 0);
+
+  /**
+   * Liberal about shape, strict about content.
+   *
+   * Accepting any shape made a model's tool-call breakdown *worse*: where a
+   * refusal had been retried until it came out right, the garbage was now
+   * taken and stored as the work to be done. A live plan's first step read
+   * "…and summary"}\n]}\n]}<tool_call|><|channel>thought…" — the model's own
+   * chat-template tokens, handed back to it as a brief.
+   */
+  const leaked =
+    'Plan the creation of stats.mjs with sections: mean, median, stddev, and summary"}\n]}\n]}' +
+    "<tool_call|><|channel>thought<channel|><|tool_call>call:expected_outcome{outcome:";
+  ok("template tokens are cut, not stored",
+     JSON.stringify(collectSteps([leaked])) ===
+       '["Plan the creation of stats.mjs with sections: mean, median, stddev, and summary"]');
+  ok("a step that is nothing but a marker is refused", collectSteps(["<tool_call|>"]).length === 0);
+  ok("and so is one that is only debris", collectSteps(['"}]}']).length === 0);
+  ok("a fragment of a larger structure is refused",
+     collectSteps(['{"a": {"b": {"c": 1}}}']).length === 0);
+  ok("an ordinary step with a colon in it survives",
+     JSON.stringify(collectSteps(["Run: npm test -w server"])) === '["Run: npm test -w server"]');
 }
 
 // --- write_next writes the section that is actually in hand ----------------

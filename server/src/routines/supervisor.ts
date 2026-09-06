@@ -104,17 +104,31 @@ export const isContinuousSchedule = (schedule: string) => schedule.trim() === "@
 export const isQuietSchedule = (schedule: string) =>
   isIdleSchedule(schedule) || isContinuousSchedule(schedule);
 
-/** How long nothing must have happened before it's worth dreaming. */
-const IDLE_QUIET_MS = 10 * 60_000;
-/** At most this often, even if the system stays quiet the whole time. */
-const IDLE_MIN_GAP_MS = 3 * 60 * 60_000;
-
 /**
- * Long enough that the loop does not start a thought in the gap between two
- * of your messages, short enough that it is genuinely running rather than
- * waiting. There is no minimum gap to go with it: back-to-back is the point.
+ * How long a person must have been gone before the agent thinks on its own.
+ *
+ * These were set for an agent that thought *occasionally*: ten minutes of
+ * quiet, and at most once every three hours. In practice that meant the dream
+ * cycle almost never ran — on a machine anybody is using, ten unbroken minutes
+ * are rare, and the three-hour gap threw away most of the windows that did
+ * arrive.
+ *
+ * The intent is the other way round: the loop and the dream cycle are what the
+ * agent *is* when nobody needs it, and they should pause for a person rather
+ * than wait for permission. So these are now graces — long enough not to start
+ * a thought in the gap between two of your messages, short enough that the
+ * agent is genuinely running rather than mostly waiting.
+ *
+ * The gap on `@idle` is kept, much smaller, because a deep reflective pass
+ * back-to-back with the last one has nothing new to reflect on; the loop
+ * (`@continuous`) has no gap at all, which is the point of it.
  */
-const CONTINUOUS_QUIET_MS = 60_000;
+const IDLE_QUIET_MS = 2 * 60_000;
+/** At most this often, even if the system stays quiet the whole time. */
+const IDLE_MIN_GAP_MS = 20 * 60_000;
+
+/** The pause for a person mid-conversation, and nothing more. */
+const CONTINUOUS_QUIET_MS = 30_000;
 
 /** Shared by both: something is already running, or a human just did something. */
 async function quietFor(quietMs: number, now: Date): Promise<boolean> {

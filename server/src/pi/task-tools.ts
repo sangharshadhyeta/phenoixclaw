@@ -50,10 +50,51 @@ const render = (tasks: TaskRow[]): string =>
  * inventing one called "1" would put a garbage line in the plan rather than
  * admit the call could not be read.
  */
+/**
+ * Chat-template markers and JSON punctuation that leaked into a string.
+ *
+ * Being liberal about *shape* is right; being liberal about *content* is not,
+ * and the difference cost a run. When this only accepted a flat list of
+ * strings, a model whose tool-call generation broke down was refused and
+ * retried until it got it right. Once it accepted any shape, the same
+ * breakdown produced a plan whose first step read
+ *
+ *     Plan the creation of stats.mjs with sections: mean, median…"}\n]}\n]}
+ *     <tool_call|><|channel>thought<channel|><|tool_call>call:expected_outcome{
+ *
+ * — the model's own template tokens, stored as the work to be done and handed
+ * back to it as a brief. Silently accepting corrupted text is worse than
+ * refusing it: a refusal is retried, and a bad plan is carried out.
+ *
+ * So the text is cut at the first marker and kept only if what remains still
+ * reads as a step.
+ */
+const LEAKED = /<\|?(?:tool_call|channel|im_start|im_end|endoftext|assistant|user)\b|<\/?channel\|?>|\bcall:[a-z_]+\{/i;
+/** A run of quotes, braces, brackets, commas and whitespace at the end. */
+const JSON_TAIL = /[\s"'`}\],]+$/;
+
+function cleanStep(raw: string): string {
+  let text = raw.trim();
+  const leak = LEAKED.exec(text);
+  if (leak) text = text.slice(0, leak.index).trim();
+  // Trailing JSON punctuation, from a string that ran past its own closing
+  // quote and swallowed the structure around it. One pass: the character class
+  // covers the whole run rather than one bracket at a time.
+  text = text.replace(JSON_TAIL, "").trim();
+  text = text.replace(/\s+/g, " ").trim();
+  // What is left has to look like something a person could carry out. Two
+  // characters of debris is not a step.
+  if (text.length < 3) return "";
+  // Unbalanced quotes or braces mean this was a fragment of a larger
+  // structure, not a sentence.
+  if ((text.match(/[{}]/g) ?? []).length > 2) return "";
+  return text;
+}
+
 export function collectSteps(input: unknown, depth = 0): string[] {
   if (depth > 4) return [];
   if (typeof input === "string") {
-    const text = input.trim();
+    const text = cleanStep(input);
     return text ? [text] : [];
   }
   if (Array.isArray(input)) return input.flatMap((item) => collectSteps(item, depth + 1));

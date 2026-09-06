@@ -1720,9 +1720,24 @@ async function migrateSelfConceptInstructions(conn: DuckDBConnection): Promise<v
 }
 
 /** Is anything running right now? Any kind — a dream shouldn't start mid-turn of something else. */
+/**
+ * Is a person's work in progress?
+ *
+ * Routine sessions are excluded, for the same reason `lastHumanActivity`
+ * excludes them: this gates the quiet schedules, and counting the loop's own
+ * session meant the loop blocked itself. The agent's background thinking is
+ * not "the system is busy" — it is what the system does when nobody needs it,
+ * and it should stand aside for a person rather than for itself.
+ *
+ * The supervisor still refuses to run the same routine twice (`this.running`),
+ * so this does not let one routine trample another.
+ */
 export async function anySessionRunning(): Promise<boolean> {
   const conn = await getDb();
-  const row = await one(conn, "SELECT 1 AS x FROM sessions WHERE status = 'running' LIMIT 1");
+  const row = await one(
+    conn,
+    "SELECT 1 AS x FROM sessions WHERE status = 'running' AND kind <> 'routine' LIMIT 1",
+  );
   return Boolean(row);
 }
 
