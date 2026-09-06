@@ -18,6 +18,16 @@ export type Item =
     }
   | { kind: "notice"; id: string; text: string; tone: "info" | "error" }
   /**
+   * A finished task's own answer, in full.
+   *
+   * Collapsed, because the conversation now says what it found in its own
+   * words as an ordinary reply — see reportResult in session-manager.ts. This
+   * is the working underneath that reply: kept so nothing is lost if the
+   * summary is poor or the turn fails, folded away so the same answer does
+   * not arrive twice at full length.
+   */
+  | { kind: "result"; id: string; title: string; text: string; status: "done" | "error" }
+  /**
    * Work from another session, shown here so one place tells you what the
    * agent is doing. `said` distinguishes what it wrote from what it ran, and
    * `asked` is somebody's request in a task session — both look wrong rendered
@@ -176,11 +186,11 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
         const text = String(p.text ?? "").trim();
         if (!text) break;
         items.push({
-          kind: "assistant",
+          kind: "result",
           id: `r${ev.seq}`,
-          text: `**${String(p.title ?? "task")}** — finished.\n\n${text}`,
-          thinking: "",
-          done: true,
+          title: String(p.title ?? "task"),
+          text,
+          status: p.status === "error" ? "error" : "done",
         });
         break;
       }

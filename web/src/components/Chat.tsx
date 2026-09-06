@@ -300,6 +300,8 @@ export function Chat({
         return `${item.name} ${item.detail ?? ""} ${item.result ?? ""}`;
       case "assistant":
         return `${item.text} ${item.thinking}`;
+      case "result":
+        return `${item.title} ${item.text}`;
       default:
         return (item as { text?: string }).text ?? "";
     }
@@ -676,6 +678,31 @@ export function Chat({
             );
           }
           if (item.kind === "thread") return <Thread key={item.id} item={item} />;
+          /**
+           * A finished task's own answer, folded away.
+           *
+           * The conversation says what it found in its own words as an
+           * ordinary reply; this is the working underneath it. Kept, because
+           * a bad summary must not lose a finished piece of work — collapsed,
+           * because the same answer arriving twice at full length is what it
+           * looked like before.
+           */
+          if (item.kind === "result") {
+            return (
+              <details key={item.id} className="rounded-lg border border-line bg-raised/40">
+                <summary className="cursor-pointer select-none px-3 py-2 text-xs text-fg-muted">
+                  <span className={item.status === "error" ? "text-danger" : "text-fg-muted"}>
+                    {item.status === "error" ? "✕" : "◆"}
+                  </span>{" "}
+                  <strong className="text-fg">{item.title}</strong> — finished. What the session
+                  itself wrote
+                </summary>
+                <div className="border-t border-line px-3 py-2 text-xs text-fg-muted">
+                  <ReactMarkdown>{item.text}</ReactMarkdown>
+                </div>
+              </details>
+            );
+          }
           return (
             <div
               key={item.id}

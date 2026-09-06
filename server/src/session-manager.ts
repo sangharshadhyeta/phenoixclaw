@@ -5,7 +5,7 @@ import path from "node:path";
 import type { PiClient } from "./pi/types.js";
 import { findServerBuiltin, runBuiltin } from "./pi/builtins.js";
 import { buildExecutor, executorSupports, unsupportedReason, type Executor, type ExecutorKind } from "./executors/index.js";
-import { isMirrorable, mirror } from "./mirror.js";
+import { isMirrorable, mainConversation, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
@@ -119,6 +119,17 @@ class SessionManager extends EventEmitter {
   private asking = new Map<string, Promise<string>>();
   /** Conversations whose current turn had a session started for it by the portal. */
   private handedOut = new Set<string>();
+  /**
+   * Conversations whose current turn is relaying what a task found.
+   *
+   * The after-turn checks ask whether *this turn* reached a source, and the
+   * source for a relayed answer was reached in another session hours or
+   * minutes ago. Without this, a chat that correctly started a session for
+   * "what is the population of Lima?", waited, and then delivered the answer
+   * was told it had answered without consulting anything — and the question
+   * had been consulted more carefully than the check knows how to ask for.
+   */
+  private delivering = new Set<string>();
   /**
    * Who sent the message being handled, per session.
    *
@@ -474,6 +485,9 @@ class SessionManager extends EventEmitter {
 
   private async enforceAfterTurn(sessionId: string): Promise<boolean> {
     if (this.askedTwice.has(sessionId)) return false;
+    // Relaying a task's answer: the consulting happened in the task. See
+    // `delivering`.
+    if (this.delivering.delete(sessionId)) return false;
 
     let request: string;
     try {
@@ -1707,6 +1721,53 @@ class SessionManager extends EventEmitter {
       sessionId,
       status: session.status === "error" ? "error" : "done",
       text: answer,
+    });
+
+    /**
+     * And then the conversation says it, in its own words.
+     *
+     * The arrangement is that a session holds the working and the chat holds
+     * the answer. Mirroring the task's last message satisfied the letter of
+     * that and not the point: what arrived was the worker's voice, addressed
+     * to its own brief, at whatever length it happened to stop at — not an
+     * answer to the person who asked. The conversation is where somebody
+     * asked, so it is where the answer belongs.
+     *
+     * Kept as well as mirrored, deliberately. The mirrored result is the
+     * durable record and the fallback: if this turn fails, is cut off, or the
+     * model summarises badly, the full text is still there. That is why this
+     * is a second step rather than a replacement — losing a finished piece of
+     * work to a bad summary is not a trade worth making.
+     *
+     * `internal` so it is a portal_step rather than a portal_prompt: nobody
+     * said this, it must not be handed out as new work, and it must not
+     * collect the pre-turn notes meant for something a person typed.
+     */
+    const target = await mainConversation(EXECUTOR_KIND).catch(() => undefined);
+    if (!target || target === sessionId) return;
+    this.delivering.add(target);
+    await this.prompt(
+      target,
+      [
+        "<portal-result>",
+        `The session working on "${session.title}" has finished. Nobody has said anything —`,
+        "this is the portal handing you what it found.",
+        "</portal-result>",
+        "",
+        answer,
+        "",
+        "<portal-result>",
+        "Give the person the answer, in your own words, addressed to what they actually asked.",
+        "A few sentences: what was found, and anything they should know about it. Do not repeat",
+        `the whole thing back — the full working is in session ${sessionId} if they want it, and`,
+        "they can already see it. Do not start another task; this one is done.",
+        "</portal-result>",
+      ].join("\n"),
+      { internal: true },
+    ).catch(() => {
+      this.delivering.delete(target);
+      // The mirrored result above is already in the conversation, so a failure
+      // here costs the phrasing, not the answer.
     });
   }
 

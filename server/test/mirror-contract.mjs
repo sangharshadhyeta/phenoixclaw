@@ -91,5 +91,40 @@ ok("nor status changes", isMirrorable("portal_status") === false);
      /if \(type === "portal_task_result"\) return p;/.test(mirrorSrc));
 }
 
+// --- the conversation says what the task found, in its own words -----------
+// Mirroring the task's last message satisfied the letter of "the session holds
+// the working, the chat holds the answer" and not the point: what arrived was
+// the worker's voice, addressed to its own brief. The chat is where somebody
+// asked, so it is where the answer belongs — with the full text kept and
+// folded away, because a bad summary must not lose a finished piece of work.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("the full result is still mirrored, as the record and the fallback",
+     /mirrorToMain\(sessionId, "portal_task_result"/.test(mgr));
+  ok("and the conversation is then asked to deliver it",
+     /<portal-result>/.test(mgr) && /mainConversation\(EXECUTOR_KIND\)/.test(mgr));
+  ok("as an internal step, so it is not treated as somebody asking",
+     /\{ internal: true \}\s*,?\s*\)\s*\.catch/.test(mgr));
+  ok("and it is told not to start another task",
+     /Do not start another task/.test(mgr));
+  ok("a failure there costs the phrasing, not the answer",
+     /costs the phrasing, not the answer/.test(mgr));
+  /**
+   * The after-turn checks ask whether *this turn* reached a source, and a
+   * relayed answer's source was reached in another session. A chat that
+   * correctly started a session for "what is the population of Lima?", waited,
+   * and delivered the answer was told it had answered without consulting
+   * anything.
+   */
+  ok("and the delivery turn is not checked for having consulted nothing",
+     /this\.delivering\.add\(target\);/.test(mgr) &&
+     /if \(this\.delivering\.delete\(sessionId\)\) return false;/.test(mgr));
+
+  const ts = readFileSync(new URL("../../web/src/transcript.ts", import.meta.url), "utf8");
+  ok("the raw result is its own kind, not a second assistant reply",
+     /kind: "result"/.test(ts) && !/text: `\*\*\$\{String\(p\.title/.test(ts));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);
