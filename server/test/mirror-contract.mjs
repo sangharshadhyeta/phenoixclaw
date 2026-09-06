@@ -152,5 +152,19 @@ ok("nor status changes", isMirrorable("portal_status") === false);
      /Do not recompute it, re-derive it, or run the numbers again/.test(mgr));
 }
 
+// --- a new task session is told to plan first, not left to discover it ------
+// The guard refuses any work tool in a task session with no plan yet, and
+// that refusal is correct. But nothing told a new session before its first
+// move, so its first move was always `bash`, always refused — every task
+// wasted one call learning what every earlier task had already learned.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("the first prompt to a new task session says to plan first",
+     /Start with \\`task_plan\\`/.test(mgr));
+  ok("appended to the brief rather than replacing it",
+     /\$\{instructions\}\\n\\nStart with/.test(mgr));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

@@ -72,15 +72,33 @@ const render = (tasks: TaskRow[]): string =>
 const LEAKED = /<\|?(?:tool_call|channel|im_start|im_end|endoftext|assistant|user)\b|<\/?channel\|?>|\bcall:[a-z_]+\{/i;
 /** A run of quotes, braces, brackets, commas and whitespace at the end. */
 const JSON_TAIL = /[\s"'`}\],]+$/;
+/**
+ * The same debris, at the front.
+ *
+ * A model that double-encodes its own argument — `{"steps": "\"echo
+ * $((12*7))\""}` — hands `cleanStep` a string with a literal quote character
+ * baked onto each end. `JSON_TAIL` stripped the trailing one; nothing
+ * stripped the leading one, so the plan showed `"echo $((12*7))` as its own
+ * step description forever after — cosmetic, since the step still ran
+ * correctly, but exactly the kind of debris this function exists to remove.
+ */
+/**
+ * Narrower than JSON_TAIL on purpose: quotes and backticks only, not braces
+ * or brackets. A trailing `}}}` is common debris from a string that ran past
+ * its own closing quote; a *leading* `{` or `[` is exactly the signal the
+ * fragment check below exists to catch — "a fragment of a larger structure
+ * is refused" needs that count intact, so this must not remove it first.
+ */
+const JSON_HEAD = /^[\s"'`]+/;
 
 function cleanStep(raw: string): string {
   let text = raw.trim();
   const leak = LEAKED.exec(text);
   if (leak) text = text.slice(0, leak.index).trim();
-  // Trailing JSON punctuation, from a string that ran past its own closing
-  // quote and swallowed the structure around it. One pass: the character class
-  // covers the whole run rather than one bracket at a time.
-  text = text.replace(JSON_TAIL, "").trim();
+  // Leading and trailing JSON punctuation, from a string that ran past its
+  // own quoting and swallowed the structure around it. One pass each: the
+  // character class covers the whole run rather than one bracket at a time.
+  text = text.replace(JSON_HEAD, "").replace(JSON_TAIL, "").trim();
   text = text.replace(/\s+/g, " ").trim();
   // What is left has to look like something a person could carry out. Two
   // characters of debris is not a step.

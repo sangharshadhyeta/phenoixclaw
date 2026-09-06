@@ -464,6 +464,19 @@ const long = (s) => `${s} `.repeat(60);
      collectSteps(['{"a": {"b": {"c": 1}}}']).length === 0);
   ok("an ordinary step with a colon in it survives",
      JSON.stringify(collectSteps(["Run: npm test -w server"])) === '["Run: npm test -w server"]');
+
+  /**
+   * A live one: a task_plan call whose `steps` was itself a JSON-encoded
+   * string — `{"steps": "\"echo $((12*7))\""}` — left a literal quote
+   * character stuck to the front. JSON_TAIL already stripped a trailing one;
+   * nothing stripped a leading one, so the plan showed `"echo $((12*7))` as
+   * its own step description for the rest of the task, though the step still
+   * ran correctly.
+   */
+  ok("a leading stray quote is stripped, symmetrically with a trailing one",
+     JSON.stringify(collectSteps('"echo $((12*7))"')) === '["echo $((12*7))"]');
+  ok("a genuine nested fragment is still refused — the fix only strips quotes",
+     collectSteps('{"a": {"b": {"c": 1}}}').length === 0);
 }
 
 // --- write_next writes the section that is actually in hand ----------------

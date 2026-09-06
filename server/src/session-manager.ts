@@ -1132,7 +1132,19 @@ class SessionManager extends EventEmitter {
       workspaceRoot: WORKSPACE_ROOT,
       executor: EXECUTOR_KIND,
       newId: () => nanoid(12),
-      start: (childId: string, instructions: string) => this.prompt(childId, instructions),
+      /**
+       * Told up front, not learned by trying.
+       *
+       * The guard refuses any work tool in a task session that has not called
+       * `task_plan` yet (guard.ts) — correctly, and it is the enforcement that
+       * matters. But nothing told a new session that before its first move,
+       * so its first move was always `bash`, always refused, every single
+       * task: a wasted call that taught the same lesson each time. One line
+       * here stops the waste without touching what backs it up if the model
+       * ignores it anyway.
+       */
+      start: (childId: string, instructions: string) =>
+        this.prompt(childId, `${instructions}\n\nStart with \`task_plan\` — even a single step is a plan.`),
       announce: (started: { sessionId: string; title: string; workspace: string }) =>
         this.record(sessionId, "portal_task_started", started),
     };
