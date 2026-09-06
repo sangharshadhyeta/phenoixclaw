@@ -938,6 +938,61 @@ export async function takeDeliveries(sessionId: string): Promise<string[]> {
  * the user ever saw it. Removing a routine is a decision, and it belongs to
  * the person, through DELETE /api/routines/:id.
  */
+/**
+ * Events to keep per session. Above what a reader ever scrolls back through,
+ * and far below what a runaway loop can produce in a night.
+ */
+const EVENTS_PER_SESSION = 5000;
+
+/**
+ * Trim the event log.
+ *
+ * `pruneOldRecords` removes *stale* sessions and their events with them, and
+ * that is no use against the case that actually happened: one live session
+ * accumulating without bound. The learning loop ran 774 iterations in a single
+ * conversation and left 186,000 events behind it, and portal.duckdb reached
+ * 2.2 GB — at which point it failed to open at all, with a serialisation error
+ * that no read-only attach could get past. The database was unrecoverable and
+ * had to be replaced.
+ *
+ * Nothing irreplaceable was in it, and that is the point: the events table is a
+ * display and audit log, as mirror.ts says — pi keeps its own session file for
+ * the conversation, and the graph keeps what was learned. Both survived. But a
+ * table that only grows will eventually take the portal with it, and "eventually"
+ * turned out to be one night of an unattended loop.
+ *
+ * Per session rather than globally, for the same reason `replayStart` counts
+ * per session: `seq` is one sequence shared by every session, so a global cap
+ * is "whatever this conversation happened to do while the portal was busy with
+ * others" — on a busy box, almost nothing.
+ */
+export async function trimEventLog(keep = EVENTS_PER_SESSION): Promise<number> {
+  const conn = await getDb();
+  const rows = await all<{ session_id: string; n: number }>(
+    conn,
+    "SELECT session_id, count(*) AS n FROM events GROUP BY session_id HAVING count(*) > $keep",
+    { keep },
+  );
+
+  let removed = 0;
+  for (const row of rows) {
+    // Delete below the cutoff rather than "the oldest N": the cutoff is a seq,
+    // and a session still being written to keeps its newest events either way.
+    const cutoff = await one<{ seq: number }>(
+      conn,
+      "SELECT seq FROM events WHERE session_id = $id ORDER BY seq DESC LIMIT 1 OFFSET $keep",
+      { id: row.session_id, keep },
+    );
+    if (!cutoff) continue;
+    await conn.run("DELETE FROM events WHERE session_id = $id AND seq <= $seq", {
+      id: row.session_id,
+      seq: cutoff.seq,
+    });
+    removed += Number(row.n) - keep;
+  }
+  return removed;
+}
+
 export async function pruneOldRecords(days: number): Promise<{ sessions: number }> {
   const conn = await getDb();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();

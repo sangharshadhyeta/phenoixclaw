@@ -130,5 +130,40 @@ ok("sessions.tainted exists and defaults to 0",
      "SELECT count(*) AS n FROM information_schema.columns WHERE table_name = 'sessions' AND column_name = 'tainted'",
    )).getRowObjectsJson()[0].n == 1);
 
+// --- the event log is bounded --------------------------------------------
+// pruneOldRecords removes stale sessions and their events with them, which is
+// no help against the case that actually happened: one live session growing
+// without bound. 774 loop iterations left 186,000 events and a 2.2 GB database
+// that would not open at all.
+{
+  const { trimEventLog } = await import(path.join(here, "..", "dist", "db.js"));
+  await conn.run(`INSERT INTO sessions (id, title, workspace, executor) VALUES ('loud', 'l', '/w', 'host')`);
+  await conn.run(`INSERT INTO sessions (id, title, workspace, executor) VALUES ('quiet', 'q', '/w', 'host')`);
+  for (let i = 0; i < 120; i++) {
+    await conn.run(`INSERT INTO events (session_id, type, payload) VALUES ('loud', 'message_update', '{}')`);
+  }
+  for (let i = 0; i < 10; i++) {
+    await conn.run(`INSERT INTO events (session_id, type, payload) VALUES ('quiet', 'message_update', '{}')`);
+  }
+
+  const removed = await trimEventLog(50);
+  ok("a runaway session is trimmed", removed === 70);
+  ok("down to the cap", (await count("SELECT 1 FROM events WHERE session_id = 'loud'")) === 50);
+  ok("a quiet session is untouched", (await count("SELECT 1 FROM events WHERE session_id = 'quiet'")) === 10);
+
+  // Counted per session, because seq is one sequence shared by every session —
+  // a global cap is "whatever this conversation did while the portal was busy".
+  ok("trimming again is a no-op", (await trimEventLog(50)) === 0);
+
+  // The newest are what a reader scrolls back through, so they are what stays.
+  const newest = (await conn.runAndReadAll(
+    "SELECT max(seq) AS m FROM events WHERE session_id = 'loud'",
+  )).getRowObjectsJson()[0];
+  const oldest = (await conn.runAndReadAll(
+    "SELECT min(seq) AS m FROM events WHERE session_id = 'loud'",
+  )).getRowObjectsJson()[0];
+  ok("and it is the newest that survive", Number(newest.m) - Number(oldest.m) === 49);
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

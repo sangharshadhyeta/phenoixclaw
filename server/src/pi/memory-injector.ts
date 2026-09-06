@@ -1,5 +1,6 @@
 import { personalRecall, type NodeRow } from "../graph.js";
 import { semanticPrune } from "../ingest.js";
+import { appendEvent } from "../db.js";
 
 /**
  * Search memory before answering — Sisyphean's `memory/injector.py`, as a
@@ -167,9 +168,12 @@ function render(rows: NodeRow[], sessionId?: string): string {
  * Falls back to the top few hits if condensing returns nothing, so this can
  * only ever improve on the cut.
  */
-async function fit(rows: NodeRow[], question: string, sessionId?: string): Promise<string> {
-  const full = render(rows, sessionId);
-  if (full.length <= RENDER_BUDGET) return full;
+async function condense(
+  full: string,
+  question: string,
+  rows: NodeRow[],
+  sessionId?: string,
+): Promise<string> {
   try {
     const condensed = (await semanticPrune(full, question, RENDER_BUDGET)).trim();
     if (condensed) return condensed;
@@ -198,6 +202,7 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
       }
       if (!rows.length) return undefined;
 
+      const full = render(rows, sessionId);
       const block = [
         "",
         "# YOUR MEMORY OF THIS",
@@ -219,8 +224,38 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
         "than answering as if it were the thread you are both in. Whatever you are",
         "working on right now is in the conversation itself, below this.",
         "",
-        await fit(rows, prompt, sessionId),
+        full.length > RENDER_BUDGET ? await condense(full, prompt, rows, sessionId) : full,
       ].join("\n");
+
+      /**
+       * Leave a record of what this turn was given, and why.
+       *
+       * An autonomous iteration is judged entirely by what it did, and the
+       * audit log answers that — read this, grepped that. What it cannot answer
+       * is the more useful question: what did the agent *know* when it decided
+       * to? A loop that reads pi's README twenty times looks stubborn until you
+       * can see that its memory returned nothing relevant each time, at which
+       * point it looks like a retrieval problem, which is what it was.
+       *
+       * Written as an ordinary event, so it replays with the transcript, is
+       * visible through the existing API, and can be asserted on in a test —
+       * rather than as a table nothing else knows how to read.
+       */
+      if (sessionId) {
+        void appendEvent(sessionId, "portal_context", {
+          query: prompt.slice(0, 200),
+          considered: rows.length,
+          shown: Math.min(rows.length, MAX_ITEMS),
+          condensed: full.length > RENDER_BUDGET,
+          recalled: rows.slice(0, MAX_ITEMS).map((r) => ({
+            name: r.name,
+            type: r.type,
+            confidence: Number(r.confidence.toFixed(2)),
+          })),
+        }).catch(() => {
+          // A missing trace must never cost the turn it was tracing.
+        });
+      }
 
       // Appended, never replacing: pi chains this result across extensions, so
       // returning a bare string here would discard the assembled prompt (and

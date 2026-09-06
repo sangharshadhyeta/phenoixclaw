@@ -5,6 +5,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { nanoid } from "nanoid";
 import {
+  trimEventLog,
   closeDb,
   createSession,
   deleteSession,
@@ -680,6 +681,20 @@ const relocated = relocateMirrors();
 if (relocated > 0) {
   console.log(`[portal] moved ${relocated} identity mirror(s) out of the agent's working directory`);
 }
+
+/**
+ * Trim the event log at boot as well as in cleanup.
+ *
+ * routine_cleanup only runs when the Dream Cycle reaches PHASE 7, which needs
+ * ten minutes of quiet and a three-hour gap — precisely the conditions a
+ * runaway loop prevents. The case that filled a database to 2.2 GB was
+ * therefore also the case that would never have trimmed it.
+ */
+void trimEventLog()
+  .then((n) => {
+    if (n > 0) console.log(`[portal] trimmed ${n} old event(s) from the log`);
+  })
+  .catch(() => {});
 
 const renamed = await stopIdentityNamingFiles();
 if (renamed > 0) console.log(`[portal] repaired ${renamed} identity document(s) that described themselves as files`);

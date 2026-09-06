@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { nanoid } from "nanoid";
-import { pruneOldRecords } from "../db.js";
+import { pruneOldRecords, trimEventLog } from "../db.js";
 import { decayStaleBeliefs, pruneByAge, pruneExpired } from "../graph.js";
 import { getDb, type SessionRow } from "../db.js";
 import { unscopeKey } from "../agent.js";
@@ -395,6 +395,9 @@ export function selfMaintenanceTools() {
       async execute(_id: string, p: any) {
         const days = typeof p.days === "number" ? p.days : 30;
         const { sessions } = await pruneOldRecords(days);
+        // The event log is the part that actually grew unbounded — see
+        // trimEventLog for the 2.2 GB database it produced.
+        const events = await trimEventLog();
         /**
          * Beliefs nobody has re-observed lose standing.
          *
@@ -414,7 +417,8 @@ export function selfMaintenanceTools() {
         ).reduce((a, b) => a + b, 0);
         return ok(
           `Cleanup complete. Pruned ${sessions} sessions, ${expired} expired and ${aged} ` +
-            `aged-out memory nodes, and let ${decayed} unrepeated belief(s) lose confidence.`,
+            `aged-out memory nodes, trimmed ${events} old event(s) from the log, and let ` +
+            `${decayed} unrepeated belief(s) lose confidence.`,
         );
       },
     });
