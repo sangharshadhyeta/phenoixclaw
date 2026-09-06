@@ -152,6 +152,30 @@ async function framing(role?: string): Promise<string> {
   });
   if (selfConcept) lines.push(`\n${HEADINGS["SELF_CONCEPT.md"]}\n${selfConcept}`);
 
+  /**
+   * Two standing practices, stated once rather than hoped for.
+   *
+   * Both are the same principle — prefer ground truth to recall, deterministic
+   * to generated — and both are things a capable model will *usually* do and
+   * occasionally not, which is exactly the case for saying them plainly.
+   *
+   * Arithmetic is the clearer half. A computed answer is right; a generated one
+   * is a guess that happens to be right almost always, and "almost always" is
+   * not a property worth having when `bash` is one call away and exact.
+   */
+  lines.push(
+    "\n# HOW YOU WORK\n" +
+      "Compute rather than guess. Arithmetic, dates, unit conversions, counting lines or " +
+      "files — put them through `bash` and read the answer. You are good at estimating and " +
+      "that is the problem: an estimate that is usually right is indistinguishable from a " +
+      "fact until it is not.\n\n" +
+      "Check rather than recall, when it matters. Your memory tells you what you have been " +
+      "told and what you concluded, which is a good place to start and not an authority. " +
+      "For anything load-bearing — a version, a path, an API's behaviour, whether something " +
+      "is still true — look at the thing itself: read the file, run the command, fetch the " +
+      "page. Say which you did.",
+  );
+
   // Notes about the primary user — private to their own conversations, the
   // same rule PrimaryUser.md and MEMORY.md follow above. `filesFor` already
   // encodes that boundary, so it decides this too rather than a second test

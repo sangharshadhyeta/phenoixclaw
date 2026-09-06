@@ -122,7 +122,7 @@ phase that makes the agent's memory trustworthy, and it must precede the interfa
 an interface that surfaces untrustworthy memory more prominently is worse than one that
 hides it.
 
-### 1.1 Provenance `[PORTAL]` — M · foundation
+### 1.1 Provenance `[PORTAL]` — M · foundation ✅
 
 Add `sources TEXT[]` to `nodes`, unioned on upsert. Every write path passes what produced
 the claim: tool name, URL, session id, or `primary-user`.
@@ -133,12 +133,12 @@ Migration goes through `addColumn()` — DuckDB rejects constrained `ALTER`, whi
 **Why first:** every other item in this phase needs it. A belief whose source was not kept
 can only be trusted, never re-checked.
 
-### 1.2 Faithfulness on ingest `[PORTAL]` — S
+### 1.2 Faithfulness on ingest `[PORTAL]` — S ✅
 
 Score an extracted claim's token overlap against its source text; use it as the initial
 confidence instead of a flat 0.5. `prune.ts`'s tokeniser already does the hard part.
 
-### 1.3 Confidence decay `[PORTAL]` — M
+### 1.3 Confidence decay `[PORTAL]` — M ✅
 
 A pass in Dream Cycle PHASE 7: ×0.9 for `fact`/`concept` nodes untouched >30 days, floor
 0.10, `anchor`/`user`/`project` exempt.
@@ -148,46 +148,47 @@ or `concept`, so every wrong belief is permanent and outranks fresher knowledge.
 "verify, don't recall" decay is not hygiene — it is what makes an unverified claim lose
 standing instead of hardening.
 
-### 1.4 Semantic dedup `[PORTAL]` — M
+### 1.4 Semantic dedup `[PORTAL]` — M ✅
 
 Embed a new node's label; merge above a similarity threshold before insert. Without it
 "Gemma model" and "the Gemma model" are two nodes that never merge and — per 1.3 — never
 fade. Depends on embeddings actually working, which is Phase 3's health check; until then
 fall back to normalised-label matching.
 
-### 1.5 A correction path `[PORTAL]` — S
+### 1.5 A correction path `[PORTAL]` — S ✅
 
 Expose `removeNode` over `/api/memory` and as a graph tool, primary-role only. While decay
 is landing this is the only way to unsay something.
 
-### 1.6 Computation to tools `[PORTAL]` — S
+### 1.6 Computation to tools `[PORTAL]` — S ✅
 
 Prompt-level policy: arithmetic, date maths, unit conversion go to `bash`. State it in the
 identity framing so it applies to every session, and check it in a contract by asserting
 the policy text is present.
 
-### 1.7 Recency in ranking `[PORTAL]` — S
+### 1.7 Recency in ranking `[PORTAL]` — S ✅
 
 A freshness multiplier on `searchNodes`'s `ORDER BY score * confidence`, so a stale
 unexpired fact stops being recalled at full strength.
 
-### 1.8 Search fallback tier `[PORTAL]` — S
+### 1.8 Search fallback tier `[PORTAL]` — S ⏸ no SearXNG running; deferred
 
 A keyless second search backend behind SearXNG, declared in `UNTRUSTED_TOOLS` so its
 output is still tainted. If verification depends on reachable search, one unreachable
 SearXNG silently turns verification back into recall.
 
-### 1.9 Close the pull-only gap `[PORTAL]` — M
+### 1.9 Close the pull-only gap `[PORTAL]` — M ✅
 
 Nothing enters the graph unless a tool is called or `@idle` fires (10 min quiet + 3 hr
 gap). Derive a one-line `episode` node when a session goes idle — no LLM call — and inject
 a short `scopedSearch` block at turn start so the graph is consulted without being asked.
 
-### 1.10 Wire up `semanticPrune` `[PORTAL]` — S
+### 1.10 Wire up `semanticPrune` `[PORTAL]` — S ✅
 
 Written, tested, never called. One call site in `web_fetch`.
 
-**Phase 1 gate:** graph contract extended — provenance survives upsert, decay moves
+**Phase 1 gate:** ✅ met for 1.1–1.7, 1.9, 1.10 — sixteen contracts, 320 assertions.
+Original wording: graph contract extended — provenance survives upsert, decay moves
 confidence down, dedup merges near-labels, `removeNode` is reachable. The learning loop
 runs a week without the graph degrading.
 

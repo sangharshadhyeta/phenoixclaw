@@ -157,6 +157,47 @@ async function linkToSource(sourceNode: string | undefined, entity: string): Pro
   }
 }
 
+/**
+ * How well a claim is actually carried by the text it came from.
+ *
+ * Sisyphean's `faithfulness()`, and under "verify, don't recall" it is the
+ * verification step rather than a nicety: an extraction is a *model's reading*
+ * of a source, and some readings are better supported than others. Recording
+ * every one at a flat 0.4 says they are equally trustworthy, which is the one
+ * thing they are certainly not.
+ *
+ * Measured as the share of the claim's content words that actually appear in
+ * the source. A claim assembled from the text scores high; one the model
+ * partly invented — the failure mode that matters, because it reads exactly as
+ * confidently — scores low and enters weak, where decay will finish it off if
+ * nothing corroborates it.
+ *
+ * Crude on purpose. It cannot tell a faithful paraphrase from an unfaithful
+ * one, and a second model call to judge the first would cost more than the
+ * signal is worth. What it reliably catches is fabrication, which is what a
+ * confidence floor is for.
+ */
+export function faithfulness(claim: string, source: string): number {
+  const words = (text: string) =>
+    new Set((text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []));
+  const claimWords = words(claim);
+  if (!claimWords.size) return 0;
+  const sourceWords = words(source);
+  let found = 0;
+  for (const w of claimWords) if (sourceWords.has(w)) found++;
+  return found / claimWords.size;
+}
+
+/**
+ * Faithfulness, mapped onto the confidence an extracted claim enters at.
+ *
+ * The band is narrow — 0.25 to 0.55 — because extraction is never strong
+ * evidence however well it echoes its source. What it separates is "this is in
+ * the text" from "the model supplied this", which is the distinction that
+ * decides whether a claim should survive a month of nobody mentioning it again.
+ */
+const confidenceFor = (score: number): number => Math.max(0.25, Math.min(0.55, 0.25 + score * 0.35));
+
 export async function ingestText(
   text: string,
   source: string,
@@ -199,7 +240,9 @@ export async function ingestText(
       // Provenance travels with the claim, not just as an edge: `sources` is
       // what makes a belief re-checkable rather than merely traceable, and it
       // survives the node being recalled on its own.
-      await upsertNode(name, type, summary, 0.4, { source });
+      // Scored against the chunk it was drawn from, not the whole document:
+      // a claim is faithful to the passage that produced it or it is not.
+      await upsertNode(name, type, summary, confidenceFor(faithfulness(summary, piece)), { source });
       await linkToSource(sourceNode, name);
       entityCount++;
 

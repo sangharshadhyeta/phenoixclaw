@@ -128,5 +128,32 @@ const age = async (name, days) => {
   }
 }
 
+// --- faithfulness: a claim enters at the confidence its source supports ---
+{
+  const { faithfulness } = await import(dist("ingest.js"));
+  const source = "The deployment pipeline runs on GitHub Actions and rolls back by re-running the previous workflow.";
+
+  const drawn = faithfulness("The deployment pipeline runs on GitHub Actions.", source);
+  const invented = faithfulness("The deployment pipeline requires manual approval from two reviewers.", source);
+
+  ok("a claim carried by its source scores high", drawn > 0.9);
+  ok("one the model supplied scores low", invented < 0.6);
+  ok("and the gap between them is the signal", drawn - invented > 0.3);
+  ok("an empty claim scores nothing", faithfulness("", source) === 0);
+  ok("a claim of only short words does not divide by zero",
+     Number.isFinite(faithfulness("a an of", source)));
+}
+
+// --- the standing practices are actually in the prompt --------------------
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/pi/sdk-client.ts", import.meta.url), "utf8");
+  const framing = src.slice(src.indexOf("async function framing"), src.indexOf("export function builtinSkillsDir"));
+  ok("computation is routed to a tool", /Compute rather than guess/.test(framing));
+  ok("and names bash specifically", /put them through `bash`/.test(framing));
+  ok("verification is asked for what is load-bearing", /Check rather than recall/.test(framing));
+  ok("and memory is framed as a start, not an authority", /not an authority/.test(framing));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);
