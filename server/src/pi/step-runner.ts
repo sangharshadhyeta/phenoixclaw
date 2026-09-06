@@ -192,6 +192,19 @@ export function synthesisBrief(ctx: {
     "The work is done. Answer the person who asked — in your own voice, as yourself, not as a",
     "report on a process. They asked a question; give them what they wanted, not a list of steps",
     "you took to get it.",
+    /**
+     * Do not paste the artefact back.
+     *
+     * The first run to get this far reproduced the entire module in a code
+     * block. It is a reasonable thing to do when the file is not in front of
+     * you and you are being asked to present the work — but the file is on
+     * disk, the person can open it, and a copy in the chat is a second version
+     * that goes stale the moment either changes.
+     */
+    file
+      ? `${file} is written and on disk. Do not paste it back — say what is in it and what is worth ` +
+        `knowing about it. Anyone who wants the text can open the file.`
+      : undefined,
     failed.length
       ? `Say plainly what did not work: ${failed.map((t) => `"${t.description}"`).join(", ")}. ` +
         `An answer that quietly omits the part that failed is worse than a shorter one that names it.`

@@ -264,6 +264,11 @@ const plan = [
   ok("with the reason not quietly dropped", /endpoint is gone/.test(brief));
   ok("and omitting it called out as worse", /worse than a shorter one/.test(brief));
   ok("the artefact is pointed at", /\/w\/guide\.md/.test(brief));
+  // The first run to reach this pasted the whole module back in a code block:
+  // reasonable when the file is not in front of you, but it is on disk and a
+  // copy in the chat goes stale the moment either changes.
+  ok("and not to be pasted back", /Do not paste it back/.test(brief));
+  ok("with somewhere to get it instead", /open the file/.test(brief));
 
   const clean = synthesisBrief({ goal: "g", tasks: [task(1, "a", "done", "r")] });
   ok("a run with no failures is not told to apologise for one", !/did not work/.test(clean));
