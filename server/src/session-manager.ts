@@ -658,6 +658,36 @@ class SessionManager extends EventEmitter {
     }
     const label = this.mirrorLabel(session);
     if (label) this.mirrorOf.set(sessionId, label);
+    /**
+     * A session whose workspace has gone is repaired, not left broken.
+     *
+     * pi refuses every `bash` call with "Working directory does not exist" and
+     * the session is dead in a way nothing announces — a live one asked for 41
+     * times 19, reported that its tool was broken, and answered from its head
+     * anyway. The directory can vanish for several ordinary reasons: a
+     * volume remounted, a workspace deleted from the host, or a session
+     * created by a code path that forgot to make it, which is exactly how this
+     * was found.
+     *
+     * Recreating it is right rather than presumptuous. The path is already
+     * recorded as this session's own, an empty directory is what a new session
+     * would have had, and the alternative is a session that can never run
+     * again.
+     */
+    if (session.workspace && !existsSync(session.workspace)) {
+      try {
+        mkdirSync(session.workspace, { recursive: true });
+        await this.record(sessionId, "portal_notice", {
+          text: `Working directory ${session.workspace} was missing and has been recreated. Anything it held is gone.`,
+        });
+      } catch (e) {
+        await this.record(sessionId, "portal_notice", {
+          text: `Working directory ${session.workspace} is missing and could not be recreated: ${(e as Error).message}`,
+          error: true,
+        });
+      }
+    }
+
     const client = await executor.launch({
       sessionId,
       workspacePath: session.workspace,
