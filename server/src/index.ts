@@ -885,5 +885,39 @@ async function shutdown(signal: string) {
   // and exitWhenSafe is the guard for the case where that is not yet true.
   setTimeout(() => exitWhenSafe(0), 10_000).unref();
 }
+/**
+ * One bad query must not take the portal down.
+ *
+ * A run belongs to the server, not to a request — that is the invariant the
+ * whole design rests on, and it is implemented with `void this.something()`
+ * all over the session manager and the supervisors. Node's default for a
+ * rejected promise nobody awaited is to kill the process, so a single failure
+ * in any of those paths ends *every* running session, mid-turn, with their
+ * work unfinished.
+ *
+ * That is not theoretical: a DuckDB index error during an ordinary event
+ * append —
+ *
+ *     TransactionContext Error: Failed to commit: node without metadata in
+ *     ARTOperator::Insert
+ *
+ * — killed the server while a session was working through a test suite, and
+ * from the outside it looked exactly like the agent giving up.
+ *
+ * So it is logged loudly and the process stays up. A portal running with one
+ * failed background write is strictly better than one that is not running:
+ * the failure is visible in the log, the sessions are still alive, and their
+ * event streams are still being served. `uncaughtException` gets the same
+ * treatment for the same reason — the alternative is not a cleaner failure,
+ * it is a total one.
+ */
+process.on("unhandledRejection", (reason) => {
+  const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  console.error(`[portal] unhandled rejection (staying up):\n${detail}`);
+});
+process.on("uncaughtException", (error) => {
+  console.error(`[portal] uncaught exception (staying up):\n${error?.stack ?? error}`);
+});
+
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

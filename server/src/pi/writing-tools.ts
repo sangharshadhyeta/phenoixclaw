@@ -8,6 +8,7 @@ import {
   writeArtefactPlan,
 } from "../artefacts.js";
 import { priorWork } from "./prior-work.js";
+import { selfContainmentNote } from "./step-text.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -410,7 +411,8 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         "`sections` is a flat list of plain strings, in the order they should be written:\n\n" +
         '  {"file": "stats.mjs", "sections": ["mean", "median", "stddev", "summary"]}\n\n' +
         "Name the parts, not the process — \"mean\", not \"write the mean function\", and never a " +
-        "step for planning: this call is the plan.",
+        "step for planning: this call is the plan. Each part is written in a context of its own, so " +
+        "name it in a way that means something on its own: \"rollback procedure\", not \"the rest\".",
       promptSnippet: "write_plan — plan a long document, then write it section by section",
       parameters: Type.Object({
         file: Type.String({ description: "Path to write to. Created if it does not exist." }),
@@ -587,6 +589,7 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
               ? `\n\nThis replaces the ${replaced}-step plan you had. These sections are the plan now — ` +
                 `step numbers from the old one no longer mean anything.`
               : "") +
+            selfContainmentNote(sections) +
             `\n\nStop here. Do not write any of it in this turn.\n\n` +
             `Each section will be given back to you on its own, in a context holding the plan, what ` +
             `the earlier sections produced, and the end of the file — and nothing else. That is the ` +

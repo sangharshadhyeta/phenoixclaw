@@ -287,8 +287,9 @@ export function synthesisBrief(ctx: {
   file?: string | null;
   supervision?: Supervision;
   problems?: string[];
+  expectedOutcome?: string | null;
 }): string {
-  const { goal, tasks, file, supervision, problems } = ctx;
+  const { goal, tasks, file, supervision, problems, expectedOutcome } = ctx;
   const failed = tasks.filter((t) => t.status === "failed");
 
   return [
@@ -307,6 +308,27 @@ export function synthesisBrief(ctx: {
     file ? `The result is in ${file}.` : undefined,
     file ? "" : undefined,
     supervision?.note ? `# STEPPING BACK\n\n${supervision.note}\n` : undefined,
+    /**
+     * The criterion, put back in front of the run that has to meet it.
+     *
+     * Recording it at the start is worth nothing on its own — BirdClaw's task
+     * registry kept `expected_outcome` and the value was never in the storing.
+     * It is in being asked, at the end, whether the thing you said you would
+     * check is actually true, by something that cannot mark its own homework
+     * against a standard it invents afterwards.
+     */
+    expectedOutcome
+      ? [
+          "# WHAT YOU SAID DONE WOULD LOOK LIKE",
+          "",
+          expectedOutcome,
+          "",
+          "You wrote that before starting. Say plainly whether it is true — and if you have not",
+          "actually checked, check now or say that you have not. \"It should work\" is not an answer",
+          "to a question you set yourself.",
+          "",
+        ].join("\n")
+      : undefined,
     "# NOW ANSWER",
     "",
     "The work is done. Answer the person who asked — in your own voice, as yourself, not as a",
@@ -400,6 +422,8 @@ export interface StepRunDeps {
   start?: (seq: number) => Promise<void>;
   /** Record what this run produced, so a later run can improve on it. */
   remember?: () => Promise<void>;
+  /** What the run said "done" would look like, if it said. */
+  expected?: () => Promise<string | null | undefined>;
 }
 
 /**
@@ -504,7 +528,9 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
       await deps.remember?.();
       if (!isolated && !problems.length) return "finished";
       await deps.recycle();
-      await deps.ask(synthesisBrief({ goal, tasks, file, supervision: done, problems }));
+      await deps.ask(
+        synthesisBrief({ goal, tasks, file, supervision: done, problems, expectedOutcome: await deps.expected?.() }),
+      );
       return "finished";
     }
 

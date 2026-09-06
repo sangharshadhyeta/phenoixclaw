@@ -106,6 +106,10 @@ export const AUTONOMOUS_TOOLS = new Set([
   // are here while routine_create/update/run are refused below.
   "dream_progress",
   "routine_cleanup",
+  // Saying how it will know its own work succeeded, written before the work.
+  // On the list because an unattended run is exactly the case that needs it:
+  // there is nobody to notice that "done" was asserted rather than checked.
+  "expected_outcome",
   "task_plan",
   "task_list",
   "task_start",

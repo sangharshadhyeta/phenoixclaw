@@ -1,5 +1,6 @@
 import { Type } from "typebox";
-import { getSession, listTasks, nextTask, setTaskStatus, setTasks, type TaskRow } from "../db.js";
+import { selfContainmentNote } from "./step-text.js";
+import { getSession, listTasks, nextTask, setTaskStatus, setTasks, updateSession, type TaskRow } from "../db.js";
 
 /**
  * The agent's own checklist for the work in front of it. Ports BirdClaw's
@@ -43,9 +44,11 @@ export function taskTools(sessionId: string) {
         "`steps` is a flat list of plain strings — one sentence each, no numbering, no objects:\n\n" +
         '  {"steps": ["Read src/parser.ts and note how tokens are produced", ' +
         '"Add the missing case for block comments", "Run npm test and fix what breaks"]}\n\n' +
-        "Each step should say what to *do*, specifically enough to be followed by someone who was " +
-        "not here when you planned it — \"Run `npm test -w server` and fix any failure\", not " +
-        "\"continue the work\" or \"finish it off\". Do not add a step for planning; this is it.",
+        "Each step is carried out in a context of its own — it is given this plan and what the " +
+        "earlier steps produced, not the conversation you are having now. So write each one to be " +
+        "followed by someone who was not here: \"Run `npm test -w server` and fix any failure\", " +
+        "never \"continue the work\", \"finish it off\", or \"same as above\". Do not add a step " +
+        "for planning; this is it.",
       promptSnippet: "task_plan — write or revise the steps for this work",
       /**
        * Liberal in what it accepts, because strict cost a live run six turns.
@@ -113,7 +116,52 @@ export function taskTools(sessionId: string) {
               "A flat list of strings. Not objects, not numbered, not nested.",
           );
         }
-        return say(`Plan set.\n${render(await setTasks(sessionId, steps))}`);
+        return say(`Plan set.\n${render(await setTasks(sessionId, steps))}${selfContainmentNote(steps)}`);
+      },
+    });
+
+    /**
+     * How we will know it worked, written down before the work starts.
+     *
+     * Ports the one field worth keeping from BirdClaw's task registry
+     * (`memory/tasks.py`), which the audit dropped whole because the
+     * `sessions` table supersedes the rest of it — correctly, except that
+     * `expected_outcome` has no equivalent here. `tasks.result` is free text
+     * written *after* a step, which is a report, not a criterion.
+     *
+     * The difference matters because of who reads it. A run that says "I have
+     * completed the area function" is judged by that sentence and nothing
+     * else; the supervisor asking "is this finished?" has the work and no
+     * standard to hold it against, so it is judging plausibility. A criterion
+     * fixed before the work turns that into a question with an answer — and
+     * fixed *before* on purpose, since a standard written afterwards is
+     * written by someone who already knows what they produced.
+     *
+     * It is deliberately not enforced. Nothing here can tell whether "the
+     * tests pass" is true; the value is that the closing turn is asked the
+     * question with the criterion in front of it, and that an unattended
+     * routine's result becomes auditable rather than narrative.
+     */
+    pi.registerTool({
+      name: "expected_outcome",
+      label: "Say what done looks like",
+      description:
+        "Write down how you — or anyone else — will be able to tell this worked, before you start. " +
+        "Something checkable: \"npm test -w server passes\", \"report.md has all five sections and " +
+        "no TODOs\", \"the endpoint returns 200 for a valid key\". Not \"the code is better\". You " +
+        "will be asked about it at the end, so write the thing you would actually check.",
+      promptSnippet: "expected_outcome — say how you will know this worked, before starting",
+      parameters: Type.Object({
+        outcome: Type.String({ description: "The checkable condition, in one or two sentences." }),
+      }),
+      async execute(_id: string, p: any) {
+        const outcome = String(p?.outcome ?? "").trim();
+        if (!outcome) return say("Nothing given — what would you check to know this worked?");
+        await updateSession(sessionId, { expected_outcome: outcome.slice(0, 1000) });
+        return say(
+          `Recorded. This work is done when: ${outcome}\n\n` +
+            `You will be shown this again at the end and asked whether it is actually true.`,
+        );
       },
     });
 

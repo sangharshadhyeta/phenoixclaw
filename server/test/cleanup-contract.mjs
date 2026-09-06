@@ -161,7 +161,27 @@ ok("sessions.tainted exists and defaults to 0",
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
   ok("trimming checkpoints, or the file never shrinks",
-     /if \(removed\) await checkpoint\(conn\);/.test(src));
+     /if \(removed\) \{[\s\S]{0,1600}await checkpoint\(conn\);/.test(src));
+
+  /**
+   * And rebuilds the index it just churned.
+   *
+   * DuckDB's ART index does not tidy itself after a large delete, and the next
+   * insert into it can fail with "node without metadata in
+   * ARTOperator::Insert" — an internal error, not a caller mistake. It killed
+   * the portal once on the very first event append after a trim, taking a
+   * working session with it.
+   */
+  ok("and rebuilds the index the deletes churned",
+     /DROP INDEX IF EXISTS idx_events_session/.test(src) &&
+     /CREATE INDEX idx_events_session/.test(src));
+
+  // A rejected promise in any `void this.something()` path used to kill the
+  // process, which ends every running session at once — the opposite of a run
+  // belonging to the server.
+  const idxSrc = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  ok("a background failure does not take the portal down",
+     /process\.on\("unhandledRejection"/.test(idxSrc) && /staying up/.test(idxSrc));
 
   const idx = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   ok("and it runs on a timer, not only at boot", /setInterval\([\s\S]{0,200}trimEventLog/.test(idx));

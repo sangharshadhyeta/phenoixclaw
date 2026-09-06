@@ -46,6 +46,7 @@
     "test:recovery": "node server/test/recovery-contract.mjs",
     "test:artefacts": "node server/test/artefacts-contract.mjs",
     "test:prior": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/prior-work-contract.mjs",
+    "test:step-text": "node server/test/step-text-contract.mjs",
     "test:steps": "node server/test/step-runner-contract.mjs",
     "test:supervisor": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) SUPERVISOR_TIMEOUT_MS=200 node server/test/supervisor-contract.mjs",
     "test:e2e": "node --env-file-if-exists=.env server/test/e2e.mjs"

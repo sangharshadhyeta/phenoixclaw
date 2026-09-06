@@ -390,7 +390,10 @@ const long = (s) => `${s} `.repeat(60);
 
   ok("the description carries a literal call", /\{"steps": \[/.test(tt.task_plan.description));
   ok("and says steps must be followable by someone who was not there",
-     /not here when you planned it/.test(tt.task_plan.description));
+     /followed by someone who was not here/.test(tt.task_plan.description));
+  // Sharpened once per-step isolation made it load-bearing: the step's own
+  // text really is most of what the next context gets.
+  ok("saying why — the step gets its own context", /context of its own/.test(tt.task_plan.description));
   ok("and forbids a step for planning", /Do not add a step for planning/.test(tt.task_plan.description));
 
   let message = "";

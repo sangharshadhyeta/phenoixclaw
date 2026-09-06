@@ -22,6 +22,11 @@ export interface SessionRow {
   thinking_level: string | null;
   /** No native boolean in the original schema; kept as 0/1 to minimize behavior change. */
   pinned: number;
+  /**
+   * What "done" means for this session, recorded before the work rather than
+   * narrated after it. See `expected_outcome` in task-tools.ts.
+   */
+  expected_outcome: string | null;
   /** pi's own session file, so the exact conversation is reopened on restart. */
   pi_session_file: string | null;
   /**
@@ -392,6 +397,10 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["routine_slug", "TEXT"],
     ["tainted", "INTEGER NOT NULL DEFAULT 0"],
     ["writing_file", "TEXT"],
+    // How we will know the work succeeded, written down before it starts —
+    // see the `expected_outcome` tool. BirdClaw's task registry carried this
+    // and the audit dropped the registry with it.
+    ["expected_outcome", "TEXT"],
     ["tokens_in", "BIGINT NOT NULL DEFAULT 0"],
     ["tokens_out", "BIGINT NOT NULL DEFAULT 0"],
     ["cost", "DOUBLE NOT NULL DEFAULT 0"],
@@ -586,6 +595,7 @@ export async function updateSession(
       | "title"
       | "status"
       | "last_error"
+      | "expected_outcome"
       | "provider"
       | "model"
       | "thinking_level"
@@ -1063,7 +1073,29 @@ export async function trimEventLog(keep = EVENTS_PER_SESSION): Promise<number> {
    * database exactly as big and exactly as fragile, which is why it kept
    * growing past the point where it would no longer open.
    */
-  if (removed) await checkpoint(conn);
+  if (removed) {
+    /**
+     * Rebuild the index the deletes just churned, then checkpoint.
+     *
+     * DuckDB's ART index does not tidy itself after a large delete, and the
+     * next insert into it can fail with
+     *
+     *     Failed to commit: node without metadata in ARTOperator::Insert
+     *
+     * which is an internal error, not something a caller did wrong. It killed
+     * the portal once, on the very next event append after a trim, taking a
+     * working session with it. Dropping and recreating is cheap on a table
+     * this size and leaves a clean index rather than a compacted-but-damaged
+     * one.
+     */
+    try {
+      await conn.run("DROP INDEX IF EXISTS idx_events_session");
+      await conn.run("CREATE INDEX idx_events_session ON events(session_id, seq)");
+    } catch {
+      // An index that cannot be rebuilt is a slow query, not a lost database.
+    }
+    await checkpoint(conn);
+  }
   return removed;
 }
 

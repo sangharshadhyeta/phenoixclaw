@@ -464,6 +464,7 @@ class SessionManager extends EventEmitter {
         note: (text) => this.record(sessionId, "portal_notice", { text }),
         // The mechanical check, run by the portal rather than left to the
         // model's own opinion of its work — see checkDocument.
+        expected: async () => (await getSession(sessionId))?.expected_outcome,
         start: async (seq) => {
           await setTaskStatus(sessionId, seq, "running");
         },

@@ -449,6 +449,24 @@ const plan = [
 
   const clean = synthesisBrief({ goal: "g", tasks: [task(1, "a", "done", "r")] });
   ok("a run with no failures is not told to apologise for one", !/did not work/.test(clean));
+
+  /**
+   * The criterion the run set itself, put back in front of it.
+   *
+   * Recording it is worth nothing on its own — BirdClaw's registry kept
+   * `expected_outcome` and the value was never in the storing. It is in being
+   * asked, at the end, whether the thing you said you would check is true.
+   */
+  const measured = synthesisBrief({
+    goal: "g",
+    tasks: [task(1, "a", "done", "r")],
+    expectedOutcome: "npm test -w server passes with no failures",
+  });
+  ok("the criterion is shown back", /npm test -w server passes/.test(measured));
+  ok("noted as something it set itself", /You wrote that before starting/.test(measured));
+  ok("and an unchecked claim is closed off", /check now or say that you have not/.test(measured));
+  ok("a run that set no criterion is not asked about one",
+     !/WHAT YOU SAID DONE WOULD LOOK LIKE/.test(clean));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
