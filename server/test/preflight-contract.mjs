@@ -92,6 +92,26 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("nor a path", !hasArithmetic("read src/pi/guard.ts and summarise"));
   ok("nor an ordinary question", !hasArithmetic("what is in the memory graph?"));
 
+  /**
+   * A sum with no digits in it.
+   *
+   * "the multiplication of the largest two primes and the number of digits
+   * those have" is arithmetic — an exact answer a shell can produce — and the
+   * digit-and-operator patterns cannot see it. A live session met exactly that
+   * and spent the whole turn explaining the result would be impractical to
+   * calculate, then looped in its own thinking.
+   */
+  ok("a sum described in words", hasArithmetic("what is the multiplication of the largest two primes and number of digits those have"));
+  ok("how many digits is always arithmetic", hasArithmetic("how many digits does that have"));
+  ok("a root is too", hasArithmetic("what is the square root of 2"));
+  ok("and an operation over actual numbers", hasArithmetic("the product of 17 and 23"));
+
+  // The operation words are ordinary English too, and sending those to a shell
+  // would be worse than useless — so they need a countable subject nearby.
+  ok("a rhetorical sum is not arithmetic", !hasArithmetic("what is the sum of the parts of this argument"));
+  ok("nor is a figurative product", !hasArithmetic("tell me about the product of our efforts"));
+  ok("nor a request to write about multiplication", !hasArithmetic("write a multiplication table module"));
+
   const note = arithmeticNote("What is 17 times 23?");
   ok("the note names the tool", /`bash`/.test(note));
   ok("closes off 'it is small enough'", /however small it looks/.test(note));

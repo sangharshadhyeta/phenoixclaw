@@ -65,8 +65,27 @@ export interface Sampling {
 export const DEFAULT_SAMPLING: Sampling = {
   dry_multiplier: Number(process.env.PI_DRY_MULTIPLIER || 0.8),
   dry_base: Number(process.env.PI_DRY_BASE || 1.75),
-  // Eight tokens: longer than any code idiom, shorter than any sentence.
-  dry_allowed_length: Number(process.env.PI_DRY_ALLOWED_LENGTH || 8),
+  /**
+   * Three, measured rather than reasoned.
+   *
+   * Eight was chosen on the theory that it should sit above any code idiom and
+   * below any sentence. It was wrong in both directions. A live session
+   * repeated "Actually, I'll respond." about thirty times inside one thinking
+   * block — roughly seven tokens, so it slipped under the threshold entirely
+   * and DRY never saw it.
+   *
+   * And the theory about code was backwards. Asked for a module of four
+   * documented functions, this server produced, on the same prompt:
+   *
+   *     allowed_length 8 → 18 functions, does not compile
+   *     allowed_length 4 → 18 functions, compiles
+   *     allowed_length 3 →  4 functions, compiles
+   *
+   * and on a second prompt (a Stack class with four methods), 3 compiled while
+   * 4 produced ten definitions and did not. The permissive window was not
+   * protecting code; it was letting the model repeat itself into bloat.
+   */
+  dry_allowed_length: Number(process.env.PI_DRY_ALLOWED_LENGTH || 3),
 };
 
 /** A loopback or private address — a server on this machine or this network. */

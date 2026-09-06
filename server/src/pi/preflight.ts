@@ -121,6 +121,36 @@ export function preflightNote(message: string, hasHistory: boolean): string {
 const ARITHMETIC_FOLLOWUP =
   /^\s*(?:now\s+)?(?:please\s+)?(?:multiply|divide|add|subtract|compute|calculate|work out|do)\s+(?:it|them|these|those|that|the (?:sum|product|maths?|calculation))\b/i;
 
+/**
+ * A sum described in words, with no digits in it at all.
+ *
+ * "the multiplication of the largest two primes and the number of digits those
+ * have" is arithmetic — it has an exact answer a shell can produce — and the
+ * patterns below cannot see it, because they look for two numbers joined by an
+ * operator and there are no numbers. A live session met exactly that and spent
+ * the turn explaining that the result would be impractical to calculate.
+ *
+ * "How many digits" is the tell worth having: it is never rhetorical, and the
+ * answer is always one line of Python.
+ */
+const ARITHMETIC_IN_WORDS = [
+  /\bhow many digits\b/i,
+  /\b(?:multiply|divide|add|subtract)\b[^.?!]{0,40}\b(?:by|and|with|together)\b/i,
+  /\braise[d]?\s+to\s+the\s+power\b/i,
+  /\b(?:factorial|square root|cube root|logarithm)\s+of\b/i,
+];
+
+/**
+ * "The sum of" is arithmetic only when it is about numbers.
+ *
+ * "the sum of the parts of this argument" and "the product of our efforts" are
+ * ordinary English, and sending those to a shell would be worse than useless.
+ * So the operation word has to be near something countable.
+ */
+const NUMERIC_SUBJECT =
+  /\b(?:number|numbers|digit|digits|prime|primes|value|values|integer|integers|total|figure|figures)\b|\d/i;
+const WORDED_OPERATION = /\b(?:multiplication|product|sum|difference|quotient)\s+of\b/i;
+
 const ARITHMETIC = [
   /\d[\d,.]*\s*(?:[×x*/+\-^]|\*\*)\s*\d/,
   /\d[\d,.]*\s*(?:times|multiplied by|divided by|plus|minus|over|to the power of|mod|modulo)\s+\d/i,
@@ -135,6 +165,8 @@ export function hasArithmetic(message: string): boolean {
   // *between* two numbers already excludes most of these; this excludes the
   // rest by refusing anything that looks like a dotted or hyphenated literal.
   if (ARITHMETIC_FOLLOWUP.test(text)) return true;
+  if (ARITHMETIC_IN_WORDS.some((pattern) => pattern.test(text))) return true;
+  if (WORDED_OPERATION.test(text) && NUMERIC_SUBJECT.test(text)) return true;
   if (/\b\d+\.\d+\.\d+\b/.test(text)) return false;
   // A date is digits joined by hyphens or slashes, which is the subtraction
   // and division pattern exactly. "What happened on 2026-09-06" is not a sum.

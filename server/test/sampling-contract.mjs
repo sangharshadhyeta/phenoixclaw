@@ -85,7 +85,18 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   // DRY penalises repeated *sequences*. Token-level penalties damage code,
   // which repeats `return`, `const` and `self.` legitimately and constantly.
   ok("DRY is set", out.dry_multiplier === DEFAULT_SAMPLING.dry_multiplier && out.dry_multiplier > 0);
-  ok("with a length longer than any code idiom", out.dry_allowed_length >= 6);
+  /**
+   * Short, and measured rather than reasoned.
+   *
+   * Eight was chosen on the theory that it sits above any code idiom and below
+   * any sentence, and it was wrong both ways: a session repeated "Actually,
+   * I'll respond." about thirty times in one thinking block — roughly seven
+   * tokens, under the threshold — and on a four-function module this server
+   * produced 18 functions that did not compile at 8, and exactly 4 that did
+   * at 3.
+   */
+  ok("the window is short enough to catch a repeated sentence", out.dry_allowed_length <= 4);
+  ok("and not zero, which would penalise every phrase", out.dry_allowed_length >= 2);
   ok("and nothing token-level", !("repeat_penalty" in out) && !("frequency_penalty" in out));
   ok("the rest of the payload survives", out.model === "m" && out.messages.length === 1);
 
