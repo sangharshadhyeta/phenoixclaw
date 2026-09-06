@@ -155,6 +155,17 @@ ok("sessions.tainted exists and defaults to 0",
   // a global cap is "whatever this conversation did while the portal was busy".
   ok("trimming again is a no-op", (await trimEventLog(50)) === 0);
 
+  // DuckDB does not shrink a file on DELETE — pages are freed for reuse and the
+  // file stays as large as it ever was. Three databases grew past the point of
+  // opening because rows were trimmed and the space never reclaimed.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
+  ok("trimming checkpoints, or the file never shrinks",
+     /if \(removed\) await checkpoint\(conn\);/.test(src));
+
+  const idx = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  ok("and it runs on a timer, not only at boot", /setInterval\([\s\S]{0,200}trimEventLog/.test(idx));
+
   // The newest are what a reader scrolls back through, so they are what stays.
   const newest = (await conn.runAndReadAll(
     "SELECT max(seq) AS m FROM events WHERE session_id = 'loud'",

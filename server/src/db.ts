@@ -1009,6 +1009,16 @@ export async function trimEventLog(keep = EVENTS_PER_SESSION): Promise<number> {
     });
     removed += Number(row.n) - keep;
   }
+
+  /**
+   * Reclaim the space, not just the rows.
+   *
+   * DuckDB does not shrink a file on DELETE — the pages are freed for reuse and
+   * the file stays as large as it ever was. Trimming rows without this left the
+   * database exactly as big and exactly as fragile, which is why it kept
+   * growing past the point where it would no longer open.
+   */
+  if (removed) await checkpoint(conn);
   return removed;
 }
 

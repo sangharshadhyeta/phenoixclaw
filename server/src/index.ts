@@ -29,7 +29,6 @@ import { extensionsRouter } from "./api/extensions.js";
 import { channelsRouter } from "./api/channels.js";
 import { routinesRouter } from "./api/routines.js";
 import { skillsRouter } from "./api/skills.js";
-import { mcpRouter } from "./api/mcp.js";
 import { peopleRouter } from "./api/people.js";
 import { memoryRouter } from "./api/memory.js";
 import { healthRouter } from "./api/health.js";
@@ -524,7 +523,6 @@ app.use("/api", extensionsRouter());
 app.use("/api", channelsRouter());
 app.use("/api", routinesRouter());
 app.use("/api", skillsRouter());
-app.use("/api", mcpRouter());
 app.use("/api", peopleRouter());
 app.use("/api", memoryRouter());
 app.use("/api", healthRouter());
@@ -692,6 +690,33 @@ if (relocated > 0) {
  * runaway loop prevents. The case that filled a database to 2.2 GB was
  * therefore also the case that would never have trimmed it.
  */
+/**
+ * Trim on a timer, not only at boot.
+ *
+ * At boot alone this bounds a portal that restarts and nothing else. A portal
+ * left running is precisely the case that grows: the learning loop writes
+ * continuously, and `routine_cleanup` — the other caller — only runs when the
+ * Dream Cycle reaches PHASE 7, which needs ten minutes of quiet and a
+ * three-hour gap that a busy loop never leaves.
+ *
+ * Three databases were lost to this before the shape was clear. Each had grown
+ * unbounded (2.2 GB, then 459 MB, then 841 MB) and then failed to open at all,
+ * with an IO error reading past its own end. The event log is a display and
+ * audit record — pi keeps the conversation, the graph keeps what was learned —
+ * so trimming costs history nobody was reading and saves the file.
+ *
+ * Every twenty minutes: often enough that no plausible burst reaches the size
+ * that breaks things, rare enough to be invisible.
+ */
+const TRIM_INTERVAL_MS = 20 * 60_000;
+setInterval(() => {
+  void trimEventLog()
+    .then((n) => {
+      if (n > 0) console.log(`[portal] trimmed ${n} old event(s) from the log`);
+    })
+    .catch(() => {});
+}, TRIM_INTERVAL_MS).unref();
+
 void trimEventLog()
   .then((n) => {
     if (n > 0) console.log(`[portal] trimmed ${n} old event(s) from the log`);
