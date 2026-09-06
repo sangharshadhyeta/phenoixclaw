@@ -128,5 +128,84 @@ ok("messages missing a role are untouched",
   ok("and holds the pointer", /EARLIER IN THIS CONVERSATION/.test(after.messages[0].content));
 }
 
+// --- clamping one oversized tool result, mechanically, no model call -------
+// Ported from Sisyphean's memory/compact.py: a large tool result outside the
+// current turn is stubbed rather than carried at full size — the piece the
+// exchange-boundary trim above does not cover, since a single 32KB `read`
+// looks the same as a short one from that trim's point of view. This is what
+// put 18,887 input tokens into one request from a result still sitting in
+// the kept window several turns after it was read.
+{
+  const toolExchange = (n, resultChars) => [
+    { role: "user", content: `question ${n}` },
+    { role: "assistant", content: `answer ${n}` },
+    { role: "tool", content: "x".repeat(resultChars), tool_call_id: `c${n}` },
+  ];
+  const withBigResult = {
+    model: "m",
+    messages: [
+      sys,
+      ...toolExchange(1, 32_000),
+      { role: "user", content: "and then?" },
+      { role: "assistant", content: "one more thing" },
+    ],
+  };
+  const after = await run(withBigResult);
+  ok("a big result outside the current turn is stubbed", Boolean(after));
+  const stubbed = after.messages.find((m) => m.role === "tool");
+  ok("it says how big it was", /32000 chars/.test(stubbed.content));
+  ok("and that it was already used", /already read and acted on/.test(stubbed.content));
+  ok("the stub is far smaller than the original", stubbed.content.length < 200);
+
+  const withinCurrentTurn = {
+    model: "m",
+    messages: [
+      sys,
+      { role: "user", content: "do the thing" },
+      { role: "assistant", content: "working on it" },
+      { role: "tool", content: "y".repeat(32_000), tool_call_id: "c-now" },
+    ],
+  };
+  const untouched = await run(withinCurrentTurn);
+  ok("but a result inside the CURRENT turn is left whole", untouched === undefined);
+}
+
+// --- the hard ceiling: total size wins even when nothing is individually big
+// A conversation whose every single message is small can still add up past
+// the ceiling. Clamping alone cannot help here — nothing is oversized on its
+// own — so this is what enforces the actual number this file is for.
+{
+  const bigConversation = {
+    model: "m",
+    messages: [sys, ...Array.from({ length: 40 }, (_, i) => exchange(i + 1)).flat()
+      .map((m) => ({ ...m, content: m.content.padEnd(2000, ".") }))],
+  };
+  const after = await run(bigConversation);
+  ok("a conversation too big in total is still cut down", Boolean(after));
+  const totalChars = after.messages.reduce((n, m) => n + String(m.content).length, 0);
+  ok("the assembled request is under the token ceiling",
+     Math.ceil(totalChars / 4) <= 8000);
+  ok("the newest exchange survives even so",
+     after.messages.some((m) => m.content?.includes?.("question 40")));
+}
+
+// --- the ceiling is a floor, not a promise ----------------------------------
+// A single current turn that is itself over budget cannot be shrunk without
+// breaking the "never cut inside a turn" rule, so it is accepted rather than
+// mangled.
+{
+  const hugeCurrentTurn = {
+    model: "m",
+    messages: [
+      sys,
+      { role: "user", content: "z".repeat(40_000) },
+      { role: "assistant", content: "working on it" },
+    ],
+  };
+  const result = await run(hugeCurrentTurn);
+  ok("an oversized current turn is left whole rather than broken",
+     result === undefined || result.messages.some((m) => m.content?.length > 30_000));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);
