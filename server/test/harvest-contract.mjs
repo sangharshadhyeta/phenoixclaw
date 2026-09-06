@@ -120,5 +120,21 @@ ok("a missing local model does not lose the record", Boolean(first.harvest.node)
   ok("and so does the phrasing around them", /vector store/.test(node.summary));
 }
 
+// --- a short message still yields its entities -----------------------------
+// The model pass has a threshold because it costs a call; the regex pass does
+// not, and shared thresholds meant a 79-character sentence naming a file and an
+// error type extracted nothing at all. One character short.
+{
+  const { getNode } = await import(dist("graph.js"));
+  const h = await session("sess-short", "short");
+  await turn("sess-short", "The bug is in server/src/pi/guard.ts and it throws TypeError.", "Noted.");
+  const out = await harvestTurn(h, 0);
+  await out.harvest.extraction;
+
+  ok("a short technical message is still mined", Boolean(await getNode("server/src/pi/guard.ts")));
+  ok("including the error type", Boolean(await getNode("TypeError")));
+  ok("and the conversation is recorded as usual", Boolean(out.harvest.node));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

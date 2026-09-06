@@ -67,6 +67,64 @@ export function htmlToText(html: string): string {
     .join("\n");
 }
 
+/**
+ * Drop what survived the tag stripping and is not the page.
+ *
+ * `htmlToText` removes markup; it cannot tell an article from the navigation
+ * around it. What comes out of a typical page is the prose plus a hundred short
+ * lines of menu items, cookie notices, "skip to content", social links and
+ * footer boilerplate — which then goes into the page store verbatim, gets
+ * embedded, and competes with real content in every future search.
+ *
+ * BirdClaw's condenser (`tools/condenser.py`) had a cleaning tier for exactly
+ * this. No model call: these are structural properties of a line, and asking a
+ * model to spot a cookie banner is paying for something a regex knows.
+ *
+ * Deliberately conservative — it keeps anything it is unsure about. Losing a
+ * real sentence is worse than keeping a menu item, because the sentence is why
+ * the page was fetched.
+ */
+const BOILERPLATE =
+  /^(skip to (main )?content|accept( all)?( cookies)?|cookie (policy|settings|preferences)|manage (preferences|cookies)|privacy (policy|notice)|terms( of (use|service))?|all rights reserved|©.*|sign in|log ?in|sign up|subscribe|newsletter|share (this|on)|follow us|back to top|menu|search|home|next|previous|prev|read more|learn more|advertisement|sponsored)$/i;
+
+export function cleanPageText(text: string): string {
+  const lines = text.split("\n");
+
+  /**
+   * A line repeated many times is furniture.
+   *
+   * Navigation appears once per template region, so the same short string turns
+   * up five or ten times in one page. Prose does not repeat itself verbatim,
+   * and the threshold is on *short* lines only so a repeated sentence — a
+   * disclaimer, a refrain — survives.
+   */
+  const seen = new Map<string, number>();
+  for (const line of lines) {
+    const key = line.trim().toLowerCase();
+    if (key.length <= 40) seen.set(key, (seen.get(key) ?? 0) + 1);
+  }
+
+  const kept = lines.filter((raw) => {
+    const line = raw.trim();
+    if (!line) return false;
+    if (BOILERPLATE.test(line)) return false;
+    // Short and repeated: a menu item, not a sentence.
+    if (line.length <= 40 && (seen.get(line.toLowerCase()) ?? 0) >= 3) return false;
+    /**
+     * A short line with no sentence ending and no spaces is a link or a label.
+     * Kept if it has a full stop, because "See §4." is a sentence and "Docs"
+     * is not.
+     */
+    if (line.length < 25 && !/[.!?:]$/.test(line) && !line.includes(" ")) return false;
+    return true;
+  });
+
+  // If cleaning took nearly everything, the page was probably not shaped the
+  // way this expects — return the original rather than a fragment of it.
+  const result = kept.join("\n");
+  return result.length < text.length * 0.15 ? text : result;
+}
+
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
 /**
@@ -145,9 +203,11 @@ export function webTools() {
         const plain = /html/i.test(contentType) ? htmlToText(body) : body;
         if (!plain.trim()) return text(`${parsed.hostname} returned nothing readable.`);
 
-        // Stored before pruning, so a later recall with a different question
-        // gets the whole page rather than the part the first caller wanted.
-        await rememberPage(parsed.toString(), plain);
+        // Cleaned, then stored before pruning: a later recall with a different
+        // question gets the whole page rather than the part the first caller
+        // wanted — but not the navigation that came with it. See cleanPageText.
+        const cleaned = cleanPageText(plain);
+        await rememberPage(parsed.toString(), cleaned);
 
         /**
          * Selected by meaning, not only by shared vocabulary.
@@ -167,7 +227,7 @@ export function webTools() {
          * The result is still wrapped by the guard's untrusted envelope on the
          * way out — pruning a page does not launder it.
          */
-        const pruned = await semanticPrune(plain, goalFor(p, parsed), FETCH_CHAR_CAP);
+        const pruned = await semanticPrune(cleaned, goalFor(p, parsed), FETCH_CHAR_CAP);
         return text(`${parsed.toString()}\n\n${pruned}`);
       },
     });

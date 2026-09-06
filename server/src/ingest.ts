@@ -177,6 +177,75 @@ async function linkToSource(sourceNode: string | undefined, entity: string): Pro
  * signal is worth. What it reliably catches is fabrication, which is what a
  * confidence floor is for.
  */
+/**
+ * Entities a regex can find, without asking a model.
+ *
+ * Ports Sisyphean's NER tier. Extraction through the local model is the good
+ * path and it is not free — a call per chunk, seconds at a time, and nothing at
+ * all when the server is down. A great deal of what an agent reads is
+ * structured enough that no model is needed: a file path is a file path, an
+ * error type is capitalised and ends in Error, a URL announces itself.
+ *
+ * Deliberately narrow. Each pattern is one where a false positive is cheap and
+ * a match is almost certainly real, because these go into the graph at low
+ * confidence and cheap noise compounds: a hundred junk nodes cost more in
+ * recall quality than they ever save in extraction cost.
+ */
+const NER: { type: NodeType; pattern: RegExp; describe: (m: string) => string }[] = [
+  {
+    // A path with a real extension. Bare directory names are far too common in
+    // prose to be worth catching.
+    type: "concept",
+    pattern: /\b[\w./-]*\/[\w.-]+\.(ts|tsx|js|jsx|py|go|rs|java|rb|md|json|ya?ml|toml|sql|sh)\b/g,
+    describe: (m) => `A file at ${m}.`,
+  },
+  {
+    type: "concept",
+    pattern: /\bhttps?:\/\/[^\s)<>"']+/g,
+    describe: (m) => `A page at ${m}.`,
+  },
+  {
+    // TypeError, ENOENT, ERR_MODULE_NOT_FOUND — the vocabulary of a failure,
+    // which is exactly what you want to search for later.
+    type: "concept",
+    pattern: /\b([A-Z][a-zA-Z]*(?:Error|Exception)|E[A-Z]{3,}|ERR_[A-Z_]+)\b/g,
+    describe: (m) => `An error of kind ${m}.`,
+  },
+];
+
+/** How many of one kind to take from a single passage, so one file listing cannot flood the graph. */
+const NER_PER_KIND = 8;
+
+/**
+ * Pull structured entities out of text and record them.
+ *
+ * Returns how many were written. Runs whether or not a local model exists,
+ * which is the point: a portal with no extraction server still accumulates the
+ * paths, URLs and error types it has seen.
+ */
+export async function ingestEntities(text: string, source: string, sourceNode?: string): Promise<number> {
+  if (!text.trim()) return 0;
+  let written = 0;
+
+  for (const { type, pattern, describe } of NER) {
+    const found = new Set<string>();
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0].replace(/[.,;:)\]]+$/, "");
+      if (value.length < 4 || value.length > 200) continue;
+      found.add(value);
+      if (found.size >= NER_PER_KIND) break;
+    }
+    for (const value of found) {
+      // Low confidence: "this string appeared" is the weakest kind of evidence
+      // there is. Corroboration raises anything that turns out to matter.
+      await upsertNode(value, type, describe(value), 0.25, { source });
+      await linkToSource(sourceNode, value);
+      written++;
+    }
+  }
+  return written;
+}
+
 export function faithfulness(claim: string, source: string): number {
   const words = (text: string) =>
     new Set((text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []));

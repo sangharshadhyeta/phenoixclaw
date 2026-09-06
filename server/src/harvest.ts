@@ -1,5 +1,5 @@
 import { upsertNode, upsertEdge, neighbors, getNode } from "./graph.js";
-import { ingestText } from "./ingest.js";
+import { ingestEntities, ingestText } from "./ingest.js";
 import { reconstructAssistantText } from "./transcript.js";
 import { eventsSince, type SessionRow } from "./db.js";
 import { rememberUser, type UserCategory } from "./user-knowledge.js";
@@ -58,6 +58,21 @@ import { nextWeekday } from "./pi/temporal-context.js";
 
 /** Below this a turn is an acknowledgement, not a conversation. */
 const MIN_HARVEST_CHARS = 80;
+
+/**
+ * The regex pass has a much lower bar than the model pass.
+ *
+ * MIN_HARVEST_CHARS exists to stop a model call being spent on "ok, thanks",
+ * which is a cost argument — and the regex pass has no cost. Sharing the
+ * threshold meant it missed things it obviously should have caught: "The bug is
+ * in server/src/pi/guard.ts and it throws TypeError. Just acknowledge." is 79
+ * characters, one short, so a sentence naming a file and an error type
+ * extracted nothing at all.
+ *
+ * Low enough that a bare path or URL qualifies, since that is exactly the kind
+ * of thing worth having and exactly the kind of message that is short.
+ */
+const MIN_ENTITY_CHARS = 20;
 
 /** Sisyphean's caps, which are well judged: enough to recall, short enough to scan. */
 const MAX_REQUESTS = 3;
@@ -365,13 +380,26 @@ export async function harvestTurn(
    * exchange, because what was *said* is a record either way.
    */
   const material = (await prompts(session.id, extractedTo)).join("\n");
+  /**
+   * The regex pass runs first and unconditionally.
+   *
+   * It needs no model, so a portal with no extraction server still accumulates
+   * the paths, URLs and error types a conversation mentioned — which is most of
+   * what makes a technical conversation findable later. The model pass is the
+   * better material and the optional half; this is the floor under it.
+   */
+  const source = `conversation:${session.id}`;
   const extraction =
-    material.length >= MIN_HARVEST_CHARS
-      ? ingestText(material, `conversation:${session.id}`, name)
-          .then((r) => r.propositions ?? 0)
-          // Swallowed deliberately: tier 1 is the guarantee, and a dead
-          // extraction server must not stop a conversation being remembered.
+    material.length >= MIN_ENTITY_CHARS
+      ? ingestEntities(material, source, name)
           .catch(() => 0)
+          .then(async (entities) => {
+            // The model pass keeps the higher bar: it is the half that costs
+            // something, and "ok, thanks" is not worth a call.
+            if (material.length < MIN_HARVEST_CHARS) return entities;
+            const result = await ingestText(material, source, name).catch(() => null);
+            return entities + (result?.propositions ?? 0);
+          })
       : nothing;
 
   return { harvest: { node: name, personal, extraction }, seq };
