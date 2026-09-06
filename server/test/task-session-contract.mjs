@@ -31,6 +31,7 @@ let n = 0;
 
 const tools = {};
 taskSessionTools({
+  parentSessionId: "the-conversation",
   workspaceRoot: root,
   executor: "host",
   newId: () => `child${++n}`,
@@ -66,6 +67,15 @@ const call = async (name, args) => (await tools[name].execute("id", args)).conte
   ok("which was actually created", existsSync(row.workspace));
 
   ok("and the work was handed over", started.length === 1 && started[0].id === "child1");
+  /**
+   * Which conversation is waiting for it.
+   *
+   * A session a person created and is typing into has no `started_by`, and its
+   * answer is not relayed anywhere — they are looking at it. Reporting those
+   * put every reply in a second place, so saying "hi" to a session produced
+   * the answer and then the answer again under "finished".
+   */
+  ok("the session knows which conversation asked", row.started_by === "the-conversation");
   ok("with the brief, not the conversation", /tokeniser/.test(started[0].instructions));
 }
 

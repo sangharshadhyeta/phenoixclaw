@@ -787,6 +787,7 @@ class SessionManager extends EventEmitter {
       ...(session.kind === "agent"
         ? {
             startTask: taskSessionTools({
+              parentSessionId: sessionId,
               workspaceRoot: WORKSPACE_ROOT,
               executor: EXECUTOR_KIND,
               newId: () => nanoid(12),
@@ -1412,6 +1413,17 @@ class SessionManager extends EventEmitter {
     if (this.reported.has(sessionId)) return;
     const session = await getSession(sessionId).catch(() => undefined);
     if (session?.kind !== "task") return;
+    /**
+     * Only work the agent handed out.
+     *
+     * A session a person created and is typing into needs no relay — they are
+     * looking at it. Reporting those put every reply in a second place, so
+     * saying "hi" to a session produced the answer and then the answer again
+     * under "finished". `started_by` is set by `start_task` and by nothing
+     * else, which is exactly the distinction: work that was delegated has a
+     * conversation waiting on it, and work you are doing yourself does not.
+     */
+    if (!session.started_by) return;
 
     let answer = "";
     try {

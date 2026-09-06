@@ -32,6 +32,14 @@ export interface SessionRow {
    * of a project. Null means no document plan. See writing-tools.ts.
    */
   writing_mode: "sections" | "files" | null;
+  /**
+   * The session that handed this work out, when the agent did.
+   *
+   * Null for a session a person created: they are looking at it, and relaying
+   * its answer somewhere else is noise. Set only by `start_task`, and it is
+   * where the result is reported back to.
+   */
+  started_by: string | null;
   /** pi's own session file, so the exact conversation is reopened on restart. */
   pi_session_file: string | null;
   /**
@@ -408,6 +416,9 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     ["expected_outcome", "TEXT"],
     // "sections" (parts of one file) or "files" (a project) — see write_plan.
     ["writing_mode", "TEXT"],
+    // The conversation that started this work, when the agent started it
+    // rather than a person — see start_task and reportResult.
+    ["started_by", "TEXT"],
     ["tokens_in", "BIGINT NOT NULL DEFAULT 0"],
     ["tokens_out", "BIGINT NOT NULL DEFAULT 0"],
     ["cost", "DOUBLE NOT NULL DEFAULT 0"],
@@ -528,6 +539,8 @@ export async function createSession(row: {
   channel_slug?: string | null;
   channel_key?: string | null;
   routine_slug?: string | null;
+  /** The conversation that handed this work out, when the agent did. */
+  started_by?: string | null;
 }): Promise<void> {
   const conn = await getDb();
   const merged = {
@@ -535,11 +548,12 @@ export async function createSession(row: {
     channel_slug: null,
     channel_key: null,
     routine_slug: null,
+    started_by: null,
     ...row,
   };
   await conn.run(
-    `INSERT INTO sessions (id, title, workspace, executor, kind, channel_slug, channel_key, routine_slug)
-     VALUES ($id, $title, $workspace, $executor, $kind, $channel_slug, $channel_key, $routine_slug)`,
+    `INSERT INTO sessions (id, title, workspace, executor, kind, channel_slug, channel_key, routine_slug, started_by)
+     VALUES ($id, $title, $workspace, $executor, $kind, $channel_slug, $channel_key, $routine_slug, $started_by)`,
     merged,
   );
 }

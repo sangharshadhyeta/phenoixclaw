@@ -35,6 +35,8 @@ import { createSession, getSession, listSessions } from "../db.js";
  */
 
 export interface TaskSessionDeps {
+  /** The conversation handing the work out, recorded so the answer knows where to go. */
+  parentSessionId: string;
   workspaceRoot: string;
   executor: string;
   newId: () => string;
@@ -82,7 +84,15 @@ export function taskSessionTools(deps: TaskSessionDeps) {
         const id = deps.newId();
         const workspace = workspaceFor(deps.workspaceRoot, id);
         mkdirSync(workspace, { recursive: true });
-        await createSession({ id, title: title.slice(0, 120), workspace, executor: deps.executor });
+        await createSession({
+          id,
+          title: title.slice(0, 120),
+          workspace,
+          executor: deps.executor,
+          // Which conversation to answer. A session a person created has none,
+          // and its answer is not relayed anywhere — they are looking at it.
+          started_by: deps.parentSessionId,
+        });
 
         // Not awaited: the tool returns when the work is accepted, not when it
         // is finished. Awaiting here would block this conversation for as long

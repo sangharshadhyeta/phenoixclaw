@@ -81,6 +81,8 @@ ok("nor status changes", isMirrorable("portal_status") === false);
   // the task's own transcript underneath the reply it had just given.
   ok("the result is not recorded back into the session that produced it",
      /await this\.mirrorToMain\(sessionId, "portal_task_result"/.test(src));
+  // A session a person created and is typing into has nobody waiting on it.
+  ok("only delegated work is reported at all", /if \(!session\.started_by\) return;/.test(src));
   ok("and a task's prose does not follow it to the conversation",
      /type === "message_end" && this\.kindOf\.get\(sessionId\) === "task"/.test(src));
 
