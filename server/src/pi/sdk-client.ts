@@ -468,6 +468,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.enforceTaint !== false,
             opts.cwd,
             opts.tainted === true,
+            // A task session may only modify its own workspace. Agent and
+            // routine sessions run in the agent's own home, where maintaining
+            // itself is the job — see the boundary check in guard.ts.
+            opts.kind === "task" ? opts.cwd : undefined,
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.

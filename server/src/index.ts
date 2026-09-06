@@ -278,8 +278,40 @@ app.put("/api/agent/files/:name", async (req, res) => {
 
 app.post("/api/sessions", async (req, res) => {
   const { title, workspace } = req.body ?? {};
-  if (typeof workspace !== "string" || !workspace) {
-    return res.status(400).json({ error: "workspace required" });
+
+  /**
+   * A session with nowhere to work gets its own directory.
+   *
+   * Handing the caller the choice meant two sessions could be pointed at one
+   * folder — which the portal allowed, and which happened: two sessions were
+   * found editing the same files with nothing separating them. Work from one
+   * piece of work leaking into another is not a thing to leave to whoever
+   * types the form.
+   *
+   * Named from the id rather than the title, because the id is unique and a
+   * title is whatever somebody wrote. Titles collide; "notes" twice is two
+   * sessions in one folder again.
+   *
+   * A workspace given explicitly is still honoured — pointing a session at an
+   * existing checkout is the ordinary case and the whole reason the portal has
+   * workspaces at all. What changes is that *not* choosing gets you isolation
+   * rather than a default that collides.
+   */
+  const id = nanoid(12);
+  if (workspace === undefined || workspace === null || workspace === "") {
+    const own = path.join(WORKSPACE_ROOT, `session-${id}`);
+    mkdirSync(own, { recursive: true });
+    await createSession({
+      id,
+      title: (typeof title === "string" && title.trim()) || `session ${id}`,
+      workspace: own,
+      executor: EXECUTOR_KIND,
+    });
+    return res.json(toApi((await getSession(id))!));
+  }
+
+  if (typeof workspace !== "string") {
+    return res.status(400).json({ error: "workspace must be a string, or omitted for a fresh one" });
   }
   // Keep pi inside the mounted workspace area — no escaping to the rest of the FS.
   const resolved = path.resolve(workspace);
@@ -288,7 +320,6 @@ app.post("/api/sessions", async (req, res) => {
   }
   if (!existsSync(resolved)) return res.status(400).json({ error: "workspace does not exist" });
 
-  const id = nanoid(12);
   await createSession({
     id,
     // Default the session name to the workspace folder name.

@@ -140,6 +140,13 @@ function findServerSrc(): string {
   return path.resolve(here, "../../src");
 }
 
+/** True when `file` is inside `dir` — or is `dir` itself. */
+function within(file: string, dir: string): boolean {
+  const base = path.resolve(dir);
+  const target = path.resolve(file);
+  return target === base || target.startsWith(base + path.sep);
+}
+
 const SERVER_SRC = findServerSrc();
 const PROTECTED_PATHS = new Set<string>([
   path.join(agentHome(), CONSTITUTION_FILE),
@@ -461,7 +468,13 @@ export function guardExtension(
    * stop(), or a role change handed a tainted conversation a clean slate while
    * the hostile content was still sitting in the history pi replays.
    */
-  alreadyTainted = false
+  alreadyTainted = false,
+  /**
+   * The workspace this session may modify. Writes outside it are refused; reads
+   * are not. Undefined leaves the boundary off — which is what a session whose
+   * cwd is the agent's own home wants, since maintaining itself is its job.
+   */
+  workspace?: string
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
@@ -590,6 +603,43 @@ export function guardExtension(
               `what any session (including this one, next time) is told. Call identity_update with ` +
               `file="${identityName}" and the complete new content instead. Use identity_read first if ` +
               `you need to see what's there now.`,
+          };
+        }
+      }
+
+      /**
+       * Writes stay inside the session's own workspace.
+       *
+       * The API checks a workspace is inside WORKSPACE_ROOT when a session is
+       * created, and then nothing checked anything again: a running session
+       * could write anywhere the process could reach, including another
+       * session's workspace. Two sessions pointed at the same directory — which
+       * the portal allows — were already editing the same files with no
+       * separation at all.
+       *
+       * Reads are deliberately untouched. Looking at a shared library, a
+       * sibling checkout or a system file is ordinary work and often the point;
+       * it is *modifying* outside your own area that is somebody else's
+       * business. That asymmetry is the whole rule: open to read, bounded to
+       * write.
+       *
+       * agentHome() is permitted because identity and skills live there and the
+       * agent legitimately maintains its own — though the identity files
+       * themselves are separately redirected below, and CONSTITUTION.md is
+       * refused outright by PROTECTED_PATHS.
+       */
+      if (workspace && (event.toolName === "write" || event.toolName === "edit")) {
+        const raw = target(event.input ?? {});
+        const resolved = raw ? path.resolve(cwd ?? process.cwd(), raw) : "";
+        if (resolved && !within(resolved, workspace) && !within(resolved, agentHome())) {
+          note("refused", "Outside this session's workspace");
+          return {
+            block: true,
+            reason:
+              `Refused: "${resolved}" is outside this session's workspace (${workspace}), and a ` +
+              `session may only change things inside its own. You can still read anything you have ` +
+              `access to — it is writing elsewhere that is not yours to do. If this belongs in another ` +
+              `project, say so rather than reaching across.`,
           };
         }
       }

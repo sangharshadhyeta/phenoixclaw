@@ -204,5 +204,50 @@ const blocked = (r) => Boolean(r && r.block);
      !blocked(await owner.call("read", { path: "/srv/app/.env" })));
 }
 
+// --- 8. a session may only modify its own workspace ------------------------
+// The API checked a workspace was inside the root when a session was created,
+// and then nothing checked again — a running session could write anywhere the
+// process could reach, including another session's workspace. Two sessions
+// pointed at the same directory were already editing the same files.
+{
+  const mine = "/workspaces/mine";
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, mine, false, mine));
+
+  ok("writing inside my workspace is allowed",
+     !blocked(await g.call("write", { path: `${mine}/notes.md`, content: "x" })));
+  ok("and a relative path resolves there",
+     !blocked(await g.call("write", { path: "notes.md", content: "x" })));
+  ok("editing there too",
+     !blocked(await g.call("edit", { path: `${mine}/src/thing.ts`, content: "x" })));
+
+  ok("writing into another session's workspace is refused",
+     blocked(await g.call("write", { path: "/workspaces/yours/notes.md", content: "x" })));
+  ok("and anywhere else on the filesystem",
+     blocked(await g.call("write", { path: "/etc/cron.d/mine", content: "x" })));
+  ok("escaping upward is refused too",
+     blocked(await g.call("write", { path: `${mine}/../yours/notes.md`, content: "x" })));
+
+  const refusal = await g.call("write", { path: "/workspaces/yours/notes.md", content: "x" });
+  ok("the refusal names the boundary", /outside this session's workspace/i.test(refusal.reason));
+  ok("and says reading is still fine", /read anything/i.test(refusal.reason));
+
+  // Open to read, bounded to write — looking at a sibling checkout or a shared
+  // library is ordinary work and often the point.
+  ok("reading outside is allowed", !blocked(await g.call("read", { path: "/workspaces/yours/notes.md" })));
+  ok("so is grepping", !blocked(await g.call("grep", { pattern: "x", path: "/usr/share" })));
+  ok("and listing", !blocked(await g.call("ls", { path: "/" })));
+
+  // The agent's own home stays writable: identity and skills live there.
+  ok("the agent's own home is writable",
+     !blocked(await g.call("write", { path: `${agentHome()}/skills/new.md`, content: "x" })));
+}
+{
+  // A session with no workspace bound — the agent's own — is unrestricted,
+  // because maintaining itself is its job.
+  const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, agentHome()));
+  ok("an unbounded session may write outside",
+     !blocked(await g.call("write", { path: "/workspaces/anywhere/x.md", content: "x" })));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
