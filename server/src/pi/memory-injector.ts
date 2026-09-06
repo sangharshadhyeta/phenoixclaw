@@ -64,12 +64,6 @@ const MAX_ITEMS = 6;
  */
 const RENDER_BUDGET = 1200;
 
-/** Below this a prompt is "ok", "yes", "continue" — nothing to search for. */
-const MIN_QUERY_CHARS = 12;
-
-/** Cheap guard against spending a search on a prompt with no content words. */
-const TRIVIAL = /^(ok(ay)?|yes|no|sure|thanks?|continue|go on|carry on|do it|next|stop|\W*)$/i;
-
 /**
  * `user` nodes are the primary user's own notes and travel only in their own
  * conversations — the same boundary PrimaryUser.md and MEMORY.md follow in
@@ -194,8 +188,20 @@ export function memoryInjector(cwd: string, role?: string, sessionId?: string) {
        * being run against that question plus three paragraphs of arithmetic
        * note, and returned a fact node named `25`.
        */
+      /**
+       * Every turn, unconditionally — "hi" included.
+       *
+       * A length-and-wordlist gate used to skip the search below a rough
+       * guess at "nothing to search for", which is a judgment call that
+       * belongs to the search, not to a regex in front of it: the graph
+       * always has the agent's own identity in it, and a greeting is exactly
+       * the case where the model should be seeded with who it is rather than
+       * answering from nothing. The cost of a search that finds little is a
+       * handful of tokens; the cost of skipping it is silently deciding, by
+       * pattern, that a turn had nothing worth checking.
+       */
       const prompt = asked(String(event?.prompt ?? ""));
-      if (prompt.length < MIN_QUERY_CHARS || TRIVIAL.test(prompt)) return undefined;
+      if (!prompt) return undefined;
 
       let rows: NodeRow[];
       try {

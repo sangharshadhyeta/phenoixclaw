@@ -96,11 +96,17 @@ const inject = mount(memoryInjector(CWD, "primary"));
      !/earlier in this conversation/.test(a.systemPrompt));
 }
 
-// --- it must not fire on every turn ---
+// --- it searches on every turn, and injects nothing only when nothing came back ---
+// There used to be a length-and-wordlist gate that skipped the search below a
+// guess at "nothing to search for" — which meant a greeting never reached the
+// graph at all. The search always runs now; these still find nothing because
+// the test graph genuinely has nothing for them, which is the only reason left
+// to skip the injection.
 {
-  ok("a trivial prompt is skipped", (await inject("ok")) === undefined);
-  ok("a short prompt is skipped", (await inject("yes")) === undefined);
-  ok("an acknowledgement is skipped", (await inject("thanks, continue")) === undefined);
+  ok("a trivial prompt with nothing to recall injects nothing", (await inject("ok")) === undefined);
+  ok("a short prompt with nothing to recall injects nothing", (await inject("yes")) === undefined);
+  ok("an acknowledgement with nothing to recall injects nothing",
+     (await inject("thanks, continue")) === undefined);
   ok("a prompt matching nothing injects nothing",
      (await inject("what is the airspeed velocity of an unladen swallow")) === undefined);
 }

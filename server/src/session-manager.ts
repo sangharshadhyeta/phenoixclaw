@@ -12,9 +12,7 @@ import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
-import { needsSession } from "./pi/needs-session.js";
 import { agentHome } from "./agent.js";
-import { handOut } from "./pi/task-session-tools.js";
 import { resetChatBudget } from "./pi/chat-budget.js";
 import { resetRepeats } from "./pi/repeat-guard.js";
 import { failedCheck } from "./pi/after-turn.js";
@@ -117,8 +115,6 @@ class SessionManager extends EventEmitter {
   private live = new Map<string, LiveSession>();
   /** In-flight ask() per session, so messages in one chat are answered in turn. */
   private asking = new Map<string, Promise<string>>();
-  /** Conversations whose current turn had a session started for it by the portal. */
-  private handedOut = new Set<string>();
   /**
    * Conversations whose current turn is relaying what a task found.
    *
@@ -524,7 +520,6 @@ class SessionManager extends EventEmitter {
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",
       reply: await this.lastReply(sessionId),
-      handedOut: this.handedOut.delete(sessionId),
     });
     if (!failed) return false;
 
@@ -1130,43 +1125,6 @@ class SessionManager extends EventEmitter {
     };
   }
 
-  /**
-   * The portal starts the work, rather than asking the model to.
-   *
-   * Everything before this was a way of telling the conversation to call
-   * `start_task`: it was described in the tool list, named in a pre-turn note,
-   * and handed back afterwards when it had not been called. It still was not
-   * called. Asked for a Python script the chat wrote one into the reply, three
-   * builds in a row, and each new instruction only gave it something else to
-   * reason past — which is how a demand with no way out turns into a loop.
-   *
-   * BirdClaw did not ask. `soul_loop._force_create_task` created the task in
-   * Python when routing failed, and that is the shape adopted here: when the
-   * request is a request to build something, the session exists before the
-   * model's turn begins. There is nothing left to decide and so nothing to get
-   * stuck on — the turn opens with the work already running and its job is to
-   * say so.
-   *
-   * The model keeps `start_task` for everything this does not catch: a request
-   * phrased as a question, a follow-up that turns out to be big, anything the
-   * wording missed. This is a floor, not a replacement — the same relationship
-   * the guard's allowlist has with the constitution.
-   */
-  private async handOutForRequest(sessionId: string, message: string): Promise<string> {
-    const { id } = await handOut(
-      this.handOutDeps(sessionId),
-      message.replace(/\s+/g, " ").trim().slice(0, 60),
-      message.trim(),
-    );
-    return (
-      `\n\n<portal-notice>A session has been started for this (${id}) and is working on it now. ` +
-      `You did not have to ask for it and you are not waiting for it.\n\n` +
-      `Tell the person what has been set going, in a sentence. Do not do the work here — its ` +
-      `answer arrives in this conversation when it has one. If the brief needs anything they said ` +
-      `that the session cannot see, send it with \`tell_task\`.</portal-notice>`
-    );
-  }
-
   async prompt(sessionId: string, message: string, opts: { internal?: boolean } = {}): Promise<void> {
     // Real activity wakes it up: an @idle dream only exists because nothing
     // else was going on, so it yields the moment something real arrives — the
@@ -1289,26 +1247,6 @@ class SessionManager extends EventEmitter {
     }
 
     /**
-     * Anything the graph cannot answer becomes a session before the turn
-     * starts. See needs-session.ts for the rule and handOutForRequest for what
-     * it does — the decision is the portal's, not the model's.
-     *
-     * The memory search is here, in the portal, and it happens before the
-     * model's turn begins: `needsSession` looks the question up and hands out
-     * only when nothing came back. The `graph_recall` the model may call later
-     * is a second, separate look — the recalled block is already in its prompt
-     * (memory-injector.ts) and it reaches for the tool anyway. Either way
-     * memory is consulted before a session is started, not after.
-     */
-    const handedOut =
-      kind === "agent" && !isCommand && !opts.internal
-        ? (await needsSession(message, agentHome()))
-          ? await this.handOutForRequest(sessionId, message)
-          : ""
-        : "";
-    if (handedOut) this.handedOut.add(sessionId);
-
-    /**
      * The row, not only the event.
      *
      * `record` writes `portal_status` into the log, which is what the open SSE
@@ -1319,7 +1257,7 @@ class SessionManager extends EventEmitter {
      */
     await updateSession(sessionId, { status: "running", last_error: null });
     await this.record(sessionId, "portal_status", { status: "running" });
-    const outgoing = `${message}${note ? `\n${note}` : ""}${handedOut}`;
+    const outgoing = note ? `${message}\n${note}` : message;
 
     /**
      * Not awaited to completion — that is the whole contract.

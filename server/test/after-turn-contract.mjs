@@ -264,20 +264,16 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   ok("and that nobody asked it anything", /Nobody said this/.test(mgr));
 }
 
-// --- work the portal handed out is not work the model failed to hand out ----
-// The request that makes the portal start a session by itself is exactly the
-// request `work-not-handed-out` matches. Scolding the model for not doing what
-// has already been done is a demand it cannot satisfy, which is the shape
-// every loop in this file exists to stop.
+// --- a build request must still be handed out by the model ------------------
+// The harness does not start sessions pre-emptively — that decision belongs to
+// the model, informed by the graph in every turn. This check is what catches
+// it if the model answers in the chat instead of calling `start_task`.
 {
   const asked = "write me a python script that prints the first 20 primes";
   ok("a build request with nothing done is handed back",
      failedCheck(asked, [], { conversational: true })?.name === "work-not-handed-out");
-  ok("but not when the portal started the session itself",
-     failedCheck(asked, [], { conversational: true, handedOut: true }) === undefined);
-  const busy = Array.from({ length: 6 }, (_, i) => call("bash", { i }));
-  ok("and the same holds for a chat that did a lot of work",
-     failedCheck(asked, busy, { conversational: true, handedOut: true }) === undefined);
+  ok("but not once start_task was actually called",
+     failedCheck(asked, [call("start_task", {})], { conversational: true }) === undefined);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

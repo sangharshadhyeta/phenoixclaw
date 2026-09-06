@@ -52,12 +52,6 @@ export interface TurnContext {
   conversational: boolean;
   /** What the turn actually said, for checks about the answer rather than the calls. */
   reply?: string;
-  /**
-   * The portal started a session for this request before the turn began — see
-   * handOutForRequest. The work went out; it just was not the model that sent
-   * it, and asking it to send it again is asking for a thing already done.
-   */
-  handedOut?: boolean;
 }
 
 export interface AfterTurnCheck {
@@ -231,10 +225,8 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
      */
     name: "work-done-in-the-conversation",
     applies: (_request, context) => context.conversational,
-    satisfied: (calls, context) => {
-      // Handing out *is* the right outcome, however many calls it took — and
-      // it counts when the portal did it, not only when the model did.
-      if (context.handedOut) return true;
+    satisfied: (calls) => {
+      // Handing out *is* the right outcome, however many calls it took.
       if (calls.some((c) => c.toolName === "start_task" || c.toolName === "tell_task")) return true;
       const working = calls.filter((c) => !LIGHT_TOOLS.has(c.toolName));
       return working.length <= WORK_IN_CHAT_LIMIT;
@@ -270,8 +262,7 @@ export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
      * tool. What the turn *did not do* is only visible once it is done.
      */
     name: "work-not-handed-out",
-    applies: (request, context) =>
-      context.conversational && !context.handedOut && asksForWork(request),
+    applies: (request, context) => context.conversational && asksForWork(request),
     satisfied: (calls) => calls.some((c) => c.toolName === "start_task"),
     message: [
       "That was a request to build something, and you answered it here.",
