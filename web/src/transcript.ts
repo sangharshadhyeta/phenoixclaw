@@ -354,17 +354,39 @@ function resultText(p: any): string | undefined {
   return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}\n…` : trimmed;
 }
 
+/**
+ * A short subject for a tool call, or nothing.
+ *
+ * Nothing is a real answer here. Several tools take no arguments at all —
+ * `self_review`, `task_list`, `task_start` — and this rendered their empty
+ * object as the literal string `{}`, so the transcript read
+ * "self_review — {}". A card that says nothing about its arguments is correct
+ * for a tool that has none; punctuation standing in for content is not.
+ */
 function summarizeToolInput(p: any): string | undefined {
   const input = p.input ?? p.args ?? p.parameters;
   if (!input) return undefined;
-  if (typeof input === "string") return truncate(input);
-  if (typeof input === "object") {
-    const first =
-      input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query;
-    if (typeof first === "string") return truncate(first);
-    return truncate(JSON.stringify(input));
+  if (typeof input === "string") return truncate(input) || undefined;
+  if (typeof input !== "object") return undefined;
+
+  const first = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query;
+  if (typeof first === "string") return truncate(first) || undefined;
+
+  // A plan is its steps; showing `[object Object]` or raw JSON is worse than
+  // the first step and a count.
+  if (Array.isArray(input.steps) || Array.isArray(input.sections)) {
+    const parts = (input.steps ?? input.sections).map((x: unknown) =>
+      typeof x === "string" ? x : "",
+    ).filter(Boolean);
+    if (parts.length) {
+      return truncate(parts.length > 1 ? `${parts[0]} (+${parts.length - 1} more)` : parts[0]);
+    }
   }
-  return undefined;
+
+  const keys = Object.keys(input);
+  if (!keys.length) return undefined;
+  const rendered = truncate(JSON.stringify(input));
+  return rendered && rendered !== "{}" ? rendered : undefined;
 }
 
 function truncate(s: string, n = 160): string {

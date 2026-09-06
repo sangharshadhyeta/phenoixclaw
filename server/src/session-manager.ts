@@ -489,6 +489,7 @@ class SessionManager extends EventEmitter {
     const calls = await recentToolCalls(sessionId, 40).catch(() => []);
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",
+      reply: await this.lastReply(sessionId),
     });
     if (!failed) return false;
 
@@ -670,6 +671,27 @@ class SessionManager extends EventEmitter {
       await updateSession(sessionId, { status: "idle" });
       await this.record(sessionId, "portal_status", { status: "idle" });
     }
+  }
+
+  /** What the turn actually said, for checks about the answer rather than the calls. */
+  private async lastReply(sessionId: string): Promise<string> {
+    try {
+      const rows = await eventsSince(sessionId, 0, 400);
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].type !== "message_end") continue;
+        const message = JSON.parse(rows[i].payload)?.message;
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+        const text = (message.content as any[])
+          .filter((c) => c?.type === "text" && typeof c.text === "string")
+          .map((c) => c.text)
+          .join("")
+          .trim();
+        if (text) return text;
+      }
+    } catch {
+      // No reply to read is the same as nothing to check.
+    }
+    return "";
   }
 
   /** Has anything been said in this conversation before now? */

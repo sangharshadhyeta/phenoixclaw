@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { failedCheck, selfConfirming, asksForWork, AFTER_TURN_CHECKS } = await import(
+const { failedCheck, selfConfirming, asksForWork, claimsImpossible, AFTER_TURN_CHECKS } = await import(
   path.join(here, "..", "dist", "pi", "after-turn.js")
 );
 
@@ -111,6 +111,45 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
 
   ok("a real command is not handed back",
      failedCheck("anything at all", [call("bash", { command: "npm test" })]) === undefined);
+}
+
+// --- declaring something impossible, having tried nothing ------------------
+// Asked to multiply the two largest known primes, a session replied that the
+// result "would exceed the storage and processing limits of any digital
+// system" and gave a formula instead. Python does it in 77 seconds; the
+// product has 66 million digits. Nothing was attempted — the claim was
+// reasoning about feasibility, presented as a finding.
+{
+  const said = (reply) => ({ conversational: true, reply });
+  const claim = "There is no way to display the actual decimal expansion of this number, as it " +
+                "would exceed the storage and processing limits of any digital system.";
+
+  ok("the claim is recognised", claimsImpossible(claim));
+  ok("and its cousins", claimsImpossible("that is impossible") && claimsImpossible("it cannot be computed"));
+  ok("an ordinary answer is not", !claimsImpossible("The capital of Peru is Lima."));
+  // "I could not reach the search engine" is a finding, not a prediction.
+  ok("nor is a report of something actually tried",
+     !claimsImpossible("I ran it and the command was not found."));
+  ok("nothing said is nothing to check", !claimsImpossible(undefined));
+
+  ok("claiming it without trying is handed back",
+     failedCheck("multiply these two", [], said(claim))?.name === "impossible-without-trying");
+  // Anything that reaches the world counts as having tried.
+  ok("having run something satisfies it",
+     failedCheck("multiply these two", [call("bash", { command: "python3 -c ..." })], said(claim)) === undefined);
+  ok("so does having searched",
+     failedCheck("x", [call("web_search", {})], said(claim)) === undefined);
+
+  const message = failedCheck("multiply these two", [], said(claim)).message;
+  ok("it names the tool to try with", /`bash`/.test(message));
+  ok("a failure is allowed, and counts", /that is a finding/.test(message));
+  // The standing practice says being unable is a complete answer; this must
+  // not contradict it.
+  ok("the distinction is the wall you found versus the one you imagined",
+     /only imagined it/.test(message));
+
+  ok("a turn that claims nothing is left alone",
+     failedCheck("what is the capital of Peru", [call("web_search", {})], said("It is Lima.")) === undefined);
 }
 
 // --- shape ------------------------------------------------------------------

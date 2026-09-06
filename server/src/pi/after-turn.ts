@@ -50,6 +50,8 @@ export interface TurnCall {
 export interface TurnContext {
   /** True for the main chat or a channel conversation — not a task or routine. */
   conversational: boolean;
+  /** What the turn actually said, for checks about the answer rather than the calls. */
+  reply?: string;
 }
 
 export interface AfterTurnCheck {
@@ -58,7 +60,7 @@ export interface AfterTurnCheck {
   /** Does this request call for the check at all? */
   applies: (request: string, context: TurnContext) => boolean;
   /** Did the turn satisfy it? */
-  satisfied: (calls: TurnCall[]) => boolean;
+  satisfied: (calls: TurnCall[], context: TurnContext) => boolean;
   /** What to hand back. */
   message: string;
 }
@@ -98,7 +100,50 @@ export function asksForWork(message: string): boolean {
   return ASKS_FOR_WORK.test(text);
 }
 
+/**
+ * Declaring something impossible, in an answer that tried nothing.
+ *
+ * Asked to multiply the two largest known primes, a session replied that the
+ * result "would exceed the storage and processing limits of any digital
+ * system" and offered a formula instead. Python does it in seventy-seven
+ * seconds; the product has 66 million digits. Nothing was attempted — the
+ * claim was reasoning about feasibility, presented as a finding.
+ *
+ * That is the most expensive shape of the same failure the arithmetic and
+ * lookup checks catch, because it does not read like a guess. "I cannot" is
+ * indistinguishable from "I tried and could not" unless somebody knows to ask,
+ * and it closes the question rather than answering it wrongly.
+ *
+ * Being unable is still a complete answer — the standing practice says so and
+ * means it. What is not an answer is being unable *in principle*, decided in
+ * the head, about something a shell could have settled.
+ */
+const CLAIMS_IMPOSSIBLE =
+  /\b(?:impossible|cannot be (?:done|computed|calculated|displayed|written)|not possible|no way to (?:compute|calculate|display|write|represent)|exceeds? the (?:storage|processing|memory|capacity|limits)|beyond the (?:capacity|limits)|too (?:large|big) to (?:compute|calculate|display|represent))\b/i;
+
+export function claimsImpossible(reply: string | undefined): boolean {
+  return Boolean(reply && CLAIMS_IMPOSSIBLE.test(reply));
+}
+
 export const AFTER_TURN_CHECKS: AfterTurnCheck[] = [
+  {
+    name: "impossible-without-trying",
+    applies: (_request, context) => claimsImpossible(context.reply),
+    // Anything that actually reaches the world counts as having tried.
+    satisfied: (calls) =>
+      calls.some((c) => ["bash", "web_search", "web_fetch", "read", "write_next"].includes(c.toolName)),
+    message: [
+      "You said that could not be done, and you did not try.",
+      "",
+      "Try it. `bash` has python3 and a shell; write the thing that would answer the question and",
+      "run it. If it fails, say what you ran and what it said — that is a finding, and it is worth",
+      "something. What you wrote instead was a prediction about feasibility presented as a result,",
+      "and nobody reading it can tell the difference.",
+      "",
+      "Being unable is a complete answer when you have found the wall. It is not one when you have",
+      "only imagined it.",
+    ].join("\n"),
+  },
   {
     /**
      * A conversation asked to build something must hand it out.
@@ -198,7 +243,7 @@ export function failedCheck(
 ): AfterTurnCheck | undefined {
   for (const check of AFTER_TURN_CHECKS) {
     if (!check.applies(request, context)) continue;
-    if (check.satisfied(calls)) continue;
+    if (check.satisfied(calls, context)) continue;
     return check;
   }
   return undefined;

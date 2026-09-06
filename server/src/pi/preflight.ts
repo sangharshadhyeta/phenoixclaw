@@ -109,6 +109,18 @@ export function preflightNote(message: string, hasHistory: boolean): string {
  * is the case where the answer is exact and checkable and the model's
  * arithmetic is not. It says nothing about "three sections" or "port 8101".
  */
+/**
+ * A follow-up that says "do the sum" without repeating the numbers.
+ *
+ * "Multiply these two" carries no digits, so the pattern below cannot see it —
+ * and a live run met exactly that: asked for the product of the two largest
+ * known primes it declared the result "would exceed the storage and processing
+ * limits of any digital system" and gave a formula instead. Python does it in
+ * seventy-seven seconds; the answer has 66 million digits.
+ */
+const ARITHMETIC_FOLLOWUP =
+  /^\s*(?:now\s+)?(?:please\s+)?(?:multiply|divide|add|subtract|compute|calculate|work out|do)\s+(?:it|them|these|those|that|the (?:sum|product|maths?|calculation))\b/i;
+
 const ARITHMETIC = [
   /\d[\d,.]*\s*(?:[×x*/+\-^]|\*\*)\s*\d/,
   /\d[\d,.]*\s*(?:times|multiplied by|divided by|plus|minus|over|to the power of|mod|modulo)\s+\d/i,
@@ -122,6 +134,7 @@ export function hasArithmetic(message: string): boolean {
   // A version, a port, a date or a path is not a sum. Requiring an operator
   // *between* two numbers already excludes most of these; this excludes the
   // rest by refusing anything that looks like a dotted or hyphenated literal.
+  if (ARITHMETIC_FOLLOWUP.test(text)) return true;
   if (/\b\d+\.\d+\.\d+\b/.test(text)) return false;
   // A date is digits joined by hyphens or slashes, which is the subtraction
   // and division pattern exactly. "What happened on 2026-09-06" is not a sum.
