@@ -567,6 +567,48 @@ async function existingSynonym(
   return top && Number(top.sim) >= DEDUP_SIMILARITY ? String(top.id) : undefined;
 }
 
+/**
+ * Does this summary say anything the name did not?
+ *
+ * A belief is a claim about the world, and these arrived with none:
+ *
+ *     fact    km_to_miles                          (summary empty)
+ *     fact    math                                 (summary empty)
+ *     concept multiplication of the two largest…   "multiplication of the two largest…"
+ *
+ * The first kind comes from indexing a codebase — every imported module and
+ * every function name became a fact. The second comes from extraction turning
+ * the *question's* noun phrases into concepts, so asking about primes recorded
+ * "two largest known prime numbers" as a thing known. Both fill the graph with
+ * rows that survive pruning, get re-observed, gain confidence, and crowd out
+ * recall — a node that restates its own name is worse than absent, because it
+ * looks like knowledge.
+ *
+ * Only `fact` and `concept` are held to this. An `episode` is a record of
+ * something that happened and its name is a timestamp; an `anchor` is an
+ * identity document; a `skill` or a `page` is a pointer to something that
+ * exists elsewhere. Those are allowed to be thin.
+ */
+const CLAIM_TYPES = new Set(["fact", "concept"]);
+
+export function saysSomething(name: string, summary: string): boolean {
+  const words = (t: string) =>
+    new Set(
+      t
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2),
+    );
+  const body = summary.trim();
+  if (body.length < 12) return false;
+  const added = [...words(body)].filter((w) => !words(name).has(w));
+  // A couple of extra words is a restatement with filler — "The result of
+  // multiplying the two largest known prime numbers" over a node called
+  // "product of the two largest known prime numbers".
+  return added.length >= 3;
+}
+
 export async function upsertNode(
   name: string,
   type: NodeType,
@@ -575,6 +617,9 @@ export async function upsertNode(
   /** category: `user`-node sub-typing. expiresAt: TTL for `tool_cache`/`page` nodes. source: where this came from, unioned across observations. */
   extra?: { category?: string; expiresAt?: Date | string; source?: string },
 ): Promise<string> {
+  // A claim that claims nothing is not recorded. See saysSomething.
+  if (CLAIM_TYPES.has(type) && !saysSomething(name, summary)) return normalizeName(name);
+
   const conn = await getConn();
   let id = normalizeName(name);
   let existing = await getNode(name);

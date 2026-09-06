@@ -91,5 +91,41 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("and there is nothing left to refine", (await g.refineRelations(10, async () => "produces")) === 0);
 }
 
+// --- a claim that claims nothing is not recorded ----------------------------
+// A run of the learning loop left the graph full of these: `fact km_to_miles`
+// with an empty summary, from indexing a codebase; and `concept multiplication
+// of the two largest known prime numbers` summarised as "multiplication of the
+// two largest known prime numbers", from extraction turning the *question's*
+// noun phrases into things known. Both survive pruning, get re-observed, gain
+// confidence and crowd out recall — a node that restates its own name is worse
+// than absent, because it looks like knowledge.
+{
+  ok("an empty summary says nothing", !g.saysSomething("km_to_miles", ""));
+  ok("nor does the name repeated", !g.saysSomething("largest prime numbers", "largest prime numbers"));
+  ok("nor a restatement with filler",
+     !g.saysSomething("product of the two largest known primes", "The result of multiplying the two largest known primes."));
+
+  ok("a real claim survives",
+     g.saysSomething("DuckDB ART index", "The ART index is not tidied after a delete, so the next insert can fail."));
+  ok("and so does something about a person",
+     g.saysSomething("the primary user", "Prefers short answers and dislikes being asked to confirm twice."));
+  ok("and a file described by what it contains",
+     g.saysSomething("units.py", "A source file in this project, defining miles_to_km and km_to_miles."));
+
+  // Enforced where nodes are written, not left to callers to remember.
+  await g.upsertNode("nothing at all", "fact", "");
+  ok("an empty fact is refused at the door", (await g.getNode("nothing at all")) === undefined);
+  await g.upsertNode("some real belief", "fact", "Checkpoints are interrupted by a hard exit and the file will not reopen.");
+  ok("a real one is written", Boolean(await g.getNode("some real belief")));
+
+  /**
+   * Only claims are held to it. An episode's name is a timestamp, an anchor is
+   * an identity document, a skill points at something that exists elsewhere —
+   * those are allowed to be thin.
+   */
+  await g.upsertNode("episode:1788:xyz", "episode", "");
+  ok("an episode may be thin", Boolean(await g.getNode("episode:1788:xyz")));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
