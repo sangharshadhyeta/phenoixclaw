@@ -10,6 +10,7 @@ import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
 import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
+import { preflightNote } from "./pi/preflight.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
@@ -558,6 +559,19 @@ class SessionManager extends EventEmitter {
     }
   }
 
+  /** Has anything been said in this conversation before now? */
+  private async hasEarlierTurn(sessionId: string): Promise<boolean> {
+    try {
+      const rows = await eventsSince(sessionId, 0, 400);
+      return rows.some((r) => r.type === "portal_prompt" || r.type === "message_end");
+    } catch {
+      // Unable to tell is not the same as "there is nothing" — assume there is,
+      // so an unreadable log produces silence rather than a wrong warning.
+      return true;
+    }
+  }
+
+
   /** What the person actually asked for, which is the goal every step serves. */
   private async lastRequest(sessionId: string): Promise<string> {
     try {
@@ -881,12 +895,31 @@ class SessionManager extends EventEmitter {
      * the most recent `portal_prompt`, so once a step brief was filed as one
      * the goal of the next plan would have been a brief about the last.
      */
+    /**
+     * A request that points at nothing this conversation contains.
+     *
+     * Appended to the message rather than left to the model, because the model
+     * cannot see what is missing: its context is full of memory and identity,
+     * and "it" will find something to attach to in all of that. Whether *this*
+     * conversation has an antecedent is a property of the event log. See
+     * preflight.ts.
+     *
+     * Asked before this prompt is recorded, or the prompt being asked about is
+     * itself the earlier turn and the answer is always yes.
+     */
+    const note =
+      isCommand || opts.internal ? "" : preflightNote(message, await this.hasEarlierTurn(sessionId));
+
+    // Recorded without the note: the transcript should show what was said, not
+    // what the portal appended to it.
     if (!isCommand) {
       await this.record(sessionId, opts.internal ? "portal_step" : "portal_prompt", { message });
     }
     await this.record(sessionId, "portal_status", { status: "running" });
+    const outgoing = note ? `${message}\n${note}` : message;
+
     try {
-      await client.prompt(message);
+      await client.prompt(outgoing);
       // A slash command completes inside prompt() without starting an agent
       // turn, so no agent_end arrives to clear the status. Settle it here
       // rather than leaving "working" on screen forever.

@@ -46,6 +46,7 @@
     "test:recovery": "node server/test/recovery-contract.mjs",
     "test:artefacts": "node server/test/artefacts-contract.mjs",
     "test:prior": "DATA_DIR=$(mktemp -d) AGENT_HOME=$(mktemp -d) node server/test/prior-work-contract.mjs",
+    "test:preflight": "node server/test/preflight-contract.mjs",
     "test:driving": "node server/test/driving-contract.mjs",
     "test:step-text": "node server/test/step-text-contract.mjs",
     "test:steps": "node server/test/step-runner-contract.mjs",
