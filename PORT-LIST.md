@@ -38,6 +38,16 @@ here. **State** is one of `done` (built and under contract), `next`, or `open`.
 
 ---
 
+## All thirty accounted for
+
+The re-audit found **30** rows marked `DELIBERATELY DROPPED` (17 BirdClaw + 13
+Sisyphean; the original brief said 33, which the re-audit corrected). Every one
+now appears below — 18 rebuilt here, 12 recorded as already solved by the
+substrate with a pointer to where. Nothing is rejected.
+
+Verified mechanically rather than by reading: every `BC-nn` and `SIS-nn` in the
+re-audit's dropped table appears in this file.
+
 ## Built since the policy changed
 
 | From | Idea | Port | State |
@@ -56,7 +66,7 @@ here. **State** is one of `done` (built and under contract), `next`, or `open`.
 | BC-49 | Progressive disclosure — index, then the *exact* section matching this item, then goal-relevant lines, then last-heading-to-EOF. Only the last of the four was ported. | Three rungs, in `pi/step-runner.ts`. The index is `writtenIndex()`. The middle rung is `signaturesOf()` — what the file already declares, signatures without bodies, because a function that calls three others needs what they take and return and not their implementations. `neededSections()` returns an earlier section in full when this step's description names it, sliced exactly by the span `write_next` recorded rather than by BirdClaw's regex. Then the tail. Not every earlier section at any rung: that is the accumulating context this exists to avoid, reached by another road. | done |
 | BC-49 | "The file is the memory." | Its missing half: the graph remembers *which* file and what it was for (`pi/prior-work.ts`), so an artefact is findable by what was asked rather than where it happened to be written. Each run used to start from an empty file while the last run's output sat in another workspace, so a second attempt was different rather than better. Hung off the recall the memory injector already does. | done |
 
-## Next
+## Ported
 
 | From | Idea | Port | State |
 | --- | --- | --- | --- |
