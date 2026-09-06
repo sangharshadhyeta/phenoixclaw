@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { briefFor, runPlan, synthesisBrief } = await import(path.join(here, "..", "dist", "pi", "step-runner.js"));
+const { briefFor, runPlan, synthesisBrief, neededSections } = await import(path.join(here, "..", "dist", "pi", "step-runner.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -77,6 +77,55 @@ const plan = [
 
   const noFile = briefFor({ goal: "g", tasks: plan, step: plan[1] });
   ok("a step with no document is pointed at task_finish", /task_finish/.test(noFile));
+}
+
+// --- the section this step actually needs -----------------------------------
+// BirdClaw looks for the exact section matching the item before falling back to
+// the tail of the file; this had only the fallback. The gap shows on the step
+// that depends on the others: "describe", which uses area, perimeter and
+// centroid, saw the last 1500 characters — so it had centroid and had to invent
+// the signatures of the other two, in a file it had written itself.
+{
+  const text = "AAAA_area_body" + "x".repeat(40) + "BBBB_perimeter_body" + "y".repeat(40) + "CCCC_describe";
+  const areaEnd = 14 + 40;
+  const perimEnd = areaEnd + 19 + 40;
+  const plan = [
+    { seq: 1, description: "area", status: "done", result: `54 chars @0-${areaEnd}` },
+    { seq: 2, description: "perimeter", status: "done", result: `59 chars @${areaEnd}-${perimEnd}` },
+    { seq: 3, description: "describe, which uses area and perimeter", status: "pending", result: "" },
+  ];
+
+  const needed = neededSections(plan[2], plan, text);
+  ok("a step that names an earlier section gets it", needed.length === 2);
+  ok("with its actual text, sliced by the recorded span",
+     /AAAA_area_body/.test(needed[0].body) && /BBBB_perimeter_body/.test(needed[1].body));
+
+  // Not every earlier section: that is the accumulating context this exists to
+  // avoid, arrived at by a different road.
+  const lonely = neededSections(
+    { seq: 3, description: "conclusion", status: "pending", result: "" },
+    plan,
+    text,
+  );
+  ok("a step that names nothing gets nothing extra", lonely.length === 0);
+
+  const brief = briefFor({ goal: "g", tasks: plan, step: plan[2], file: "/w/m.mjs", written: text });
+  ok("the needed section is in the brief in full", /AAAA_area_body/.test(brief));
+  ok("said to be there so it is matched rather than guessed at", /match it rather than guess at it/.test(brief));
+  ok("and what exists is listed", /Written so far: area, perimeter/.test(brief));
+  ok("with the tail still shown", /The file ends like this/.test(brief));
+
+  // A section name too short to match safely must not match everything.
+  const tiny = neededSections(
+    { seq: 2, description: "a discussion of everything", status: "pending", result: "" },
+    [{ seq: 1, description: "a", status: "done", result: "5 chars @0-5" }],
+    "hello world",
+  );
+  ok("a one-letter section name does not match every step", tiny.length === 0);
+
+  // A span pointing past the end of the file is stale, not a slice to take.
+  const stale = neededSections(plan[2], [{ seq: 1, description: "area", status: "done", result: "9 chars @0-9999" }], text);
+  ok("a span past the end of the file is ignored", stale.length === 0);
 }
 
 // --- a failed earlier step is not hidden ------------------------------------
@@ -310,6 +359,31 @@ const plan = [
   });
   ok("enough gathered stops the gathering", skipped);
   ok("and says so", /Enough gathered/.test(notes[0] ?? ""));
+}
+
+{
+  // But never the deliverable. A live run wrote area, perimeter and centroid,
+  // and the supervisor skipped "describe" — which the person had asked for by
+  // name — recording it as "not needed". Whether there is enough to work from
+  // is the supervisor's call; whether the thing asked for is worth delivering
+  // is not.
+  const state = [task(1, "area"), task(2, "perimeter"), task(3, "describe")];
+  let skipped = false;
+  await runPlan("g", {
+    tasks: async () => state.map((t) => ({ ...t })),
+    document: async () => ({ file: "/w/geometry.mjs", written: "some code" }),
+    recycle: async () => {},
+    ask: async () => {
+      const next = state.find((t) => t.status === "pending");
+      if (next) { next.status = "done"; next.result = "10 chars @0-10"; }
+      return "";
+    },
+    supervise: async () => ({ verdict: "synthesize", note: "You have what you need." }),
+    skipRemaining: async () => { skipped = true; },
+    verify: async () => [],
+  });
+  ok("sections of a document are never skipped as 'not needed'", !skipped);
+  ok("and every one of them is written", state.every((t) => t.status === "done"));
 }
 
 // --- the closing answer names what failed -----------------------------------

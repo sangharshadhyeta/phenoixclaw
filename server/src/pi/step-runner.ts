@@ -68,6 +68,53 @@ export interface BriefContext {
   supervision?: Supervision;
 }
 
+/**
+ * The sections this step actually needs, pulled out by name.
+ *
+ * BirdClaw's progressive disclosure (`subtask_executor._read_for_context`)
+ * looks for the *exact* section matching the item before falling back to the
+ * tail of the file, and this had only the fallback. The gap shows on the step
+ * that depends on the others: `describe`, which uses area, perimeter and
+ * centroid, was given the last 1500 characters — so it saw `centroid` and had
+ * to invent the signatures of the other two, in a file it had itself written.
+ *
+ * BirdClaw finds the section with a regex over headings and definitions. This
+ * does not have to: `write_next` records where every section landed, so the
+ * text can be sliced exactly. A step gets an earlier section when its own
+ * description names it — which is what "uses all three" looks like once the
+ * plan has been written down.
+ *
+ * Deliberately not "every earlier section": that is the accumulating context
+ * this exists to avoid, arrived at by a different road.
+ */
+export function neededSections(
+  step: TaskRow,
+  tasks: TaskRow[],
+  text: string,
+): Array<{ description: string; body: string }> {
+  const wanted = step.description.toLowerCase();
+  const out: Array<{ description: string; body: string }> = [];
+  for (const t of tasks) {
+    if (t.seq >= step.seq || t.status !== "done") continue;
+    const m = /@(\d+)-(\d+)$/.exec(String(t.result ?? ""));
+    if (!m) continue;
+    const name = t.description.trim().toLowerCase();
+    // Word-ish match, so "area" does not hit "areas of concern" and, more to
+    // the point, so a one-letter section name cannot match everything.
+    if (name.length < 3 || !new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(wanted)) continue;
+    const [start, end] = [Number(m[1]), Number(m[2])];
+    if (end > text.length) continue;
+    out.push({ description: t.description, body: text.slice(start, end) });
+  }
+  return out;
+}
+
+/** What has been written so far, by name — cheap, and it says what exists. */
+function writtenIndex(tasks: TaskRow[], step: TaskRow): string {
+  const done = tasks.filter((t) => t.seq < step.seq && t.status === "done");
+  return done.length ? done.map((t) => t.description).join(", ") : "";
+}
+
 /** How a finished step is described to the ones after it. */
 function producedBy(tasks: TaskRow[], upTo: number): string {
   const earlier = tasks.filter((t) => t.seq < upTo && (t.status === "done" || t.status === "failed"));
@@ -110,7 +157,25 @@ export function briefFor(ctx: BriefContext): string {
     producedBy(tasks, step.seq) || undefined,
     producedBy(tasks, step.seq) ? "" : undefined,
     file && written?.trim()
-      ? [`# WHAT IS ALREADY IN ${file}`, "", boundaryTail(written, 1500), ""].join("\n")
+      ? [
+          `# WHAT IS ALREADY IN ${file}`,
+          "",
+          writtenIndex(tasks, step) ? `Written so far: ${writtenIndex(tasks, step)}.` : "",
+          ...neededSections(step, tasks, written).flatMap((sec) => [
+            "",
+            `This step names "${sec.description}", which you have already written. Here it is in full,`,
+            "so you match it rather than guess at it:",
+            "",
+            sec.body,
+          ]),
+          "",
+          "The file ends like this:",
+          "",
+          boundaryTail(written, 1500),
+          "",
+        ]
+          .filter((line) => line !== "")
+          .join("\n")
       : file
         ? `# ${file} is empty so far.\n`
         : undefined,
@@ -412,14 +477,21 @@ export async function runPlan(goal: string, deps: StepRunDeps, limit = 40): Prom
       return "off-track";
     }
     /**
-     * "You have enough — write it" ends the gathering, not the work.
+     * "You have enough — write it" ends the gathering, never the deliverable.
      *
-     * Skipping the remaining steps is the whole content of the verdict: they
-     * are more of what the supervisor has just said there is already enough
-     * of. They are marked skipped rather than deleted, so the answer can say
-     * what was not done and why.
+     * The verdict is about research: more searching will not improve an answer
+     * the material already supports. Applied to a plan whose steps *are* the
+     * output it does the opposite of its intent — a live run wrote area,
+     * perimeter and centroid, and the supervisor skipped "describe", which the
+     * person had asked for by name. The plan then recorded it as "not needed",
+     * which was not true and not the supervisor's call to make: it judges
+     * whether there is enough to work from, not whether the thing asked for is
+     * worth delivering.
+     *
+     * So it only ends gathering when the remaining steps are gathering. With a
+     * document in progress every step is a section somebody is waiting for.
      */
-    if (supervision?.verdict === "synthesize" && deps.skipRemaining) {
+    if (supervision?.verdict === "synthesize" && deps.skipRemaining && !file) {
       await deps.note?.(`Enough gathered: ${supervision.note}`);
       await deps.skipRemaining(supervision.note);
     }
