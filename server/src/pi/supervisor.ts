@@ -1,6 +1,6 @@
 import { complete, localModelConfigured } from "../llm.js";
 import { readIdentity } from "../identity.js";
-import { listTasks, recentToolCalls, type TaskRow } from "../db.js";
+import { listTasks, recentToolCalls, recentToolFailures, type TaskRow } from "../db.js";
 
 /**
  * The outer loop: something that watches the work and is not doing it.
@@ -68,6 +68,46 @@ const WINDOW = 14;
  * cap used to "solve" by killing the run — which cured the symptom by ending
  * the patient.
  */
+/**
+ * A tool that is not working, called until the run gives up.
+ *
+ * The repetition check below catches the same call made over and over. This
+ * catches the harder case: a tool that is broken, called with *different*
+ * arguments each time and failing identically every time.
+ *
+ * Watched live, on a session whose working directory had gone: `ls -a`, `echo
+ * "hello"`, `ls /` — three commands, one error. Then the model stopped calling
+ * tools altogether and span in its own thinking, writing "I'll try to use
+ * `bash` with `ls /`" forty times until a person killed it. It had nowhere to
+ * go and nothing had told it so; from inside, trying once more is always the
+ * most reasonable next move.
+ *
+ * Two identical failures is enough. A third adds no information, and the loop
+ * that follows costs the whole run.
+ */
+export function brokenTool(failures: Array<{ toolName: string; error: string }>): string | undefined {
+  const counts = new Map<string, { n: number; error: string }>();
+  for (const failure of failures.slice(-6)) {
+    // The first line only: a stack trace or a path that varies per call would
+    // otherwise make two of the same failure look like two different ones.
+    const signature = `${failure.toolName}:${failure.error.split("\n")[0].slice(0, 200)}`;
+    const seen = counts.get(signature);
+    counts.set(signature, { n: (seen?.n ?? 0) + 1, error: failure.error.split("\n")[0] });
+  }
+  for (const [signature, { n, error }] of counts) {
+    if (n < 2) continue;
+    const tool = signature.slice(0, signature.indexOf(":"));
+    return (
+      `\`${tool}\` has failed ${n} times in a row with the same error, whatever you pass it:\n\n` +
+      `  ${error}\n\n` +
+      `It is not going to start working. Stop calling it. Say plainly that it is unavailable and ` +
+      `what that prevents, then do what you can with the tools that do work — and if the answer ` +
+      `genuinely needs it, say so instead of guessing at what it would have told you.`
+    );
+  }
+  return undefined;
+}
+
 export function repetition(calls: Array<{ toolName: string; args: string }>): string | undefined {
   if (calls.length < 3) return undefined;
   const counts = new Map<string, number>();
@@ -156,6 +196,7 @@ export async function supervise(
   deps: {
     tasks?: () => Promise<TaskRow[]>;
     calls?: () => Promise<Array<{ toolName: string; args: string }>>;
+    failures?: () => Promise<Array<{ toolName: string; error: string }>>;
     self?: () => Promise<string>;
     ask?: (system: string, user: string) => Promise<string | undefined>;
   } = {},
@@ -163,7 +204,13 @@ export async function supervise(
   const askModel = deps.ask ?? ((s: string, u: string) => complete(s, u, { maxTokens: 400, temperature: 0.2 }));
   const calls = await (deps.calls ?? (() => recentToolCalls(sessionId, WINDOW)))();
 
-  // The cheap check first, and it does not need the model at all.
+  // The cheap checks first, and neither needs the model at all. Broken before
+  // repeated: "this tool does not work" explains the repetition, and saying
+  // "you are going in circles" to a session whose bash has vanished is true
+  // and useless.
+  const broken = brokenTool(await (deps.failures ?? (() => recentToolFailures(sessionId, 10)))());
+  if (broken) return { verdict: "stuck", note: broken };
+
   const repeated = repetition(calls);
   if (repeated) return { verdict: "stuck", note: repeated };
 

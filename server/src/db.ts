@@ -838,6 +838,49 @@ export async function recentToolCalls(
 }
 
 /**
+ * The last few tool *failures*, newest last.
+ *
+ * `recentToolCalls` answers "is it doing the same thing over and over", which
+ * catches a model repeating a call verbatim. It does not catch the worse case:
+ * a tool that is simply broken, called with different arguments each time and
+ * failing identically every time.
+ *
+ * Watched live, with a session whose working directory had gone: `ls -a`,
+ * `echo "hello"`, `ls /` — three different commands, one error, and then the
+ * model stopped calling tools altogether and span in its own thinking, writing
+ * "I'll try to use `bash` with `ls /`" forty times before a person killed it.
+ * Nothing in the portal had told it the tool was gone.
+ */
+export async function recentToolFailures(
+  sessionId: string,
+  limit = 10,
+): Promise<Array<{ toolName: string; error: string }>> {
+  const conn = await getDb();
+  const rows = await all<EventRow>(
+    conn,
+    `SELECT * FROM events WHERE session_id = $sessionId AND type = 'tool_execution_end'
+     ORDER BY seq DESC LIMIT $limit`,
+    { sessionId, limit },
+  );
+  return rows
+    .reverse()
+    .map((row) => {
+      try {
+        const payload = JSON.parse(row.payload);
+        if (!payload?.isError) return undefined;
+        const text = (payload?.result?.content ?? [])
+          .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+          .join(" ")
+          .trim();
+        return { toolName: String(payload?.toolName ?? ""), error: text };
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((x): x is { toolName: string; error: string } => Boolean(x?.toolName && x.error));
+}
+
+/**
  * A session marked `running` at boot cannot actually be running — the process
  * that owned it died with the previous server. Mark them interrupted so the UI
  * can offer a resume instead of showing a spinner forever.

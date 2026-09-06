@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (f) => path.join(here, "..", "dist", f);
-const { repetition, parseSupervision, superviseBlock, supervise, dueForReview } = await import(dist("pi/supervisor.js"));
+const { repetition, brokenTool, parseSupervision, superviseBlock, supervise, dueForReview } = await import(dist("pi/supervisor.js"));
 const { loopSupervisor } = await import(dist("pi/loop-supervisor.js"));
 
 let pass = 0, fail = 0;
@@ -40,6 +40,35 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   // twenty calls ago is not a loop.
   const old = [...same, ...same, ...same, ...Array.from({ length: 8 }, (_, i) => call("write", { i }))];
   ok("old repetition ages out of the window", repetition(old) === undefined);
+}
+
+// --- a tool that is not working -------------------------------------------
+// The repetition check catches the same call made over and over. This catches
+// the harder case: a broken tool called with *different* arguments each time,
+// failing identically. Watched live on a session whose working directory had
+// gone — `ls -a`, `echo "hello"`, `ls /`, one error — after which the model
+// stopped calling tools and span in its own thinking, writing "I'll try to use
+// `bash` with `ls /`" forty times until a person killed it.
+{
+  const fail = (toolName, error) => ({ toolName, error });
+  const gone = "Working directory does not exist: /workspaces/session-x";
+
+  ok("one failure is not a pattern", brokenTool([fail("bash", gone)]) === undefined);
+  ok("two identical failures are", /has failed 2 times/.test(brokenTool([fail("bash", gone), fail("bash", gone)]) ?? ""));
+  ok("even when the arguments differed", /whatever you pass it/.test(brokenTool([fail("bash", gone), fail("bash", gone)]) ?? ""));
+  ok("it quotes the error", brokenTool([fail("bash", gone), fail("bash", gone)]).includes(gone));
+  ok("and says to stop", /Stop calling it/.test(brokenTool([fail("bash", gone), fail("bash", gone)]) ?? ""));
+  // The failure this exists to prevent is not the loop, it is the confident
+  // answer that follows it: the model reported bash broken and then answered
+  // 41 times 19 from its head, wrongly.
+  ok("closing off the guess that follows",
+     /instead of guessing at what it would have told you/.test(brokenTool([fail("bash", gone), fail("bash", gone)]) ?? ""));
+
+  ok("two different failures are not one broken tool",
+     brokenTool([fail("bash", gone), fail("read", "No such file")]) === undefined);
+  ok("a varying tail does not hide a repeated failure",
+     /has failed 2 times/.test(brokenTool([fail("bash", `${gone}\nat 12:01`), fail("bash", `${gone}\nat 12:02`)]) ?? ""));
+  ok("no failures at all is quiet", brokenTool([]) === undefined);
 }
 
 // --- reading the verdict back -----------------------------------------------
@@ -75,12 +104,25 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   const same = [call("read", { path: "x" })];
   const noModel = await supervise("s", "do a thing", {
     calls: async () => [...same, ...same, ...same],
+    failures: async () => [],
     ask: async () => { throw new Error("the model should not have been asked"); },
   });
   ok("repetition needs no model call", noModel?.verdict === "stuck");
 
+  // "This tool does not work" explains the repetition, so it is reported
+  // first: telling a session whose bash has vanished that it is going in
+  // circles is true and useless.
+  const brokenFirst = await supervise("s", "do a thing", {
+    calls: async () => [...same, ...same, ...same],
+    failures: async () => [{ toolName: "bash", error: "gone" }, { toolName: "bash", error: "gone" }],
+    ask: async () => { throw new Error("the model should not have been asked"); },
+  });
+  ok("a broken tool is reported before the circling it caused",
+     /`bash` has failed/.test(brokenFirst?.note ?? ""));
+
   const dead = await supervise("s", "do a thing", {
     calls: async () => [call("read", { path: "a" })],
+    failures: async () => [],
     tasks: async () => [],
     self: async () => "",
     ask: async () => undefined,
@@ -89,6 +131,7 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
 
   const garbage = await supervise("s", "do a thing", {
     calls: async () => [call("read", { path: "a" })],
+    failures: async () => [],
     tasks: async () => [],
     self: async () => "",
     ask: async () => "I have no idea what you want from me.",
@@ -100,6 +143,7 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   let sawSelf = false, sawRequest = false;
   await supervise("s", "write the deployment guide", {
     calls: async () => [call("read", { path: "a" })],
+    failures: async () => [],
     tasks: async () => [{ seq: 1, description: "intro", status: "done", result: "10 chars" }],
     self: async () => "I hold myself to checking things.",
     ask: async (_sys, user) => {

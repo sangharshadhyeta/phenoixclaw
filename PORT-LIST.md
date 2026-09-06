@@ -115,3 +115,34 @@ Verified built despite a MISSING or PARTIAL status: BC-09, BC-11, BC-13, BC-19,
 BC-21, BC-53, BC-59, BC-61, BC-62, BC-76, SIS-08, SIS-11, SIS-13, SIS-14,
 SIS-16, SIS-22, SIS-29, SIS-44, SIS-45, SIS-60, SIS-63, SIS-79, SIS-81, UI-19,
 UI-22, UI-37.
+
+---
+
+## Later: self-correction and improvement
+
+Not built, and deliberately not pulled forward. Recorded here so it is a
+decision rather than an omission.
+
+The machinery mostly exists. `self-update` is a seeded routine whose workspace
+is the portal's own checkout, with an envelope that snapshots both trees, runs
+the build, and reverts anything that does not compile (`routines/supervisor.ts`).
+It is seeded **disabled**, and nothing turns it on.
+
+What that leaves, and it was watched happening: a session noticed its own
+`bash` was broken, read `CLAUDE.md` to work out why, and could go no further —
+reads are open, writes are bounded to the session's workspace, so it could
+diagnose the portal and not touch it. The diagnosis was correct.
+
+Three things this phase would need, roughly in order:
+
+1. **A decision about the routine.** It exists and is off. Turning it on is one
+   flag; the question is whether an unattended run should be able to change the
+   code it is running on, and under what ceiling. Note that `@idle` now fires
+   every twenty minutes rather than every three hours, so enabling it is a
+   larger change than it was.
+2. **Somewhere for a diagnosis to go.** `note_improvement` writes a concept node
+   the self-update run will find, which is the right shape and is not reached
+   from an ordinary session that has just discovered something broken.
+3. **A gate on what it may change.** `PROTECTED_PATHS` covers the constitution.
+   Nothing yet distinguishes "fix the bug you found" from "rewrite the guard
+   that constrains you", and that distinction is the whole of the risk.
