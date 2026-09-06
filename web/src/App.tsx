@@ -5,6 +5,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Chat } from "./components/Chat";
 import { MemoryPage } from "./components/MemoryPage";
 import { Login } from "./components/Login";
+import { CommandPalette } from "./components/CommandPalette";
 import { ConfigModal } from "./components/ConfigModal";
 import { ExtensionDialog, type UiRequest } from "./components/ExtensionDialog";
 import { SessionsPage } from "./components/SessionsPage";
@@ -89,6 +90,7 @@ function Shell({
    * dropped. Those need to look different.
    */
   const [connected, setConnected] = useState(true);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const refreshSessions = useCallback(async () => {
     const r = await api.sessions();
@@ -132,6 +134,27 @@ function Shell({
     const t = setInterval(() => refreshSessions().catch(() => {}), 5000);
     return () => clearInterval(t);
   }, [refreshSessions, sessionId, settings, view, navigate]);
+
+  /**
+   * ⌘K / Ctrl-K anywhere.
+   *
+   * Bound on the window rather than a container so it works wherever focus
+   * happens to be, and it deliberately does not fire while typing into the
+   * composer — the one place a shortcut stealing a keystroke is most annoying
+   * is mid-sentence.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "k" || !(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      const typing = target?.tagName === "TEXTAREA";
+      if (typing && !e.metaKey && !e.ctrlKey) return;
+      e.preventDefault();
+      setPaletteOpen((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Replay-then-tail for whichever session is in the URL.
   useEffect(() => {
@@ -202,6 +225,11 @@ function Shell({
 
   return (
     <div className="flex h-screen bg-canvas">
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        sessions={sessions}
+      />
       <Sidebar
         sessions={sessions}
         workspaces={workspaces}

@@ -240,8 +240,38 @@ export function Chat({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [panelRequest, setPanelRequest] = useState<"model" | "effort" | null>(null);
+  /**
+   * Find something in this conversation.
+   *
+   * A long run is thousands of lines and the browser's own find only sees what
+   * is rendered — which, with tool results collapsed and threads folded, is a
+   * fraction of it. This searches the transcript itself and shows what matched,
+   * including inside results that are currently shut.
+   */
+  const [search, setSearch] = useState("");
+  const [searching, setSearching] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const items = useMemo(() => buildTranscript(events), [events]);
+  const allItems = useMemo(() => buildTranscript(events), [events]);
+
+  /** Everything a line holds, so a match inside a collapsed result still counts. */
+  const haystack = (item: Item): string => {
+    switch (item.kind) {
+      case "thread":
+        return item.items.map((i) => `${i.source} ${i.text}`).join(" ");
+      case "tool":
+        return `${item.name} ${item.detail ?? ""} ${item.result ?? ""}`;
+      case "assistant":
+        return `${item.text} ${item.thinking}`;
+      default:
+        return (item as { text?: string }).text ?? "";
+    }
+  };
+
+  const items = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return allItems;
+    return allItems.filter((item) => haystack(item).toLowerCase().includes(q));
+  }, [allItems, search]);
   const running = session.status === "running";
 
   /**
@@ -355,6 +385,34 @@ export function Chat({
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warn" />
               reconnecting
+            </span>
+          )}
+          {searching ? (
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setSearch("");
+                  setSearching(false);
+                }
+              }}
+              placeholder="find in this conversation…"
+              className="w-56 rounded-lg border border-line bg-transparent px-2 py-1 text-xs text-fg outline-none placeholder:text-fg-faint"
+            />
+          ) : (
+            <button
+              onClick={() => setSearching(true)}
+              title="Find in this conversation"
+              className="rounded-lg border border-line px-2 py-1 text-xs text-fg-muted transition hover:bg-fg/5 hover:text-fg"
+            >
+              Find
+            </button>
+          )}
+          {search.trim() && (
+            <span className="font-mono text-[11px] text-fg-faint">
+              {items.length} of {allItems.length}
             </span>
           )}
           {running && runStartedAt && <Elapsed since={runStartedAt} />}
