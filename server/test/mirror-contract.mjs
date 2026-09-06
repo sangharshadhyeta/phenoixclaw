@@ -136,5 +136,21 @@ ok("nor status changes", isMirrorable("portal_status") === false);
      /kind: "result"/.test(ts) && !/text: `\*\*\$\{String\(p\.title/.test(ts));
 }
 
+// --- the delivery turn must not recompute a settled figure ------------------
+// A task session correctly computed 12*7=84; the chat's own delivery turn was
+// asked to "give the person the answer in your own words" and, for a number,
+// took that as an invitation to redo the arithmetic itself — got 83, caught
+// itself mid-reply, and corrected to 84. The visible answer ended up right,
+// but the hedging ("Wait, I should double check that. Actually...") reads as
+// the agent guessing, not reporting.
+{
+  const { readFileSync } = await import("node:fs");
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("the delivery prompt says a figure above is settled",
+     /Any figure or fact above is settled/.test(mgr));
+  ok("and forbids recomputing it",
+     /Do not recompute it, re-derive it, or run the numbers again/.test(mgr));
+}
+
 console.log("\n  " + pass + " passed, " + fail + " failed");
 process.exit(fail > 0 ? 1 : 0);

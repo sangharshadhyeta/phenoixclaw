@@ -25,7 +25,7 @@ function isAgentArtefact(resolved: string): boolean {
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { listToolRules, markSessionTainted, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { listTasks, listToolRules, markSessionTainted, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { CONSTITUTION_FILE } from "../agent-setup.js";
 import { agentHome } from "../agent.js";
 import { IDENTITY_FILES, writeIdentity } from "../identity.js";
@@ -119,6 +119,26 @@ interface Rule {
   /** True when this call is the dangerous shape. */
   hit: (toolName: string, input: Record<string, unknown>) => boolean;
 }
+
+/**
+ * Usable before a task has planned: writing the plan itself, and finding out
+ * enough to write one. Everything else is work, and work waits for the plan.
+ *
+ * `read`/`grep`/`find`/`ls` stay open because a plan written blind is worse
+ * than a short look first — Sisyphean's own decomposer runs "with MORE
+ * context (full task + memory)" for exactly this reason. `graph_recall` for
+ * the same reason: checking memory before planning is not skipping the plan,
+ * it is what the plan should be informed by.
+ */
+const PLAN_EXEMPT = new Set([
+  "task_plan",
+  "task_list",
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "graph_recall",
+]);
 
 const cmd = (input: Record<string, unknown>) =>
   typeof input.command === "string" ? input.command : "";
@@ -555,6 +575,7 @@ export function guardExtension(
        * nothing.
        */
       const callName = String(event.toolName ?? "");
+
       if (!tainted && isUntrustedSource(callName, callName === "bash" ? cmd(event.input ?? {}) : callName)) {
         tainted = true;
         if (portalSessionId) void markSessionTainted(portalSessionId).catch(() => {});
@@ -573,6 +594,40 @@ export function guardExtension(
           personKey: key,
           sessionId: portalSessionId,
         });
+
+      /**
+       * A task plans before it works. Every one, not only the ones that look
+       * like they need it.
+       *
+       * Sisyphean's own pipeline does this unconditionally — `think_decompose()
+       * is applied to every S1 goal`, including a plain arithmetic question,
+       * and what a trivial request gets is a one-step plan marked `direct`,
+       * not no plan at all. Phoenix left it to the model's judgement, and the
+       * judgement was inconsistent: "compute 12*7" went straight to `bash`
+       * with no `task_plan` call, while a two-file build correctly planned
+       * first. Optional meant it happened when the model felt like it.
+       *
+       * Enforced here rather than asked for in a prompt, for the reason every
+       * enforcement in this file exists: a rule the model can skip is a rule
+       * it will skip under load, and the after-turn checks only notice once
+       * the turn is already over. `workspace` is set only for a task session
+       * (see sdk-client.ts) — conversations and routines are not task work
+       * and are untouched by this.
+       */
+      if (workspace && !conversational && !PLAN_EXEMPT.has(callName)) {
+        const tasks = await listTasks(sessionId).catch(() => []);
+        if (!tasks.length) {
+          note("refused", `blocked ${callName}: no plan yet`);
+          return {
+            block: true,
+            reason:
+              `Refused: this task has not planned yet.\n\n` +
+              `Call \`task_plan\` first — even a single step is a plan. "${callName}" is work, and ` +
+              `work follows the plan, not the other way round. If the whole task really is one ` +
+              `step, the plan is that one step; write it and then do it.`,
+          };
+        }
+      }
 
       const granted = async () => {
         const ok = Boolean(

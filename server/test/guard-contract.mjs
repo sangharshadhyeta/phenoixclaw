@@ -27,7 +27,7 @@ const dist = (f) => path.join(here, "..", "dist", f);
 const { guardExtension } = await import(dist("pi/guard.js"));
 const { resetRepeats } = await import(dist("pi/repeat-guard.js"));
 const { agentHome } = await import(dist("agent.js"));
-const { getDb, createSession, getSession } = await import(dist("db.js"));
+const { getDb, createSession, getSession, setTasks } = await import(dist("db.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -264,6 +264,9 @@ const blocked = (r) => Boolean(r && r.block);
   ok("an extension too", !blocked(await chat.call("write", { path: path.join(home, "extensions", "e.js") })));
 
   // A task session is doing the work, and its workspace is where it belongs.
+  // Planned first — a task session reaching for `write` has, by the plan-first
+  // rule below, always cleared that bar before this point in real use.
+  await setTasks("t", ["write units.py"]);
   const task = mount(
     guardExtension("t", () => ({ role: "primary" }), undefined, true, REPO, false, REPO, false),
   );
@@ -278,6 +281,9 @@ const blocked = (r) => Boolean(r && r.block);
 // pointed at the same directory were already editing the same files.
 {
   const mine = "/workspaces/mine";
+  // Planned first, for the same reason: this block is about the workspace
+  // boundary specifically, not about whether a plan exists yet.
+  await setTasks("s", ["do the work"]);
   const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, mine, false, mine));
 
   ok("writing inside my workspace is allowed",
@@ -314,6 +320,62 @@ const blocked = (r) => Boolean(r && r.block);
   const g = mount(guardExtension("s", () => ({ role: "primary" }), undefined, true, agentHome()));
   ok("an unbounded session may write outside",
      !blocked(await g.call("write", { path: "/workspaces/anywhere/x.md", content: "x" })));
+}
+
+// --- 9. a task plans before it works -----------------------------------------
+// Sisyphean's own pipeline runs its decomposer on every goal, arithmetic
+// included — a trivial request gets a one-step plan marked "direct", not no
+// plan at all. This is the same guarantee, made structural: a task session
+// with no plan yet cannot reach for work, only for planning and the reading
+// that should inform it.
+{
+  await createSession({ id: "unplanned", title: "u", workspace: REPO, executor: "host" });
+  const g = mount(
+    guardExtension("unplanned", () => ({ role: "primary" }), "unplanned", true, REPO, false, REPO, false),
+  );
+
+  ok("bash is refused before any plan exists", blocked(await g.call("bash", { command: "echo hi" })));
+  ok("the refusal names task_plan",
+     /task_plan/.test((await g.call("bash", { command: "echo hi" })).reason));
+  ok("write is refused too — planning is not one specific tool's job",
+     blocked(await g.call("write", { path: path.join(REPO, "x.txt"), content: "x" })));
+  ok("web_search is refused the same way", blocked(await g.call("web_search", { query: "x" })));
+
+  ok("but task_plan itself is not", !blocked(await g.call("task_plan", { steps: ["compute it"] })));
+  ok("nor task_list, which is how a session checks", !blocked(await g.call("task_list", {})));
+  ok("nor reading, grepping, finding or listing — informing the plan is not skipping it",
+     !blocked(await g.call("read", { path: "x" })) &&
+       !blocked(await g.call("grep", { pattern: "x" })) &&
+       !blocked(await g.call("find", { pattern: "x" })) &&
+       !blocked(await g.call("ls", { path: "." })));
+  ok("nor graph_recall — checking memory first is not skipping the plan either",
+     !blocked(await g.call("graph_recall", { query: "x" })));
+
+  await setTasks("unplanned", ["compute it"]);
+  ok("once a plan exists — even one step — work is allowed",
+     !blocked(await g.call("bash", { command: "echo hi" })));
+}
+
+// --- and the rule is scoped to task sessions only ---------------------------
+{
+  // A conversation: no workspace boundary, so the plan rule does not apply —
+  // it has its own reasons to refuse writes (see the conversational checks
+  // above), not this one.
+  await createSession({ id: "chat-s", title: "c", workspace: REPO, executor: "host" });
+  const chat = mount(
+    guardExtension("chat-s", () => ({ role: "primary" }), "chat-s", true, REPO, false, undefined, true),
+  );
+  ok("a conversation is not asked to plan before reading",
+     !blocked(await chat.call("read", { path: "x" })));
+
+  // A routine: has no task workspace passed (see sdk-client.ts — only
+  // kind==="task" sets `workspace`), so it is untouched by this rule too.
+  await createSession({ id: "routine-s", title: "r", workspace: REPO, executor: "host" });
+  const routine = mount(
+    guardExtension("routine-s", () => ({ role: "primary" }), "routine-s", true, REPO, false, undefined, false),
+  );
+  ok("a routine session (no task workspace passed) is unaffected",
+     !blocked(await routine.call("bash", { command: "echo hi" })));
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
