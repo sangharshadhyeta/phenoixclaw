@@ -102,17 +102,23 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
 {
   ok("an empty summary says nothing", !g.saysSomething("km_to_miles", ""));
   ok("nor does the name repeated", !g.saysSomething("largest prime numbers", "largest prime numbers"));
-  ok("nor a restatement with filler",
-     !g.saysSomething("product of the two largest known primes", "The result of multiplying the two largest known primes."));
   /**
-   * A short true thing is still a claim. Counting characters was tried first
-   * and only ever rejected these — "Python: Programming language" — while
-   * catching nothing the word tests did not already catch. What separates a
-   * claim from a restatement is how much of the summary is borrowed back from
-   * the name, not how long it is.
+   * The gate is deliberately blunt, and this is where it stops.
+   *
+   * A stricter test was tried — the proportion of the summary borrowed back
+   * from the name — and it rejected real knowledge twice in this repository's
+   * own contracts: "Python: Programming language" and "the api rate limit is
+   * 100/min: Rate limit is 100 per minute". So a restatement that adds *any*
+   * word gets through, and some junk with it.
+   *
+   * That trade is the right way round. Junk in the graph is noise and decays;
+   * a belief silently refused is something the agent learned and does not
+   * have, with nothing anywhere to show that it happened.
    */
+  ok("a restatement with a new word gets through, and that is accepted",
+     g.saysSomething("product of the two largest known primes", "The result of multiplying the two largest known primes."));
   ok("a short claim is kept", g.saysSomething("Python", "Programming language"));
-  ok("but a one-word label is not", !g.saysSomething("Python", "language"));
+  ok("and a one-word label still counts as a claim", g.saysSomething("Python", "language"));
 
   ok("a real claim survives",
      g.saysSomething("DuckDB ART index", "The ART index is not tidied after a delete, so the next insert can fail."));

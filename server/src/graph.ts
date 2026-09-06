@@ -570,6 +570,14 @@ async function existingSynonym(
 /**
  * Does this summary say anything the name did not?
  *
+ * Deliberately blunt: empty, or nothing but the name's own words. A stricter
+ * test was tried — proportion of words borrowed back — and it rejected real
+ * knowledge twice in this repository's own contracts ("Python: Programming
+ * language", "the api rate limit is 100/min: Rate limit is 100 per minute").
+ * Over-rejecting is the worse failure: junk in the graph is noise, but a
+ * belief silently refused is a thing the agent learned and does not have, with
+ * nothing to show that it happened.
+ *
  * A belief is a claim about the world, and these arrived with none:
  *
  *     fact    km_to_miles                          (summary empty)
@@ -592,38 +600,21 @@ async function existingSynonym(
 const CLAIM_TYPES = new Set(["fact", "concept"]);
 
 export function saysSomething(name: string, summary: string): boolean {
-  const words = (t: string) =>
-    new Set(
-      t
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, " ")
-        .split(/\s+/)
-        .filter((w) => w.length > 2),
-    );
   const body = summary.trim();
   if (!body) return false;
 
-  const inName = words(name);
-  const inBody = [...words(body)];
-  if (!inBody.length) return false;
-  const added = inBody.filter((w) => !inName.has(w));
-  // Two words is the floor: one is a label, not a claim. A character count was
-  // tried first and only ever rejected short *true* things — "Python:
-  // Programming language", "persist-me-check: saved node" — while catching
-  // nothing a word test did not already catch.
-  if (added.length < 2) return false;
+  const significant = (t: string) =>
+    t
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
 
-  /**
-   * Proportion, not a count.
-   *
-   * Counting new words alone rejected "Python — Programming language", which
-   * is a perfectly good claim: a short name with a short summary has few words
-   * to add. What separates a claim from a restatement is how much of the
-   * summary is *already the name* — "The result of multiplying the two largest
-   * known prime numbers" over a node called "product of the two largest known
-   * prime numbers" is five of its seven words borrowed back.
-   */
-  return added.length / inBody.length > 0.4;
+  const inName = new Set(significant(name));
+  const inBody = significant(body);
+  if (!inBody.length) return false;
+  // Every word already in the name: the summary is the name again.
+  return inBody.some((w) => !inName.has(w));
 }
 
 export async function upsertNode(
@@ -648,7 +639,22 @@ export async function upsertNode(
    * dropped every edge to something new, which the graph contract caught
    * before it shipped.
    */
-  if (!extra?.scaffold && CLAIM_TYPES.has(type) && !saysSomething(name, summary)) {
+  /**
+   * Two kinds of caller are exempt, and both know what they are recording.
+   *
+   * `scaffold` is `upsertEdge` creating a missing endpoint: the claim is the
+   * relation and the node is where it lands, so it has no summary yet.
+   *
+   * A `category` marks a deliberate, structured record rather than something
+   * an extractor noticed — a self-conclusion, or something learned about a
+   * person. A self-conclusion's *name is derived from its text* so that
+   * concluding the same thing twice collides, which reads as a total
+   * restatement and is exactly right.
+   *
+   * What is left for the gate is what it was written for: extraction turning
+   * a question's noun phrases into things known.
+   */
+  if (!extra?.scaffold && !extra?.category && CLAIM_TYPES.has(type) && !saysSomething(name, summary)) {
     return normalizeName(name);
   }
 
