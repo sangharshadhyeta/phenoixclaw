@@ -204,6 +204,51 @@ const blocked = (r) => Boolean(r && r.block);
      !blocked(await owner.call("read", { path: "/srv/app/.env" })));
 }
 
+// --- 7b. a conversation talks; work goes to a session of its own -----------
+// The main conversation's cwd is the agent's home, which exists for identity,
+// skills and memory. Asked to build a module it wrote `units.py` straight in
+// there rather than calling start_task — the same failure every prose rule
+// here has had: the tool was described, and writing the file felt simpler.
+{
+  const chat = mount(
+    guardExtension("conv", () => ({ role: "primary" }), undefined, true, agentHome(), false, undefined, true),
+  );
+  const home = agentHome();
+
+  ok("a project file in the agent's home is refused",
+     blocked(await chat.call("write", { path: path.join(home, "units.py") })));
+  ok("and it points at the tool that gives work a home",
+     /start_task/.test((await chat.call("write", { path: path.join(home, "units.py") })).reason ?? ""));
+  ok("saying what the directory is actually for",
+     /identity documents, your skills, your memory/.test(
+       (await chat.call("write", { path: path.join(home, "units.py") })).reason ?? "",
+     ));
+
+  // The agent maintaining itself must not be caught by this.
+  ok("a skill is still writable", !blocked(await chat.call("write", { path: path.join(home, "skills", "x", "SKILL.md") })));
+  /**
+   * The identity documents are refused here too, by the rule that already
+   * existed — they are graph-backed, and a bare `write` is redirected to
+   * `identity_update`. What matters is that they are refused *for that
+   * reason*, not swept up as "work belongs elsewhere", which would send the
+   * agent to `start_task` to edit its own memory.
+   */
+  const soul = await chat.call("write", { path: path.join(home, ".identity", "SOUL.md") });
+  ok("an identity mirror is refused as graph-backed, not as work",
+     blocked(soul) && /graph-backed/.test(soul.reason) && !/start_task/.test(soul.reason));
+  const mem = await chat.call("write", { path: path.join(home, "MEMORY.md") });
+  ok("and so is one named at the top level",
+     blocked(mem) && /graph-backed/.test(mem.reason) && !/start_task/.test(mem.reason));
+  ok("an extension too", !blocked(await chat.call("write", { path: path.join(home, "extensions", "e.js") })));
+
+  // A task session is doing the work, and its workspace is where it belongs.
+  const task = mount(
+    guardExtension("t", () => ({ role: "primary" }), undefined, true, REPO, false, REPO, false),
+  );
+  ok("a task writing in its own workspace is untouched",
+     !blocked(await task.call("write", { path: path.join(REPO, "units.py") })));
+}
+
 // --- 8. a session may only modify its own workspace ------------------------
 // The API checked a workspace was inside the root when a session was created,
 // and then nothing checked again — a running session could write anywhere the

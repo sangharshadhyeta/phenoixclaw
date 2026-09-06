@@ -145,6 +145,22 @@ export function StatusStrip() {
               <span className={`truncate ${TONE[d.status]}`}>{d.detail || d.status}</span>
             </div>
           ))}
+          {/*
+            * The one shortcut, where it can be found.
+            *
+            * ⌘K exists and nothing said so, which makes it a feature for
+            * whoever wrote it. BirdClaw's answer was a help overlay listing
+            * dozens of keys; there is one key here, and a whole overlay to
+            * announce it would be more machinery than the thing it explains.
+            */}
+          <div className="flex gap-2 border-t border-border pt-1">
+            <span className="w-28 shrink-0">everything</span>
+            <span>
+              <kbd className="rounded border border-border px-1">⌘K</kbd>
+              <span className="text-fg-subtle"> / </span>
+              <kbd className="rounded border border-border px-1">Ctrl K</kbd>
+            </span>
+          </div>
           <button
             onClick={() => setLogsOpen((v) => !v)}
             className="w-full border-t border-border pt-1 text-left hover:text-fg"

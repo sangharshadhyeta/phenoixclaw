@@ -1,6 +1,25 @@
 import { randomBytes } from "node:crypto";
 import { isArtefact } from "../artefacts.js";
 import { drivenDenial, isDriving } from "./driving.js";
+
+/**
+ * Things the agent's home is *for*.
+ *
+ * Identity and skills have their own tools, which redirect and bound their own
+ * writes; this list is what a bare `write` may still legitimately touch there,
+ * so the refusal below cannot catch the agent maintaining itself.
+ */
+function isAgentArtefact(resolved: string): boolean {
+  const rel = path.relative(agentHome(), resolved);
+  if (rel.startsWith("..")) return false;
+  const first = rel.split(path.sep)[0];
+  return (
+    first === "skills" ||
+    first === ".identity" ||
+    first === "extensions" ||
+    /^[A-Z_]+\.md$/.test(first)
+  );
+}
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -476,7 +495,13 @@ export function guardExtension(
    * are not. Undefined leaves the boundary off — which is what a session whose
    * cwd is the agent's own home wants, since maintaining itself is its job.
    */
-  workspace?: string
+  workspace?: string,
+  /**
+   * True for the conversation itself — the main chat, or one reached through a
+   * channel. Its cwd is the agent's home, and work does not belong there: see
+   * the refusal below and pi/task-session-tools.ts.
+   */
+  conversational = false
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
@@ -630,7 +655,11 @@ export function guardExtension(
        * themselves are separately redirected below, and CONSTITUTION.md is
        * refused outright by PROTECTED_PATHS.
        */
-      if (workspace && (event.toolName === "write" || event.toolName === "edit")) {
+      // `conversational` as well as `workspace`: a conversation deliberately
+      // has no workspace boundary — its cwd is the agent's home and
+      // maintaining itself is the job — so requiring one skipped the check
+      // below entirely for exactly the sessions it was written for.
+      if ((workspace || conversational) && (event.toolName === "write" || event.toolName === "edit")) {
         const raw = target(event.input ?? {});
         const resolved = raw ? path.resolve(cwd ?? process.cwd(), raw) : "";
         /**
@@ -642,7 +671,45 @@ export function guardExtension(
          * instead of producing a near-duplicate in a throwaway directory. See
          * artefacts.ts for what that concedes and what bounds it.
          */
-        if (resolved && !within(resolved, workspace) && !within(resolved, agentHome()) && !isArtefact(resolved)) {
+        /**
+         * The conversation is for talking; work goes somewhere of its own.
+         *
+         * The main conversation's cwd is the agent's home, which exists for
+         * identity, skills and memory — not for project files. Asked to build
+         * a module, it wrote `units.py` straight into that directory rather
+         * than calling `start_task`, which is the same failure every prose
+         * rule here has had: the tool was described, and writing the file felt
+         * simpler in the moment.
+         *
+         * So it is mechanical, like the others. Identity and skills have their
+         * own tools and are unaffected; an ordinary `write` of an ordinary
+         * file from a conversation is refused and pointed at the tool that
+         * gives the work a workspace, an id and a plan of its own.
+         */
+        if (resolved && conversational && within(resolved, agentHome()) && !isAgentArtefact(resolved)) {
+          note("refused", "Work belongs in a session of its own");
+          return {
+            block: true,
+            reason:
+              `Refused: "${resolved}" is inside your own home, which holds who you are — your ` +
+              `identity documents, your skills, your memory — and not the things you make.\n\n` +
+              `This is work, so give it a session of its own with \`start_task\`: it gets an id, a ` +
+              `workspace and a plan, it runs while you carry on here, and its answer comes back to ` +
+              `this conversation when it has one. Write the brief for someone who cannot see what ` +
+              `we have said.`,
+          };
+        }
+
+        // `workspace` may be undefined here now that a conversation reaches
+        // this block; a session with no boundary has already been dealt with
+        // by the rule above and has nothing further to check.
+        if (
+          workspace &&
+          resolved &&
+          !within(resolved, workspace) &&
+          !within(resolved, agentHome()) &&
+          !isArtefact(resolved)
+        ) {
           note("refused", "Outside this session's workspace");
           return {
             block: true,

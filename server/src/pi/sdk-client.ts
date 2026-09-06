@@ -575,6 +575,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             // routine sessions run in the agent's own home, where maintaining
             // itself is the job — see the boundary check in guard.ts.
             opts.kind === "task" ? opts.cwd : undefined,
+            // A conversation talks; work goes to a session of its own. Routine
+            // sessions are excluded: a routine *is* the work, and self-update
+            // legitimately edits the agent's own tree.
+            opts.kind === "agent",
           ) },
         // Every session, unconditionally: remembering/recalling durable facts
         // is a normal-conversation thing, not limited to a routine or role.
