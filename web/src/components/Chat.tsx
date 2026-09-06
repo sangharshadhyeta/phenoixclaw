@@ -260,6 +260,8 @@ export function Chat({
    * time the tab opened.
    */
   const [raw, setRaw] = useState(false);
+  /** The agent's own conversation — the one place instructions are accepted. */
+  const conversational = session.kind === "agent";
 
   /** Everything a line holds, so a match inside a collapsed result still counts. */
   const haystack = (item: Item): string => {
@@ -609,6 +611,16 @@ export function Chat({
       </div>
       )}
 
+      {/*
+        * Only the conversation takes instructions.
+        *
+        * A task session is a view of work the agent is doing — it has a plan,
+        * a workspace and a brief it was given, and typing into it was a second
+        * way to start work that bypassed the agent's own judgement about
+        * whether something is a task at all. Ask in the chat; it decides, and
+        * hands the work out with a plan.
+        */}
+      {conversational ? (
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -658,6 +670,12 @@ export function Chat({
           />
         </div>
       </form>
+      ) : (
+        <div className="border-t border-line px-4 py-3 text-center text-xs text-fg-subtle">
+          This is work the agent is doing. Ask in <strong className="text-fg-muted">Chat</strong>{" "}
+          to start something or change it.
+        </div>
+      )}
     </div>
   );
 }

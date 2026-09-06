@@ -22,6 +22,7 @@ import { knowledgeTools } from "./knowledge-tools.js";
 import { memoryInjector } from "./memory-injector.js";
 import { temporalContext } from "./temporal-context.js";
 import { samplingDefaults } from "./sampling.js";
+import { tasksContext } from "./tasks-context.js";
 import { contextAssembler } from "./context-assembler.js";
 import { historyTools } from "./history-tools.js";
 import { cachedTools } from "./cached-tools.js";
@@ -686,6 +687,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
          */
         if (opts.startTask) {
           factories.push({ name: "task-sessions", factory: opts.startTask });
+          // What is running, in the prompt rather than behind a tool — a tool
+          // the model has to think to call is one it does not call when a
+          // follow-up arrives. See tasks-context.ts.
+          factories.push({ name: "tasks-context", factory: tasksContext() });
         }
       }
       // A routine looking after itself: advancing its own phase so an

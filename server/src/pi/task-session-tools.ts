@@ -114,6 +114,63 @@ export function taskSessionTools(deps: TaskSessionDeps) {
       },
     });
 
+    /**
+     * A follow-up belongs to the work it is about.
+     *
+     * "Actually make it handle negative numbers too" is not a new task and it
+     * is not something the conversation can do — the work is happening in a
+     * session with its own context, its own plan and its own workspace, and
+     * that is where the correction has to land. Without this the conversation
+     * could only start a second task or answer as though the work were its
+     * own, both of which lose the correction.
+     */
+    pi.registerTool({
+      name: "tell_task",
+      label: "Send to a running task",
+      description:
+        "Send something to work you have already handed out — a correction, an extra requirement, " +
+        "a change of mind, or a question about it. Use it whenever what has just been said belongs " +
+        "to a task that is already running rather than being new work.\n\n" +
+        "The session it goes to has its own context and cannot see this conversation, so say the " +
+        "whole thing: what to change and why, not \"as we discussed\".",
+      promptSnippet: "tell_task — send a correction or addition to work already running",
+      parameters: Type.Object({
+        session: Type.String({ description: "The task's id, as shown in the list of work you have handed out." }),
+        message: Type.String({ description: "The whole message, written for a session that cannot see this one." }),
+      }),
+      async execute(_id: string, p: any) {
+        const target = String(p?.session ?? "").trim();
+        const message = String(p?.message ?? "").trim();
+        if (!target) throw new Error("Which task? Give the id shown in the list of work you have handed out.");
+        if (message.length < 10) {
+          throw new Error(
+            "Too short to act on. The session cannot see this conversation — say what to change and why.",
+          );
+        }
+
+        const row = await getSession(target);
+        if (!row) throw new Error(`There is no session ${target}.`);
+        if (row.kind !== "task") {
+          throw new Error(`${target} is not work you handed out — it is a ${row.kind} session.`);
+        }
+
+        // Not awaited, like start_task: the conversation carries on, and the
+        // task's answer comes back when it has one.
+        void deps.start(target, message);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Sent to "${row.title}" (${target}). It will pick this up on its next turn and its ` +
+                `answer comes back here. Say what you have passed on.`,
+            },
+          ],
+          details: {},
+        };
+      },
+    });
+
     pi.registerTool({
       name: "tasks_running",
       label: "What is in progress",

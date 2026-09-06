@@ -7,13 +7,12 @@ import {
   LuMessagesSquare,
   LuPin,
   LuPinOff,
-  LuPlus,
   LuSettings,
   LuShield,
   LuTrash2,
   LuMessageCircle,
 } from "react-icons/lu";
-import type { Session, SessionStatus, Workspace } from "../api";
+import type { Session, SessionStatus } from "../api";
 import { StatusStrip } from "./StatusStrip";
 
 const STATUS_STYLE: Record<SessionStatus, string> = {
@@ -33,20 +32,6 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
 /** How many unpinned sessions the sidebar shows before deferring to Sessions. */
 const RECENTS_LIMIT = 12;
 
-/** Mirrors the server's slugify so the preview matches what actually gets created. */
-function slugify(input: string): string {
-  return input
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^[-._]+|[-._]+$/g, "")
-    .slice(0, 64);
-}
-
-// Sentinel for the dropdown — a new workspace is the default choice.
-const NEW = "__new__";
 
 /** Remembered per browser; the server has no opinion about your window. */
 const WIDTH_KEY = "phoenixclaw.sidebarWidth";
@@ -62,32 +47,26 @@ function storedWidth(): number {
 
 export function Sidebar({
   sessions,
-  workspaces,
   executor,
   activeId,
   view,
   onSelect,
-  onCreate,
   onDelete,
   onRename,
   onPin,
-  onCreateWorkspace,
   onOpenSettings,
   onNavigate,
   onOpenMain,
 }: {
   sessions: Session[];
-  workspaces: Workspace[];
   executor: string;
   activeId: string | null;
   /** Which top-level destination is showing, so the nav can mark it. */
   view: "chat" | "sessions" | "agent" | "routines" | "audit" | "memory";
   onSelect: (id: string) => void;
-  onCreate: (workspacePath: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRename: (id: string, title: string) => Promise<void>;
   onPin: (id: string, pinned: boolean) => Promise<void>;
-  onCreateWorkspace: (name: string) => Promise<Workspace>;
   onOpenSettings: () => void;
   onNavigate: (to: "sessions" | "agent" | "routines" | "audit" | "memory") => void;
   /** Open the conversation with the agent itself. */
@@ -99,34 +78,10 @@ export function Sidebar({
   const widthRef = useRef(width);
   widthRef.current = width;
 
-  const [creating, setCreating] = useState(false);
-  const [choice, setChoice] = useState<string>(NEW);
-  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const makingNew = choice === NEW;
-  const slug = slugify(name);
-  const canSubmit = makingNew ? slug.length > 0 : Boolean(choice);
 
-  const submit = async () => {
-    if (!canSubmit) return;
-    setError(null);
-    setBusy(true);
-    try {
-      // Either branch produces a workspace path; the session takes its name
-      // from that folder.
-      const workspacePath = makingNew ? (await onCreateWorkspace(name.trim())).path : choice;
-      await onCreate(workspacePath);
-      setName("");
-      setChoice(NEW);
-      setCreating(false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const pinned = sessions.filter((s) => s.pinned);
   const recents = sessions.filter((s) => !s.pinned);
@@ -180,7 +135,16 @@ export function Sidebar({
           onClick={onOpenMain}
           active={false}
         />
-        <NavItem icon={<LuPlus />} label="New" onClick={() => setCreating((v) => !v)} active={creating} />
+        {/*
+          * No "New" button.
+          *
+          * Creating a session by hand was the other way to start work, and it
+          * skipped the part that matters: the agent deciding that a request
+          * *is* work, giving it a brief someone who was not here could follow,
+          * and planning it. Ask in Chat — `start_task` makes the session, the
+          * workspace and the plan, and the sessions below are where you watch
+          * it happen.
+          */}
         <NavItem
           icon={<LuMessagesSquare />}
           label="Sessions"
@@ -212,54 +176,6 @@ export function Sidebar({
           active={view === "audit"}
         />
 
-        {creating && (
-          <div className="mt-2 space-y-2 px-1">
-            <select
-              value={choice}
-              onChange={(e) => setChoice(e.target.value)}
-              className="w-full rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-sm text-fg-muted"
-            >
-              <option value={NEW}>New workspace</option>
-              {workspaces.length > 0 && (
-                <optgroup label="Existing workspaces">
-                  {workspaces.map((w) => (
-                    <option key={w.path} value={w.path}>
-                      {w.name}
-                      {w.isGit ? " (git)" : ""}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-
-            {makingNew && (
-              <div>
-                <input
-                  autoFocus
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && submit()}
-                  placeholder="Cool Project"
-                  className="w-full rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-sm outline-none focus:border-accent/60"
-                />
-                {name.trim() && (
-                  <p className="mt-1 truncate font-mono text-[11px] text-fg-subtle">
-                    {slug ? `→ ${slug}` : "needs at least one letter or digit"}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {error && <p className="text-xs text-danger">{error}</p>}
-            <button
-              onClick={submit}
-              disabled={busy || !canSubmit}
-              className="w-full rounded-lg bg-accent/12 px-2 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
-            >
-              {busy ? "Creating…" : "Start session"}
-            </button>
-          </div>
-        )}
       </nav>
 
       <div className="flex-1 overflow-y-auto px-2 pb-2">

@@ -239,7 +239,6 @@ function Shell({
       />
       <Sidebar
         sessions={sessions}
-        workspaces={workspaces}
         executor={executor}
         activeId={sessionId ?? null}
         view={view}
@@ -250,11 +249,6 @@ function Shell({
           navigate(`/s/${main.id}`);
         }}
         onSelect={(id) => navigate(`/s/${id}`)}
-        onCreate={async (workspacePath) => {
-          const s = await api.createSession(workspacePath);
-          await refreshSessions();
-          navigate(`/s/${s.id}`);
-        }}
         onDelete={async (id) => {
           await api.deleteSession(id);
           const list = await refreshSessions();
@@ -271,12 +265,6 @@ function Shell({
         onOpenSettings={() =>
           navigate(sessionId ? `/s/${sessionId}/settings/general` : "/settings/general")
         }
-        onCreateWorkspace={async (name) => {
-          const created = await api.createWorkspace(name);
-          const list = await api.workspaces();
-          setWorkspaces(list.workspaces);
-          return created;
-        }}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">

@@ -110,6 +110,8 @@ export const AUTONOMOUS_TOOLS = new Set([
   // On the list because an unattended run is exactly the case that needs it:
   // there is nobody to notice that "done" was asserted rather than checked.
   "expected_outcome",
+  "tell_task",
+  "tasks_running",
   "task_plan",
   "task_list",
   "task_start",
