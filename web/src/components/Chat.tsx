@@ -489,8 +489,14 @@ export function Chat({
         <div className="mx-auto w-full max-w-3xl space-y-3">
         {items.length === 0 && (
           <div className="pt-16 text-center">
-            <p className="text-sm text-fg-muted">Give pi a task.</p>
-            <p className="mt-1 text-xs text-fg-faint">You can close this tab — it keeps working.</p>
+            <p className="text-sm text-fg-muted">
+              {conversational ? "Ask for something." : "This work has not started yet."}
+            </p>
+            <p className="mt-1 text-xs text-fg-faint">
+              {conversational
+                ? "Anything that is work gets a session of its own. Close the tab — it keeps going."
+                : "It runs on its own; the answer comes back in Chat."}
+            </p>
           </div>
         )}
 

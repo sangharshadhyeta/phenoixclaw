@@ -345,12 +345,18 @@ function EmptyState({ hasSessions }: { hasSessions: boolean }) {
       <div className="grid h-12 w-12 place-items-center rounded-2xl bg-surface text-xl text-fg-faint">
         π
       </div>
+      {/*
+        * Sessions are not something you start. The agent decides a request is
+        * work, gives it a session, and the list on the left is where you watch
+        * it — so pointing somebody at "start a session" sends them to a button
+        * that no longer exists and a decision that is not theirs.
+        */}
       <p className="text-sm text-fg-muted">
-        {hasSessions ? "Pick a session on the left." : "Start a session to get going."}
+        {hasSessions ? "Pick a session on the left, or ask in Chat." : "Ask in Chat to get going."}
       </p>
       <p className="max-w-xs text-xs text-fg-faint">
-        Give it a task and close the tab — it keeps working, and picks up where it left off when you
-        come back.
+        Ask for something in Chat; anything that is work gets a session of its own. Close the tab —
+        it keeps working, and the answer is waiting when you come back.
       </p>
     </div>
   );
