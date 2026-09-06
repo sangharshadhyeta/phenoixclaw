@@ -153,6 +153,45 @@ const age = async (name, days) => {
   ok("and names bash specifically", /put them through `bash`/.test(framing));
   ok("verification is asked for what is load-bearing", /Check rather than recall/.test(framing));
   ok("and memory is framed as a start, not an authority", /not an authority/.test(framing));
+
+  /**
+   * The hedge had to go, and the line had to be drawn.
+   *
+   * "when it matters" was an out, and the model took it: asked for the capital
+   * of France it reasoned "I know this fact" and answered without checking
+   * anything. The distinction that actually holds is not how important the
+   * question is but whose the answer is — reasoning done now is the model's,
+   * a fact about the world is not.
+   */
+  ok("the 'when it matters' hedge is gone", !/Check rather than recall, when it matters/.test(framing));
+  ok("reasoning is separated from facts about the world", /Reasoning you do now is yours/.test(framing));
+  ok("and confidence is refused as evidence", /how sure/.test(framing) && /is not evidence/.test(framing));
+  /**
+   * Saying which you did is the part that survives a missing tool. Web search
+   * is off on this deployment, so "go and look" is sometimes impossible — and
+   * an unverified answer labelled as unverified is still honest.
+   */
+  ok("answering from memory must be declared", /from memory, not verified/.test(framing));
+  /**
+   * Twice a session hit something it could not do and wrote the same sentence
+   * to itself forty times — "I'll try to use `bash` with `ls /`", "I'll just
+   * say Paris" — until a person killed it. Nothing had said stopping was one
+   * of the options.
+   */
+  /**
+   * Told to check the capital of France, a session ran
+   * `echo "Paris" | grep -v "Paris"` — its own answer, fed in and read back.
+   * It satisfies "run a command" exactly and can only ever agree with whatever
+   * went in.
+   */
+  ok("a check must be able to disagree", /able to disagree with you/.test(framing));
+  ok("naming the shapes that cannot", /echoing your own answer/.test(framing));
+  ok("and why that is worse than not checking", /agree with/.test(framing) && /every time including the times you are wrong/.test(framing));
+
+  ok("being unable is stated to be a complete answer", /complete answer/.test(framing));
+  ok("with the three things to report", /what you tried/.test(framing) && /what it prevents/.test(framing));
+  ok("retrying the same tool is closed off", /Do not call the same tool again/.test(framing));
+  ok("and so is quietly answering anyway", /hides the gap is worse than no answer/.test(framing));
   // Stated before the first token rather than enforced at the tool call:
   // refusing a large write after the fact only throws away a generation that
   // has already thinned.

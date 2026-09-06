@@ -3,6 +3,7 @@ import { nodeCount } from "../graph.js";
 import { getDb, totalUsage } from "../db.js";
 import { localModelConfigured } from "../llm.js";
 import { portalToolNames } from "../pi/sdk-client.js";
+import { recentLogs } from "../logbuffer.js";
 
 /**
  * What this deployment can actually do right now.
@@ -97,7 +98,7 @@ async function extractionHealth(): Promise<Dependency> {
     : { name: "extraction", status: "down", detail: res.detail, costs };
 }
 
-async function searchHealth(): Promise<Dependency> {
+export async function searchHealth(): Promise<Dependency> {
   const url = process.env.SEARXNG_URL;
   const costs = "web_search is unavailable — the agent cannot look anything up";
   if (!url) return { name: "web search", status: "off", detail: "SEARXNG_URL unset", costs };
@@ -185,6 +186,19 @@ function toolHealth(): Dependency {
 
 export function healthRouter(): Router {
   const router = Router();
+
+  /**
+   * What the server has said recently.
+   *
+   * Behind the same auth as everything else under /api. The portal is meant to
+   * be usable from a browser on the LAN, and until now its own diagnostics —
+   * a quarantined database, a degraded dependency, a rejection it survived —
+   * were readable only by someone with a shell on the host.
+   */
+  router.get("/logs", (req, res) => {
+    const limit = Number(req.query.limit ?? 200);
+    res.json({ lines: recentLogs(Number.isFinite(limit) ? limit : 200) });
+  });
 
   router.get("/health", async (_req, res) => {
     const dependencies = [

@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (f) => path.join(here, "..", "dist", f);
-const { healthRouter } = await import(dist("api/health.js"));
+const { healthRouter, searchHealth } = await import(dist("api/health.js"));
 const { addUsage, totalUsage, createSession } = await import(dist("db.js"));
 
 let pass = 0, fail = 0;
@@ -44,15 +44,32 @@ async function health() {
 
 // --- unconfigured is not broken -------------------------------------------
 {
-  // SEARXNG_URL is unset in this environment, which is a choice rather than a
-  // fault. Reporting it as a failure teaches people to ignore the page, and a
-  // health page exists to be believed.
+  /**
+   * A dependency nobody configured is a choice, not a fault. Reporting it as a
+   * failure teaches people to ignore the page, and a health page exists to be
+   * believed.
+   *
+   * This used to assert that web search *was* off, which was true of the
+   * machine it was written on and stopped being true the moment somebody
+   * configured a SearXNG — a test of the deployment rather than of the rule.
+   * The rule is checked directly instead.
+   */
+  const withoutSearch = { ...process.env };
+  delete process.env.SEARXNG_URL;
+  const off = await searchHealth();
+  process.env = withoutSearch;
+
+  ok("an unconfigured dependency reads as off, not down", off.status === "off");
+  ok("and says what it costs", /web_search is unavailable/.test(off.costs ?? off.detail ?? ""));
+
   const h = await health();
-  const search = h.dependencies.find((d) => d.name === "web search");
-  ok("an unconfigured dependency reads as off, not down", search.status === "off");
-  ok("and says what it costs", /web_search is unavailable/.test(search.costs ?? ""));
   ok("off alone does not make the portal unhealthy",
      h.status !== "down" || h.dependencies.some((d) => d.status === "down"));
+
+  // And when it *is* configured, it is not reported as a fault either.
+  const search = h.dependencies.find((d) => d.name === "web search");
+  ok("a configured one is ok or off, never down by default",
+     search.status === "ok" || search.status === "off" || search.status === "degraded");
 }
 
 // --- storage is always checked, since nothing works without it -------------

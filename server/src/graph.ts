@@ -1244,6 +1244,25 @@ export function topicWords(names: string[], minShare = 0.5): string[] {
     .slice(0, 3);
 }
 
+/**
+ * Delete every node of one type.
+ *
+ * The operator's counterpart to `graph_forget`, which is the agent's. Forgetting
+ * one node at a time is right for a wrong belief and useless for the case this
+ * exists for: an extraction pass that ran against a bad page and wrote ninety
+ * junk facts, or a page cache that has gone stale. Those stay forever otherwise,
+ * because deleting them by hand is not a real option.
+ *
+ * `anchor` and `project` are refused here as well as at the route, so nothing
+ * reaching this by another path can empty the agent's identity or its record of
+ * what it has worked on.
+ */
+export async function purgeType(type: string): Promise<number> {
+  if (type === "anchor" || type === "project") return 0;
+  const conn = await getConn();
+  return deleteNodesWhere(conn, "type = $type", { type });
+}
+
 export async function clusterIsolatedNodes(
   windowMinutes = 15,
   minMembers = 3,

@@ -6,6 +6,7 @@ import {
   removeNode,
   nodeCount,
   nodesByType,
+  purgeType,
   recentNodes,
   searchNodesSemantic,
   type NodeType,
@@ -111,6 +112,37 @@ export function memoryRouter(): Router {
     }
     await removeNode(name);
     res.json({ ok: true, forgotten: name, type: node.type });
+  });
+
+  /**
+   * Empty a whole category, when a run has filled it with rubbish.
+   *
+   * Ports BirdClaw's dashboard PURGE. Forgetting one node at a time is the
+   * right default and the wrong tool for the case this exists for: an
+   * extraction pass that ran against a bad page and wrote ninety junk facts,
+   * or a cache of pages that has simply gone stale. Deleting those by hand is
+   * not a real option, so in practice they stay.
+   *
+   * Bounded by type, and the two types that carry the agent rather than what
+   * it has read — `anchor` and `project` — are refused here exactly as they
+   * are for a single node. There is deliberately no "purge everything": the
+   * types are the categories a person actually means, and a single button that
+   * empties the whole graph is one misclick from deleting the agent's memory
+   * of its own work.
+   */
+  router.post("/memory/purge", async (req, res) => {
+    const type = String((req.body ?? {}).type ?? "").trim();
+    if (!type) return res.status(400).json({ error: "type required" });
+    if (type === "anchor" || type === "project") {
+      return res.status(400).json({
+        error:
+          type === "anchor"
+            ? "Identity documents are rewritten, never purged."
+            : "Projects are not beliefs about the world; purging them would lose what work exists.",
+      });
+    }
+    const removed = await purgeType(type);
+    res.json({ ok: true, type, removed });
   });
 
   /**

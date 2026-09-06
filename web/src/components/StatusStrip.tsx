@@ -21,6 +21,12 @@ interface Dependency {
   detail?: string;
 }
 
+interface LogLine {
+  at: string;
+  level: "info" | "error";
+  text: string;
+}
+
 interface Health {
   status: "ok" | "degraded" | "down";
   dependencies: Dependency[];
@@ -57,6 +63,33 @@ const DOT: Record<Health["status"], string> = {
 export function StatusStrip() {
   const [health, setHealth] = useState<Health | null>(null);
   const [open, setOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logs, setLogs] = useState<LogLine[]>([]);
+
+  /**
+   * Fetched only while the log is on screen.
+   *
+   * The strip itself polls every thirty seconds and is always mounted; the log
+   * is several hundred lines and nobody is reading it most of the time.
+   */
+  useEffect(() => {
+    if (!logsOpen) return;
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/logs?limit=200");
+        if (res.ok && alive) setLogs(((await res.json()) as { lines: LogLine[] }).lines.slice().reverse());
+      } catch {
+        /* the strip already says if the portal is unreachable */
+      }
+    };
+    void load();
+    const timer = setInterval(load, 5_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [logsOpen]);
 
   useEffect(() => {
     let alive = true;
@@ -112,6 +145,26 @@ export function StatusStrip() {
               <span className={`truncate ${TONE[d.status]}`}>{d.detail || d.status}</span>
             </div>
           ))}
+          <button
+            onClick={() => setLogsOpen((v) => !v)}
+            className="w-full border-t border-border pt-1 text-left hover:text-fg"
+          >
+            {logsOpen ? "hide server log" : "server log"}
+          </button>
+          {logsOpen && (
+            <div className="max-h-48 overflow-auto rounded bg-canvas p-1 font-mono text-[10px] leading-snug">
+              {logs.length === 0 ? (
+                <div className="text-fg-subtle">Nothing logged yet.</div>
+              ) : (
+                logs.map((line, i) => (
+                  <div key={i} className={line.level === "error" ? "text-danger" : ""}>
+                    <span className="text-fg-subtle">{line.at.slice(11, 19)} </span>
+                    {line.text}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
           {health.usage && (health.usage.tokensIn > 0 || health.usage.cost > 0) && (
             <div className="flex gap-2 border-t border-border pt-1">
               <span className="w-28 shrink-0">spent</span>

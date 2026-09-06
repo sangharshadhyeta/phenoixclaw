@@ -146,6 +146,33 @@ export function MemoryPage() {
                 </option>
               ))}
             </select>
+            {/*
+              * Emptying a whole category, for the case one-at-a-time cannot
+              * reach: an extraction pass that ran against a bad page and wrote
+              * ninety junk facts. Only offered when a type is selected — there
+              * is deliberately no button that empties everything — and the
+              * server refuses anchors and projects whatever this sends.
+              */}
+            {type && type !== "anchor" && type !== "project" && (data.counts[type] ?? 0) > 0 && (
+              <button
+                onClick={async () => {
+                  const n = data.counts[type] ?? 0;
+                  if (!confirm(`Forget all ${n} ${TYPE_LABEL[type] ?? type} node(s)? This cannot be undone.`)) return;
+                  const { removed } = await api.purgeMemoryType(type);
+                  setData((d) => ({
+                    ...d,
+                    total: Math.max(0, d.total - removed),
+                    counts: { ...d.counts, [type]: 0 },
+                    nodes: d.nodes.filter((n) => n.type !== type),
+                  }));
+                  setType("");
+                }}
+                className="rounded-lg border border-line px-2 py-1.5 text-xs text-fg-subtle hover:border-danger hover:text-danger"
+                title={`Forget every ${TYPE_LABEL[type] ?? type} node`}
+              >
+                Purge {TYPE_LABEL[type] ?? type}
+              </button>
+            )}
           </div>
         </div>
       </header>

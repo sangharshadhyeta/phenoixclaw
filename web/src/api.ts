@@ -312,6 +312,12 @@ export const api = {
     }>(`/api/memory/graph?type=${encodeURIComponent(type)}&limit=${limit}`),
 
   /** Remove a belief. The agent has graph_forget; this is the person's version. */
+  purgeMemoryType: (type: string) =>
+    json<{ ok: true; type: string; removed: number }>("/api/memory/purge", {
+      method: "POST",
+      body: JSON.stringify({ type }),
+    }),
+
   forgetMemory: (name: string) =>
     json<{ ok: true; forgotten: string }>(`/api/memory/${encodeURIComponent(name)}`, {
       method: "DELETE",

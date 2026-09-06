@@ -41,6 +41,7 @@ import { getDb } from "./db.js";
 import { getBuiltinCommands } from "./pi/builtins.js";
 import { isValidSlug, slugify } from "./slug.js";
 import { getSettingDefaults, getSettings, getStoredSettings, setSettings } from "./db.js";
+import { captureLogs } from "./logbuffer.js";
 
 /**
  * One bad query must not take the portal down.
@@ -68,6 +69,10 @@ import { getSettingDefaults, getSettings, getStoredSettings, setSettings } from 
  * treatment for the same reason — the alternative is not a cleaner failure,
  * it is a total one.
  */
+// Keep the last of the server's own output where the browser can read it —
+// see logbuffer.ts. Installed first so it catches the boot messages too.
+captureLogs();
+
 process.on("unhandledRejection", (reason) => {
   const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
   console.error(`[portal] unhandled rejection (staying up):\n${detail}`);
