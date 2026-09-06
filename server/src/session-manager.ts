@@ -21,6 +21,7 @@ import {
   addUsage,
   appendEvent,
   eventsSince,
+  clearSessionEvents,
   listTasks,
   recentToolCalls,
   setTaskStatus,
@@ -1038,7 +1039,28 @@ class SessionManager extends EventEmitter {
       await this.record(sessionId, "portal_status", { status: "running" });
       void (async () => {
         try {
-          const text = await runBuiltin(serverBuiltin.name, builtin![2], client);
+          const text = await runBuiltin(serverBuiltin.name, builtin![2], client, {
+            /**
+             * `/clear` ends the conversation rather than shortening it.
+             *
+             * Both halves have to go or it is not cleared: the pi conversation
+             * (so the model is not still carrying it) and the transcript (so
+             * the chat is actually empty rather than merely scrolled).
+             */
+            clear: async () => {
+              await this.recycleConversation(
+                sessionId,
+                "Cleared. What was learned is in memory; this conversation starts fresh.",
+              );
+              await clearSessionEvents(sessionId);
+              this.emit(`session:${sessionId}`, {
+                seq: -Date.now(),
+                session_id: sessionId,
+                type: "portal_cleared",
+                payload: JSON.stringify({}),
+              });
+            },
+          });
           await this.record(sessionId, "portal_notice", { text });
         } catch (e) {
           await this.record(sessionId, "portal_notice", { text: (e as Error).message, error: true });

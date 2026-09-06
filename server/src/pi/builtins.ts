@@ -15,6 +15,7 @@ import type { PiClient, PiCommand } from "./types.js";
  * offered as a menu of things that quietly do nothing.
  */
 const PORTAL_SUPPORTED: Record<string, "server" | "client"> = {
+  clear: "server",
   compact: "server",
   session: "server",
   export: "server",
@@ -27,6 +28,7 @@ const PORTAL_SUPPORTED: Record<string, "server" | "client"> = {
 
 /** Used only if the SDK's internal module moves; keeps `/` working regardless. */
 const FALLBACK_DESCRIPTIONS: Record<string, string> = {
+  clear: "Clear this conversation and start fresh",
   compact: "Manually compact the session context",
   session: "Show session info and stats",
   export: "Export session (HTML default, or specify path: .html/.jsonl)",
@@ -75,8 +77,30 @@ export async function findServerBuiltin(name: string): Promise<BuiltinCommand | 
 }
 
 /** Run a server-side builtin, returning the notice to show in the transcript. */
-export async function runBuiltin(name: string, args: string, client: PiClient): Promise<string> {
+export async function runBuiltin(
+  name: string,
+  args: string,
+  client: PiClient,
+  session?: { clear: () => Promise<void> },
+): Promise<string> {
   switch (name) {
+    /**
+     * Start again, for real.
+     *
+     * `/compact` shortens the conversation and keeps it; this ends it. Both
+     * the pi conversation and the transcript go, so the chat is actually
+     * empty rather than merely scrolled — which is what somebody typing
+     * `/clear` is asking for.
+     *
+     * Nothing of value is lost by it. The harvest has already put what
+     * mattered into the graph, so the agent still knows what it learned and
+     * who it was talking to; what goes is the record of the exchange itself.
+     */
+    case "clear":
+      if (!session) throw new Error("This session cannot be cleared.");
+      await session.clear();
+      return "Cleared. What was learned is in memory; the conversation starts fresh.";
+
     case "compact":
       await client.compact();
       return "Context compacted.";

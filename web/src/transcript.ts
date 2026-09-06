@@ -154,6 +154,16 @@ export function buildTranscript(events: PortalEvent[]): Item[] {
         break;
       }
 
+      /**
+       * The transcript was cleared. Everything before this point is gone from
+       * the database; a live viewer has it in memory and must drop it too, or
+       * the chat looks unchanged until the page is reloaded.
+       */
+      case "portal_cleared":
+        items.length = 0;
+        current = null;
+        break;
+
       case "portal_step": {
         closeCurrent();
         const brief = String(p.message ?? "");

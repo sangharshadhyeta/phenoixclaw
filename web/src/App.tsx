@@ -317,7 +317,7 @@ function Shell({
             }}
           />
         ) : (
-          <EmptyState hasSessions={sessions.length > 0} />
+          <OpenChat />
         )}
       </main>
 
@@ -339,25 +339,35 @@ function Shell({
   );
 }
 
-function EmptyState({ hasSessions }: { hasSessions: boolean }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-surface text-xl text-fg-faint">
-        π
-      </div>
-      {/*
-        * Sessions are not something you start. The agent decides a request is
-        * work, gives it a session, and the list on the left is where you watch
-        * it — so pointing somebody at "start a session" sends them to a button
-        * that no longer exists and a decision that is not theirs.
-        */}
-      <p className="text-sm text-fg-muted">
-        {hasSessions ? "Pick a session on the left, or ask in Chat." : "Ask in Chat to get going."}
-      </p>
-      <p className="max-w-xs text-xs text-fg-faint">
-        Ask for something in Chat; anything that is work gets a session of its own. Close the tab —
-        it keeps working, and the answer is waiting when you come back.
-      </p>
-    </div>
-  );
+/**
+ * There is no empty state; there is the conversation.
+ *
+ * This used to be a placeholder saying "start a session to get going", which
+ * was wrong twice over: the button it pointed at is gone, and starting a
+ * session is not the person's decision — they ask, and the agent decides
+ * whether the request is work. So anywhere that would have shown nothing shows
+ * the chat instead, which always takes input.
+ *
+ * Reached in two ways: the moment before the initial redirect lands, and a
+ * session id that no longer exists — a deleted session, or a stale bookmark.
+ * Both want the same thing.
+ */
+function OpenChat() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let alive = true;
+    api
+      .mainConversation()
+      .then(({ id }) => {
+        if (alive) navigate(`/s/${id}`, { replace: true });
+      })
+      .catch(() => {
+        // The conversation is created on first ask, so this only fails when
+        // the portal itself is unreachable — and the error banner says so.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [navigate]);
+  return null;
 }

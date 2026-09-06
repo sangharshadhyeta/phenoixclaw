@@ -1301,6 +1301,46 @@ export async function recordAudit(entry: {
   await conn.run("DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - $keep", { keep: AUDIT_KEEP });
 }
 
+/**
+ * Empty the audit log.
+ *
+ * Everything else here prunes by age, which is right for a log that grows
+ * steadily and no use at all after a day of testing has filled it with rows
+ * about work that no longer exists.
+ *
+ * Deliberately not called on a schedule, and not part of `routine_cleanup`:
+ * this is the record of what the agent did on its own initiative, and losing
+ * it by accident is precisely what an audit trail exists to prevent.
+ */
+/**
+ * Delete a session's transcript, keeping the session.
+ *
+ * `/clear` asks for an empty conversation, not a deleted one — the session
+ * keeps its id, its workspace and its place in the list, and only the record
+ * of what was said goes. What mattered is already in the graph, put there by
+ * the harvest, so the agent still knows what it learned; what goes is the
+ * exchange itself.
+ */
+export async function clearSessionEvents(sessionId: string): Promise<number> {
+  const conn = await getDb();
+  const before = await one<{ n: number }>(
+    conn,
+    "SELECT count(*) AS n FROM events WHERE session_id = $sessionId",
+    { sessionId },
+  );
+  await conn.run("DELETE FROM events WHERE session_id = $sessionId", { sessionId });
+  await checkpoint(conn);
+  return Number(before?.n ?? 0);
+}
+
+export async function clearAudit(): Promise<number> {
+  const conn = await getDb();
+  const before = await one<{ n: number }>(conn, "SELECT count(*) AS n FROM audit");
+  await conn.run("DELETE FROM audit");
+  await checkpoint(conn);
+  return Number(before?.n ?? 0);
+}
+
 export async function listAudit(limit = 200): Promise<AuditRow[]> {
   const conn = await getDb();
   return all<AuditRow>(conn, "SELECT * FROM audit ORDER BY id DESC LIMIT $limit", { limit });

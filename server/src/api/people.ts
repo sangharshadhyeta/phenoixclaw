@@ -1,6 +1,6 @@
 import express, { type Router } from "express";
 import { forgetPerson, getPerson, listPeople, setRole, type Role } from "../people.js";
-import { addToolRule, deleteToolRule, getDb, listAudit, listToolRules } from "../db.js";
+import { addToolRule, clearAudit, deleteToolRule, getDb, listAudit, listToolRules } from "../db.js";
 import { nanoid } from "nanoid";
 
 /**
@@ -60,6 +60,23 @@ export function peopleRouter(): Router {
         person_name: e.person_key ? (people.get(e.person_key) ?? e.person_key) : null,
       })),
     });
+  });
+
+  /**
+   * Empty the audit log.
+   *
+   * The counterpart to the graph purge, and it exists for the same reason:
+   * everything else here prunes by age, which is right for a log that grows
+   * steadily and useless after a day of testing has filled it with rows about
+   * work that no longer exists.
+   *
+   * It is a record of what the agent did, so this is deliberately an explicit
+   * action and nothing calls it on a schedule — losing the audit trail by
+   * accident is exactly the kind of thing an audit trail is for.
+   */
+  router.post("/audit/clear", async (_req, res) => {
+    const removed = await clearAudit();
+    res.json({ ok: true, removed });
   });
 
   /** Exceptions: what a non-primary role is allowed to run despite the default. */
