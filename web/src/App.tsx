@@ -318,21 +318,32 @@ function Shell({
             *
             * Hiding the sidebar hides the only sign that anything is running —
             * and a run belongs to the server, so work carries on whether or
-            * not you can see it. A count is enough: it says "there is
-            * something to look at" without putting the list back.
+            * not you can see it.
             *
-            * Only when there is something. A standing "0" is furniture.
+            * Always shown, including zero. Hiding it when nothing runs was
+            * tried first, and absence is ambiguous: you cannot tell "nothing
+            * is running" from "the count is not being drawn". A grey nought
+            * answers the question; a missing badge only raises it. It goes
+            * quiet rather than away — no pulse, no colour.
             */}
-          {runningCount > 0 && (
-            <button
-              onClick={toggleSidebar}
-              className="flex items-center gap-1 rounded-lg bg-surface/90 px-1.5 py-0.5 text-[10px] text-accent shadow ring-1 ring-inset ring-line transition hover:brightness-125"
-              title={`${runningCount} session${runningCount > 1 ? "s" : ""} running — show the sidebar`}
-            >
-              <span className="h-1 w-1 animate-pulse rounded-full bg-accent" />
-              {runningCount}
-            </button>
-          )}
+          <button
+            onClick={toggleSidebar}
+            className={`flex items-center gap-1 rounded-lg bg-surface/90 px-1.5 py-0.5 text-[10px] shadow ring-1 ring-inset ring-line transition hover:brightness-125 ${
+              runningCount > 0 ? "text-accent" : "text-fg-faint"
+            }`}
+            title={
+              runningCount > 0
+                ? `${runningCount} session${runningCount > 1 ? "s" : ""} running — show the sidebar`
+                : "Nothing running — show the sidebar"
+            }
+          >
+            <span
+              className={`h-1 w-1 rounded-full ${
+                runningCount > 0 ? "animate-pulse bg-accent" : "bg-fg-faint"
+              }`}
+            />
+            {runningCount}
+          </button>
         </div>
       )}
 

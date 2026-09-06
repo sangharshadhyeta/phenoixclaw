@@ -160,6 +160,18 @@ function loadFn(file, name) {
   ok("the way back is outside any one view", /\{sidebarCollapsed && \([\s\S]{0,400}Show the sidebar/.test(app));
   ok("and never competes with the header's toggle",
      app.indexOf("sidebarCollapsed && (") > 0 && /!sidebarCollapsed/.test(chat));
+
+  /**
+   * The count is shown even at zero.
+   *
+   * Hiding it when nothing runs was tried first, and absence is ambiguous —
+   * you cannot tell "nothing is running" from "the count is not being drawn".
+   * A grey nought answers the question; a missing badge only raises it.
+   */
+  ok("the running count is always drawn", !/\{runningCount > 0 && \(/.test(app));
+  ok("and goes quiet rather than away", /runningCount > 0 \? "text-accent" : "text-fg-faint"/.test(app));
+  ok("with the pulse only when something is running", /runningCount > 0 \? "animate-pulse/.test(app));
+  ok("and a title that says so either way", /Nothing running — show the sidebar/.test(app));
 }
 
 // --- "working…" has to be live -------------------------------------------
