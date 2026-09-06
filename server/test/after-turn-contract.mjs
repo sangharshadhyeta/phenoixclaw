@@ -17,6 +17,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const { failedCheck, selfConfirming, asksForWork, claimsImpossible, AFTER_TURN_CHECKS } = await import(
@@ -218,6 +219,31 @@ const call = (toolName, args = {}) => ({ toolName, args: JSON.stringify(args) })
   }
   ok("malformed args do not throw", !threw);
   ok("and are given the benefit of the doubt", verdict === undefined);
+}
+
+// --- the checks judge this turn, not the session ----------------------------
+// `recentToolCalls` returned the session's last N calls, and the checks read
+// them as evidence about the turn. A conversation that answered "2 × 3 = 6"
+// with no tool calls at all was handed back for "work done in the
+// conversation", because six web searches from the previous question were
+// still in the window. A check that decides from stale evidence is worse than
+// no check: it is wrong in a way that reads as authoritative.
+{
+  const db = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
+  ok("tool calls can be scoped to a point in the log", /AND seq > \$sinceSeq/.test(db));
+  ok("and the turn's start can be found", /export async function turnStartSeq/.test(db));
+  ok("from the last thing that was asked", /type IN \('portal_prompt', 'portal_step'\)/.test(db));
+
+  const mgr = readFileSync(new URL("../src/session-manager.ts", import.meta.url), "utf8");
+  ok("the after-turn check uses it", /turnStartSeq\(sessionId\)[\s\S]{0,200}recentToolCalls\(sessionId, 40, since\)/.test(mgr));
+
+  /**
+   * And a hand-back must not read as the person speaking. A live run replied
+   * "I understand, for future work I should…" and thanked them for guidance
+   * that was the portal's own check.
+   */
+  ok("a hand-back says who is talking", /<portal-check>/.test(mgr));
+  ok("and that nobody asked it anything", /Nobody said this/.test(mgr));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

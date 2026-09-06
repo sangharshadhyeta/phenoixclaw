@@ -841,13 +841,26 @@ export async function eventsSince(sessionId: string, since = 0, limit = 5000): P
 export async function recentToolCalls(
   sessionId: string,
   limit = 20,
+  /**
+   * Only calls after this seq.
+   *
+   * Without it these are the session's last N calls, not the turn's — and the
+   * after-turn checks read them as evidence about the turn. A conversation
+   * that answered "2 × 3 = 6" with no tool calls at all was handed back for
+   * "work done in the conversation", because the six web searches from the
+   * previous question were still in the window. A check that decides from
+   * stale evidence is worse than no check: it is wrong in a way that reads as
+   * authoritative.
+   */
+  sinceSeq = 0,
 ): Promise<Array<{ toolName: string; args: string }>> {
   const conn = await getDb();
   const rows = await all<EventRow>(
     conn,
     `SELECT * FROM events WHERE session_id = $sessionId AND type = 'tool_execution_start'
+       AND seq > $sinceSeq
      ORDER BY seq DESC LIMIT $limit`,
-    { sessionId, limit },
+    { sessionId, limit, sinceSeq },
   );
   return rows
     .reverse()
@@ -876,6 +889,24 @@ export async function recentToolCalls(
  * "I'll try to use `bash` with `ls /`" forty times before a person killed it.
  * Nothing in the portal had told it the tool was gone.
  */
+/**
+ * Where this turn began — the seq of the most recent thing that was asked.
+ *
+ * The after-turn checks are about what *this* turn did, and everything before
+ * the last prompt belongs to a turn that has already been judged.
+ */
+export async function turnStartSeq(sessionId: string): Promise<number> {
+  const conn = await getDb();
+  const row = await one<{ seq: number }>(
+    conn,
+    `SELECT seq FROM events WHERE session_id = $sessionId
+       AND type IN ('portal_prompt', 'portal_step')
+     ORDER BY seq DESC LIMIT 1`,
+    { sessionId },
+  );
+  return Number(row?.seq ?? 0);
+}
+
 export async function recentToolFailures(
   sessionId: string,
   limit = 10,

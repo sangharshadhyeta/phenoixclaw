@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { isArtefact } from "../artefacts.js";
 import { drivenDenial, isDriving } from "./driving.js";
+import { CHAT_BUDGET_REFUSAL, overChatBudget } from "./chat-budget.js";
 
 /**
  * Things the agent's home is *for*.
@@ -735,6 +736,20 @@ export function guardExtension(
        * flight. See driving.ts — every entry is a failure watched in a live
        * run.
        */
+      /**
+       * A conversation gets a few tool calls, then has to hand the work out.
+       *
+       * The after-turn check catches this too late: by the time it runs the
+       * work is finished, so all a hand-back buys is a promise about next
+       * time — and a live run read one, agreed with it, and answered anyway.
+       * The moment that decides whether work happens in the chat is the moment
+       * before the fifth call. See pi/chat-budget.ts.
+       */
+      if (conversational && sessionId && overChatBudget(sessionId, event.toolName)) {
+        note("refused", "Working in a conversation");
+        return { block: true, reason: CHAT_BUDGET_REFUSAL };
+      }
+
       if (isDriving(sessionId)) {
         const denial = drivenDenial(event.toolName);
         if (denial) {

@@ -12,6 +12,7 @@ import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
 import { taskSessionTools } from "./pi/task-session-tools.js";
 import { beginDriving, endDriving } from "./pi/driving.js";
 import { arithmeticNote, preflightNote, worldQuestionNote } from "./pi/preflight.js";
+import { resetChatBudget } from "./pi/chat-budget.js";
 import { failedCheck } from "./pi/after-turn.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
@@ -24,6 +25,7 @@ import {
   clearSessionEvents,
   listTasks,
   recentToolCalls,
+  turnStartSeq,
   setTaskStatus,
   type TaskRow,
   getSession,
@@ -486,7 +488,10 @@ class SessionManager extends EventEmitter {
      * finished being written down, not merely after it has finished.
      */
     await this.appends.get(sessionId)?.catch(() => {});
-    const calls = await recentToolCalls(sessionId, 40).catch(() => []);
+    // Scoped to this turn: everything before the last prompt belongs to a turn
+    // that has already been judged. See turnStartSeq.
+    const since = await turnStartSeq(sessionId).catch(() => 0);
+    const calls = await recentToolCalls(sessionId, 40, since).catch(() => []);
     const failed = failedCheck(request, calls, {
       conversational: this.kindOf.get(sessionId) === "agent",
       reply: await this.lastReply(sessionId),
@@ -498,7 +503,30 @@ class SessionManager extends EventEmitter {
       await this.record(sessionId, "portal_notice", {
         text: `Handed back: ${failed.name.replace(/-/g, " ")}.`,
       });
-      await this.ask(sessionId, failed.message, { internal: true });
+      /**
+       * Marked as the portal, not the person.
+       *
+       * A hand-back reaches the model as a user message because that is the
+       * only way in — and a live run read it as the user speaking, replied
+       * "I understand, for future work I should…", and thanked them for the
+       * guidance. It was the portal's own check.
+       *
+       * The same framing routines already use: say who is talking, so the
+       * model answers the thing rather than the imagined person behind it.
+       */
+      await this.ask(
+        sessionId,
+        [
+          "<portal-check>",
+          "This is the portal, not the person you are talking to. Nobody said this — it is an",
+          "automatic check on the turn you just finished, and it is describing what you did.",
+          "Act on it in this turn; do not reply to it as though someone had asked you something.",
+          "</portal-check>",
+          "",
+          failed.message,
+        ].join("\n"),
+        { internal: true },
+      );
     } catch {
       // A failed hand-back leaves the original answer standing, which is the
       // behaviour before any of this existed.
