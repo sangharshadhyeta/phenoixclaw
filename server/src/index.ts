@@ -5,6 +5,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { nanoid } from "nanoid";
 import {
+  closeDb,
   createSession,
   deleteSession,
   eventsSince,
@@ -18,7 +19,7 @@ import { listTasks } from "./db.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
 import { runWizard, type WizardInput } from "./agent-setup.js";
 import { identityStatus, writeIdentity, migrateIdentityFromDisk, stopIdentityNamingFiles } from "./identity.js";
-import { backfillEmbeddings, unembeddedCount } from "./graph.js";
+import { backfillEmbeddings, unembeddedCount, closeGraph } from "./graph.js";
 import { sessions, EXECUTOR_KIND } from "./session-manager.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
@@ -681,6 +682,10 @@ async function shutdown(signal: string) {
   routineSupervisor.stop();
   await channelSupervisor.shutdown();
   await sessions.shutdown();
+  // Both databases are single-writer, and the lock outlives the signal unless
+  // it is handed back. A restart inside that window could not open them at all
+  // — see openDuckDB's lock wait, which is the other half of this.
+  await Promise.all([closeDb().catch(() => {}), closeGraph().catch(() => {})]);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 10_000).unref();
 }

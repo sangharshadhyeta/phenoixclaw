@@ -441,6 +441,21 @@ async function getConn(): Promise<DuckDBConnection> {
 
 export const getDb = getConn;
 
+/** The portal database's half of the clean shutdown — see closeGraph. */
+export async function closeDb(): Promise<void> {
+  if (!connPromise) return;
+  const pending = connPromise;
+  connPromise = null;
+  try {
+    const conn = await pending;
+    await checkpoint(conn);
+    (conn as unknown as { closeSync?: () => void }).closeSync?.();
+  } catch {
+    // Shutting down: the data is checkpointed or it is not, and either way
+    // refusing to exit helps nobody.
+  }
+}
+
 // --- helpers: DuckDB has no .get()/.all()/.run() sugar, so these wrap the
 // runAndReadAll()/getRowObjectsJson() pattern from graph.ts for call sites
 // that only need "one row" or "all rows" or "just run it".

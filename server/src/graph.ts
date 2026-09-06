@@ -238,7 +238,43 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
  *   portal that cannot start, and the file is kept rather than deleted so the
  *   loss is inspectable rather than assumed.
  */
+/**
+ * How long to wait for a previous process to let go of the database.
+ *
+ * DuckDB is single-writer, and a restart routinely overlaps the old process's
+ * shutdown — it has up to ten seconds to finish its own sessions (see
+ * index.ts's shutdown). Without this the new process throws
+ *
+ *     IO Error: Could not set lock on file "data/portal.duckdb"
+ *
+ * as an uncaught rejection before the server ever listens, so a redeploy that
+ * is a second too quick looks like a crash rather than a wait. Restarting is
+ * the single most common operation there is; it should not need a stopwatch.
+ */
+const LOCK_WAIT_MS = 20_000;
+const LOCK_POLL_MS = 500;
+
 export async function openDuckDB(file: string): Promise<DuckDBInstance> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let announced = false;
+  for (;;) {
+    try {
+      return await attachDuckDB(file);
+    } catch (e) {
+      const message = (e as Error).message ?? "";
+      if (!/Conflicting lock|Could not set lock/i.test(message) || Date.now() >= deadline) throw e;
+      if (!announced) {
+        console.warn(
+          `[duckdb] ${path.basename(file)} is still held by the previous process — waiting for it to exit`,
+        );
+        announced = true;
+      }
+      await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
+    }
+  }
+}
+
+async function attachDuckDB(file: string): Promise<DuckDBInstance> {
   try {
     return await DuckDBInstance.create(file);
   } catch (e) {
@@ -331,6 +367,27 @@ async function getConn(): Promise<DuckDBConnection> {
     })();
   }
   return connPromise;
+}
+
+/**
+ * Check the graph out cleanly and let go of its file.
+ *
+ * Called on the way down (index.ts). Without it the lock survives until the
+ * process is actually reaped, and a restart inside that window fails to open
+ * the database at all — which is what made every redeploy a race. The
+ * checkpoint is the same one openDuckDB's WAL recovery exists to avoid needing.
+ */
+export async function closeGraph(): Promise<void> {
+  if (!connPromise) return;
+  const pending = connPromise;
+  connPromise = null;
+  try {
+    const conn = await pending;
+    await checkpoint(conn);
+    (conn as unknown as { closeSync?: () => void }).closeSync?.();
+  } catch {
+    // Shutting down: a failure here costs the clean release, not the data.
+  }
 }
 
 /** Same identity rule as Sisyphean's `_node_key()` — a node's name, normalized, is its id. */

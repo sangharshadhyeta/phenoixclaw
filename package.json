@@ -11,7 +11,7 @@
     "build": "npm run build -w server && npm run build -w web",
     "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
-    "start": "node server/dist/index.js",
+    "start": "node --env-file-if-exists=.env server/dist/index.js",
     "docs": "npm run dev -w docs",
     "docs:build": "npm run build -w docs",
     "test:graph": "DATA_DIR=$(mktemp -d) node server/test/graph-contract.mjs",
