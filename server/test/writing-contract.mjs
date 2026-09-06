@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (f) => path.join(here, "..", "dist", f);
 const { writingTools } = await import(dist("pi/writing-tools.js"));
-const { createSession, listTasks } = await import(dist("db.js"));
+const { createSession, getSession, listTasks } = await import(dist("db.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, console.log("  FAIL  " + n)); };
@@ -463,6 +463,57 @@ const long = (s) => `${s} `.repeat(60);
   await tt18.task_plan.execute("id", { steps: ["look into it"] });
   const plain = await tt18.task_finish.execute("id", { step: 1, result: "looked into it" });
   ok("a step with no document behind it closes normally", /Done/.test(plain.content[0].text));
+}
+
+// --- a project is files, and files have an order ---------------------------
+// write_plan plans the sections of one file; the same three arguments apply to
+// six files, and one more that is specific to them: a module that imports from
+// another has to be written after it, or the earlier file's real signatures are
+// not there to match.
+{
+  await createSession({ id: "w19", title: "w19", workspace, executor: "host" });
+  const c19 = mount("w19", workspace);
+
+  const planned = await c19("write_project", {
+    files: [
+      { file: "tokens.mjs", purpose: "Token type and the TOKEN_KINDS table" },
+      { file: "lexer.mjs", purpose: "tokenise(source) -> Token[], using tokens.mjs" },
+    ],
+  });
+  ok("a project is planned", /Planned 2 file/.test(planned));
+  ok("in the order given", planned.indexOf("tokens.mjs") < planned.indexOf("lexer.mjs"));
+  ok("and planning hands off rather than starting", /Stop here/.test(planned));
+  ok("the whole file is the unit, not the section", /the whole file, in one call/.test(planned));
+
+  const rows = await listTasks("w19");
+  ok("one step per file", rows.length === 2);
+  ok("carrying its purpose", /TOKEN_KINDS/.test(rows[0].description));
+
+  // A file is written whole. Appending would put the second file inside the
+  // first, and the span bookkeeping describes offsets in one document.
+  const first = await c19("write_next", { content: `export const TOKEN_KINDS = ["num", "op"];\n${"// pad\n".repeat(40)}` });
+  ok("the file is written whole", /Wrote tokens\.mjs/.test(first));
+  ok("and the next one is named", /lexer\.mjs/.test(first));
+
+  const after = await listTasks("w19");
+  ok("the step records the file, not a span", /chars in tokens\.mjs/.test(after[0].result));
+
+  const session = await getSession("w19");
+  ok("and the target moves to the next file", /lexer\.mjs$/.test(session.writing_file));
+  ok("in the same directory", session.writing_file.includes(path.dirname(session.writing_file)));
+
+  const second = await c19("write_next", { content: `import { TOKEN_KINDS } from "./tokens.mjs";\n${"// pad\n".repeat(40)}` });
+  ok("the last file completes the project", /project is complete/.test(second));
+
+  // A file too short to be a file is refused, as a section would be.
+  await createSession({ id: "w20", title: "w20", workspace, executor: "host" });
+  const c20 = mount("w20", workspace);
+  await c20("write_project", { files: [{ file: "a.mjs", purpose: "does a thing" }] });
+  ok("a one-line file is refused", /too short for a whole file/.test(await c20("write_next", { content: "x" })));
+
+  let threw = false;
+  try { await c20("write_project", { files: [] }); } catch { threw = true; }
+  ok("a project with no files is refused with the shape", threw);
 }
 
 console.log("\n  " + pass + " passed, " + fail + " failed");

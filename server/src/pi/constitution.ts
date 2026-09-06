@@ -119,6 +119,7 @@ export const AUTONOMOUS_TOOLS = new Set([
   // and the alternative is one large `write` that an autonomous turn may not
   // call at all.
   "write_plan",
+  "write_project",
   "write_next",
   "write_skip",
   "write_check",

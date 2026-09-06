@@ -3,6 +3,7 @@ import {
   artefactHistory,
   artefactPath,
   commitArtefact,
+  projectSlug,
   isArtefact,
   readArtefactPlan,
   writeArtefactPlan,
@@ -603,6 +604,104 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
       },
     });
 
+    /**
+     * A project is files, and files have an order.
+     *
+     * Ports Sisyphean's project planner (`translation/project/planner.py`),
+     * which the audit left as "IDEA SURVIVES" and nobody built. `write_plan`
+     * plans the sections of *one* file, and the three arguments for doing that
+     * apply just as hard to six files: a model asked to write a whole project
+     * in one turn writes the last file with the least budget left, and a run
+     * that dies at file four leaves an unbuildable tree with no record of what
+     * was intended.
+     *
+     * Dependency order is the part that is specific to files rather than
+     * sections. Sections can be written in any order and read in one; a module
+     * that imports from another has to be written after it, or the earlier
+     * file's real signatures are not there to match — which is exactly the
+     * failure `signaturesOf` exists to prevent within a file, one level up.
+     *
+     * Sisyphean asked a 0.6B model for this order with a JSON schema and a
+     * 600-token budget. Here it is a parameter: the model states the order it
+     * intends, and the plan holds it.
+     */
+    pi.registerTool({
+      name: "write_project",
+      label: "Plan a project",
+      description:
+        "Plan a project of several files, then write them one at a time with write_next. List them " +
+        "in dependency order — the files that others import from first, the entry point last — " +
+        "because each file is written in a context holding what the earlier ones actually declare, " +
+        "and a file written before the thing it imports has nothing to match. Give each a purpose " +
+        "naming the functions or classes it will hold, not a vague description:\n\n" +
+        '  {"files": [{"file": "tokens.mjs", "purpose": "Token type and the TOKEN_KINDS table"}, ' +
+        '{"file": "lexer.mjs", "purpose": "tokenise(source) -> Token[], using tokens.mjs"}]}\n\n' +
+        "Use write_plan instead for one file with several parts.",
+      promptSnippet: "write_project — plan a project's files in dependency order",
+      parameters: Type.Object({
+        files: Type.Array(
+          Type.Object({
+            file: Type.String({ description: "Filename, no directories." }),
+            purpose: Type.String({ description: "What it will contain — name the functions or classes." }),
+          }),
+          { description: "In dependency order: what others import from, first." },
+        ),
+      }),
+      async execute(_id: string, p: any) {
+        const files = (Array.isArray(p?.files) ? p.files : [])
+          .map((f: any) => ({
+            file: String(f?.file ?? "").trim(),
+            purpose: String(f?.purpose ?? "").trim(),
+          }))
+          .filter((f: any) => f.file);
+        if (!files.length) {
+          throw new Error(
+            'No files given. Copy this shape exactly:\n\n' +
+              '  {"files": [{"file": "tokens.mjs", "purpose": "Token type and TOKEN_KINDS"}, ' +
+              '{"file": "lexer.mjs", "purpose": "tokenise(source) -> Token[]"}]}',
+          );
+        }
+
+        const goal = await lastRequestOf(sessionId);
+        /**
+         * The project gets a directory of its own.
+         *
+         * Its files import each other by relative path, so they have to sit
+         * together — and in the shared store rather than a session workspace,
+         * for the reason every artefact does: the next run at this project
+         * should find it. `artefactPath` names the directory after the file,
+         * which is right for one document and wrong for several, so the
+         * project is named after itself.
+         */
+        const root = isEphemeral(cwd)
+          ? path.join(path.dirname(artefactPath(goal, files[0].file)), "..", projectSlug(goal, files))
+          : cwd;
+        const dir = path.resolve(root);
+        mkdirSync(dir, { recursive: true });
+
+        await clearTasks(sessionId);
+        await setTasks(
+          sessionId,
+          files.map((f: any) => `${f.file} — ${f.purpose}`.slice(0, 300)),
+        );
+        await updateSession(sessionId, {
+          writing_mode: "files",
+          writing_file: path.join(dir, files[0].file),
+        });
+
+        return said(
+          `Planned ${files.length} file(s) in ${dir}:\n` +
+            files.map((f: any, i: number) => `  ${i + 1}. ${f.file} — ${f.purpose}`).join("\n") +
+            selfContainmentNote(files.map((f: any) => f.purpose)) +
+            `\n\nStop here. Do not write any of them in this turn.\n\n` +
+            `Each file comes back to you on its own, with the plan and what the earlier files ` +
+            `declare. Write each with \`write_next\` — the whole file, in one call, since the file ` +
+            `is the unit here rather than the section.`,
+          { planned: true },
+        );
+      },
+    });
+
     pi.registerTool({
       name: "write_next",
       label: "Write the next section",
@@ -616,11 +715,63 @@ export function writingTools(sessionId: string | undefined, cwd: string) {
         content: Type.String({ description: "The section's full text, ready to append." }),
       }),
       async execute(_id: string, p: any) {
-        const file = (await getSession(sessionId))?.writing_file;
-        if (!file) return said("No document in progress. Start one with write_plan.");
+        const session = await getSession(sessionId);
+        const file = session?.writing_file;
+        if (!file) return said("No document in progress. Start one with write_plan or write_project.");
 
         const pending = currentSection(await listTasks(sessionId));
-        if (!pending) return said("Every planned section is written. The document is finished.");
+        if (!pending) {
+          return said(
+            session?.writing_mode === "files"
+              ? "Every planned file is written. The project is finished."
+              : "Every planned section is written. The document is finished.",
+          );
+        }
+
+        /**
+         * A project's unit is the file, not the section.
+         *
+         * Appending would be wrong twice over: the second file would land
+         * inside the first, and the span bookkeeping that makes `read_section`
+         * work describes offsets in one document. So a file is written whole,
+         * and `writing_file` moves to the next one — which is what makes the
+         * *next* step's brief show what the file it depends on actually
+         * declares.
+         */
+        if (session?.writing_mode === "files") {
+          const content = String(p?.content ?? "").trimEnd();
+          if (content.length < MIN_SECTION_CHARS) {
+            return said(
+              `That is ${content.length} characters — too short for a whole file. Write ` +
+                `"${pending.description}" properly, or use write_skip if it turned out unnecessary.`,
+            );
+          }
+          mkdirSync(path.dirname(file), { recursive: true });
+          writeFileSync(file, `${content}\n`, "utf8");
+          await setTaskStatus(sessionId, pending.seq, "done", `${content.length} chars in ${path.basename(file)}`);
+          commitArtefact(file, `wrote ${path.basename(file)}`);
+
+          const left = (await listTasks(sessionId)).filter(
+            (t: TaskRow) => t.status === "pending" || t.status === "running",
+          );
+          const language = languageOf(file);
+          const syntax = language?.check?.(file);
+          if (!left.length) {
+            return said(
+              `Wrote ${path.basename(file)} (${content.length} chars). The project is complete: ` +
+                `${path.dirname(file)}` + (syntax ? `\n\nBut it does not parse:\n${syntax}` : ""),
+            );
+          }
+          // The next file's name is the part before the em dash the plan stored.
+          const nextName = left[0].description.split(" — ")[0].trim();
+          await updateSession(sessionId, { writing_file: path.join(path.dirname(file), nextName) });
+          return said(
+            `Wrote ${path.basename(file)} (${content.length} chars).` +
+              (syntax ? `\n\nIt does not parse:\n${syntax}` : "") +
+              `\n\nNext: ${left[0].description}`,
+            { wrote: pending.seq },
+          );
+        }
 
         const content = String(p?.content ?? "").trimEnd();
         if (content.length < MIN_SECTION_CHARS) {

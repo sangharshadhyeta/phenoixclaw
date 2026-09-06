@@ -8,7 +8,8 @@ import { buildExecutor, executorSupports, unsupportedReason, type Executor, type
 import { isMirrorable, mirror } from "./mirror.js";
 import { harvestTurn } from "./harvest.js";
 import { forgetSupervision } from "./pi/loop-supervisor.js";
-import { runPlan, type StepOutcome } from "./pi/step-runner.js";
+import { runPlan, signaturesOf, type StepOutcome } from "./pi/step-runner.js";
+import { beginDriving, endDriving } from "./pi/driving.js";
 import { checkDocument } from "./pi/writing-tools.js";
 import { rememberArtefact } from "./pi/prior-work.js";
 import { supervise } from "./pi/supervisor.js";
@@ -438,6 +439,7 @@ class SessionManager extends EventEmitter {
     if (!session || session.kind === "routine") return undefined;
 
     this.working.add(sessionId);
+    beginDriving(sessionId);
     try {
       // Held for the whole plan — see the agent_end handler.
       await updateSession(sessionId, { status: "running" });
@@ -448,9 +450,28 @@ class SessionManager extends EventEmitter {
         document: async () => {
           const row = await getSession(sessionId);
           const file = row?.writing_file;
+          /**
+           * In project mode the file in hand is empty and the useful context
+           * is the *other* files — what they export, so this one imports
+           * rather than redefines. Within a document the equivalent is
+           * `signaturesOf` over the same file; across files it has to be
+           * gathered from disk.
+           */
+          let siblings: Array<{ file: string; signatures: string[] }> | undefined;
+          if (row?.writing_mode === "files" && file) {
+            siblings = [];
+            for (const t of await listTasks(sessionId)) {
+              if (t.status !== "done") continue;
+              const name = t.description.split(" — ")[0].trim();
+              const sibling = path.join(path.dirname(file), name);
+              if (!existsSync(sibling)) continue;
+              siblings.push({ file: name, signatures: signaturesOf(readFileSync(sibling, "utf8")) });
+            }
+          }
           return {
             file,
             written: file && existsSync(file) ? readFileSync(file, "utf8") : "",
+            ...(siblings?.length ? { siblings } : {}),
           };
         },
         recycle: () =>
@@ -487,7 +508,20 @@ class SessionManager extends EventEmitter {
         // its own plan, so planning stays in one place.
         extend: async (missing) => {
           const before = (await listTasks(sessionId)).length;
-          await this.ask(
+          /**
+           * The one turn that is *supposed* to rewrite the plan.
+           *
+           * `task_plan` is refused inside a driven step, because a step
+           * rewriting the plan it is part of renumbers the step the runner is
+           * waiting on (driving.ts). This turn is the exception: the
+           * supervisor has said the plan does not go far enough, and adding
+           * steps is the whole point of asking. So the drive is lifted for
+           * exactly this call and taken back afterwards, rather than
+           * weakening the rule for every step.
+           */
+          endDriving(sessionId);
+          try {
+            await this.ask(
             sessionId,
             [
               "Looking at what you have, this is not finished:",
@@ -497,8 +531,11 @@ class SessionManager extends EventEmitter {
               "Add the steps that would address it to your plan with `task_plan` — keep the steps you",
               "have already done, unchanged, and put the new ones after them. Do not do the work now;",
               "each new step will come back to you on its own.",
-            ].join("\n"),
-          );
+              ].join("\n"),
+            );
+          } finally {
+            beginDriving(sessionId);
+          }
           return (await listTasks(sessionId)).length > before;
         },
         skipRemaining: async (why) => {
@@ -515,6 +552,7 @@ class SessionManager extends EventEmitter {
       return undefined;
     } finally {
       this.working.delete(sessionId);
+      endDriving(sessionId);
       await updateSession(sessionId, { status: "idle" });
       await this.record(sessionId, "portal_status", { status: "idle" });
     }

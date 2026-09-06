@@ -59,6 +59,12 @@ export interface StepBrief {
 
 export interface BriefContext {
   goal: string;
+  /**
+   * In project mode, what the already-written files declare — one entry per
+   * file. Sections share a document and are found by span; files do not, and a
+   * module written before the thing it imports has nothing to match.
+   */
+  siblings?: Array<{ file: string; signatures: string[] }>;
   tasks: TaskRow[];
   step: TaskRow;
   /** The document being written, when there is one. */
@@ -173,7 +179,7 @@ function producedBy(tasks: TaskRow[], upTo: number): string {
  * three or invents what it could have read.
  */
 export function briefFor(ctx: BriefContext): string {
-  const { goal, tasks, step, file, written, supervision } = ctx;
+  const { goal, tasks, step, file, written, supervision, siblings } = ctx;
   const remaining = tasks.filter((t) => t.status === "pending" && t.seq !== step.seq);
 
   return [
@@ -191,6 +197,20 @@ export function briefFor(ctx: BriefContext): string {
     "",
     producedBy(tasks, step.seq) || undefined,
     producedBy(tasks, step.seq) ? "" : undefined,
+    siblings?.length
+      ? [
+          "# WHAT THE FILES BEFORE THIS ONE DECLARE",
+          "",
+          "Import from these by name. They are written and on disk — do not redefine them, and do",
+          "not guess at their signatures when they are printed here.",
+          "",
+          ...siblings.flatMap((sib) => [
+            `${sib.file}:`,
+            ...(sib.signatures.length ? sib.signatures.map((sig) => `  ${sig}`) : ["  (nothing it exports)"]),
+            "",
+          ]),
+        ].join("\n")
+      : undefined,
     file && written?.trim()
       ? [
           `# WHAT IS ALREADY IN ${file}`,
@@ -398,7 +418,11 @@ export type StepOutcome = "finished" | "no-plan" | "stalled" | "off-track" | "in
 
 export interface StepRunDeps {
   tasks: () => Promise<TaskRow[]>;
-  document: () => Promise<{ file?: string | null; written?: string }>;
+  document: () => Promise<{
+    file?: string | null;
+    written?: string;
+    siblings?: Array<{ file: string; signatures: string[] }>;
+  }>;
   /** Retire the conversation so the next step gets a fresh one. */
   recycle: () => Promise<void>;
   /** Prompt and wait — see SessionManager.ask. */

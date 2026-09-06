@@ -86,6 +86,20 @@ export function workSlug(goal: string, file: string): string {
   return safe.slice(0, 80) || "untitled";
 }
 
+/**
+ * A project is several files that import each other, so it gets a directory.
+ *
+ * Named after its entry point — the last file in dependency order, which is
+ * the one a person would run — rather than the first, which is usually
+ * something like `types.mjs` and says nothing about what the project is.
+ */
+export function projectSlug(goal: string, files: Array<{ file: string }>): string {
+  const entry = files[files.length - 1]?.file ?? "";
+  const stem = path.basename(entry).replace(/\.[^.]+$/, "");
+  const safe = stem.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${safe || "project"}-project`.slice(0, 80);
+}
+
 /** Where a planned document belongs in the store. */
 export function artefactPath(goal: string, file: string): string {
   return path.join(ARTEFACTS_DIR, workSlug(goal, file), path.basename(file));

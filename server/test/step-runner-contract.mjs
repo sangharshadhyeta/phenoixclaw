@@ -172,6 +172,37 @@ const plan = [
   ok("without the bodies", sigBlock.length > 0 && !sigBlock.includes("return width * height"));
 }
 
+// --- across files, not just within one --------------------------------------
+// Sections share a document and are found by span; files do not. A module
+// written before the thing it imports has nothing to match, which is the same
+// failure signaturesOf prevents within a file, one level up.
+{
+  const plan = [
+    { seq: 1, description: "tokens.mjs — Token type", status: "done", result: "40 chars in tokens.mjs" },
+    { seq: 2, description: "lexer.mjs — tokenise(source)", status: "pending", result: "" },
+  ];
+  const brief = briefFor({
+    goal: "write a lexer",
+    tasks: plan,
+    step: plan[1],
+    file: "/w/proj/lexer.mjs",
+    siblings: [{ file: "tokens.mjs", signatures: ["export const TOKEN_KINDS = [", "export class Token"] }],
+  });
+  ok("the file is shown what the earlier files declare", /TOKEN_KINDS/.test(brief) && /export class Token/.test(brief));
+  ok("named by the file they came from", /tokens\.mjs:/.test(brief));
+  ok("told to import rather than redefine", /do not redefine them/.test(brief));
+  ok("and not to guess at signatures it has been given", /not.{0,20}guess at their signatures/.test(brief));
+
+  const empty = briefFor({
+    goal: "g", tasks: plan, step: plan[1], file: "/w/proj/lexer.mjs",
+    siblings: [{ file: "empty.mjs", signatures: [] }],
+  });
+  ok("a file that exports nothing says so rather than looking absent", /nothing it exports/.test(empty));
+
+  const alone = briefFor({ goal: "g", tasks: plan, step: plan[0], file: "/w/proj/tokens.mjs" });
+  ok("the first file is not given an empty siblings block", !/FILES BEFORE THIS ONE/.test(alone));
+}
+
 // --- a failed earlier step is not hidden ------------------------------------
 {
   const withFailure = [task(1, "Check the API", "failed", "the endpoint no longer exists"), task(2, "Write it up")];

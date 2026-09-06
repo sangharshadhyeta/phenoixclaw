@@ -27,6 +27,11 @@ export interface SessionRow {
    * narrated after it. See `expected_outcome` in task-tools.ts.
    */
   expected_outcome: string | null;
+  /**
+   * Whether the plan in `tasks` is the sections of `writing_file` or the files
+   * of a project. Null means no document plan. See writing-tools.ts.
+   */
+  writing_mode: "sections" | "files" | null;
   /** pi's own session file, so the exact conversation is reopened on restart. */
   pi_session_file: string | null;
   /**
@@ -401,6 +406,8 @@ async function ensureSchema(conn: DuckDBConnection): Promise<void> {
     // see the `expected_outcome` tool. BirdClaw's task registry carried this
     // and the audit dropped the registry with it.
     ["expected_outcome", "TEXT"],
+    // "sections" (parts of one file) or "files" (a project) — see write_plan.
+    ["writing_mode", "TEXT"],
     ["tokens_in", "BIGINT NOT NULL DEFAULT 0"],
     ["tokens_out", "BIGINT NOT NULL DEFAULT 0"],
     ["cost", "DOUBLE NOT NULL DEFAULT 0"],
@@ -596,6 +603,7 @@ export async function updateSession(
       | "status"
       | "last_error"
       | "expected_outcome"
+      | "writing_mode"
       | "provider"
       | "model"
       | "thinking_level"

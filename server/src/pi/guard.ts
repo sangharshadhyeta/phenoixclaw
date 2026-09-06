@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isArtefact } from "../artefacts.js";
+import { drivenDenial, isDriving } from "./driving.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -651,6 +652,23 @@ export function guardExtension(
               `access to — it is writing elsewhere that is not yours to do. If this belongs in another ` +
               `project, say so rather than reaching across.`,
           };
+        }
+      }
+
+      /**
+       * A step the portal is driving may not rewrite the plan it is part of.
+       *
+       * Ahead of the constitution check because it is narrower and more
+       * specific: this is not about what an unsupervised agent may do, it is
+       * about a turn that exists to carry out one step of a plan already in
+       * flight. See driving.ts — every entry is a failure watched in a live
+       * run.
+       */
+      if (isDriving(sessionId)) {
+        const denial = drivenDenial(event.toolName);
+        if (denial) {
+          note("refused", `Not while working a plan: ${event.toolName}`);
+          return { block: true, reason: `Refused: ${denial}` };
         }
       }
 
