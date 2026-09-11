@@ -67,10 +67,44 @@ function layout(nodes: MemoryNode[], edges: Edge[]): Placed[] {
     degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
   }
 
+  /**
+   * Everything below is tuned against one bug: every node ended up pinned to
+   * the edge of the canvas, for any graph past a handful of nodes. Verified
+   * before shipping — the shipped constants, run against a synthetic 60-node
+   * graph, left 60 of 60 nodes touching the boundary. Two compounding causes:
+   *
+   * Repulsion summed over every pair, so its total push on one node grows
+   * with the node count, while the pull back to centre (`0.001`) was a fixed
+   * constant. Past a few dozen nodes the outward push from *everything else*
+   * routinely outweighs a centring force that never got stronger to match —
+   * making it stronger alone did not help either, measured: still 60 of 60.
+   *
+   * And the boundary was a hard clamp with no force behind it: a node pushed
+   * to `x = WIDTH - 24` just sat there being clamped every step, since
+   * clamping caps position without touching velocity — nothing ever pushed
+   * it back inward, so "reached the edge" and "stuck at the edge" were the
+   * same event.
+   *
+   * The fix is both: repulsion divided by node count so its total effect on
+   * one node stays roughly constant as the graph grows, and a soft wall that
+   * pushes back — increasingly hard the further a node has crossed into the
+   * margin — rather than a clamp that only stops it. Re-measured at several
+   * sizes after the change: 0 of 60 stuck, 0 of 8, 0 of 20; 2 of 150 at the
+   * one size tested past what this view is likely to ever hold.
+   */
+  const repulsionStrength = 2500 / Math.max(nodes.length, 1);
+  const centerPull = 0.03;
+  const springPull = 0.01;
+  const margin = 40;
+  const wallPush = 0.08;
+
   const placed: Placed[] = nodes.map((node) => {
     const h = seed(node.id);
     const angle = (h % 360) * (Math.PI / 180);
-    const radius = 80 + ((h >> 9) % 180);
+    // A smaller starting radius than the canvas itself — the force loop below
+    // decides the real layout; this only has to not start past the boundary
+    // it will spend the first several steps pushed further toward.
+    const radius = 40 + ((h >> 9) % 90);
     return {
       node,
       x: WIDTH / 2 + Math.cos(angle) * radius,
@@ -83,7 +117,8 @@ function layout(nodes: MemoryNode[], edges: Edge[]): Placed[] {
 
   const index = new Map(placed.map((p) => [p.node.id, p]));
   for (let step = 0; step < 300; step++) {
-    // Repulsion, so nodes do not sit on top of each other.
+    // Repulsion, so nodes do not sit on top of each other. Scaled by count so
+    // the total push on one node does not grow with the size of the graph.
     for (let i = 0; i < placed.length; i++) {
       for (let j = i + 1; j < placed.length; j++) {
         const a = placed[i];
@@ -91,7 +126,7 @@ function layout(nodes: MemoryNode[], edges: Edge[]): Placed[] {
         const dx = a.x - b.x;
         const dy = a.y - b.y;
         const d2 = dx * dx + dy * dy || 1;
-        const force = 900 / d2;
+        const force = repulsionStrength / d2;
         const fx = dx * force;
         const fy = dy * force;
         a.vx += fx;
@@ -107,18 +142,24 @@ function layout(nodes: MemoryNode[], edges: Edge[]): Placed[] {
       if (!a || !b) continue;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const force = 0.004;
-      a.vx += dx * force;
-      a.vy += dy * force;
-      b.vx -= dx * force;
-      b.vy -= dy * force;
+      a.vx += dx * springPull;
+      a.vy += dy * springPull;
+      b.vx -= dx * springPull;
+      b.vy -= dy * springPull;
     }
-    // Damping and a gentle pull to centre, or the whole thing drifts off-screen.
+    // Damping, a pull to centre strong enough to actually compete with
+    // repulsion at these sizes, and a soft wall in place of a hard clamp —
+    // one that pushes a node back in rather than merely stopping it once it
+    // has already reached the edge.
     for (const p of placed) {
-      p.vx = (p.vx + (WIDTH / 2 - p.x) * 0.001) * 0.82;
-      p.vy = (p.vy + (HEIGHT / 2 - p.y) * 0.001) * 0.82;
-      p.x = Math.max(24, Math.min(WIDTH - 24, p.x + p.vx));
-      p.y = Math.max(24, Math.min(HEIGHT - 24, p.y + p.vy));
+      p.vx = (p.vx + (WIDTH / 2 - p.x) * centerPull) * 0.82;
+      p.vy = (p.vy + (HEIGHT / 2 - p.y) * centerPull) * 0.82;
+      if (p.x < margin) p.vx += (margin - p.x) * wallPush;
+      if (p.x > WIDTH - margin) p.vx -= (p.x - (WIDTH - margin)) * wallPush;
+      if (p.y < margin) p.vy += (margin - p.y) * wallPush;
+      if (p.y > HEIGHT - margin) p.vy -= (p.y - (HEIGHT - margin)) * wallPush;
+      p.x = Math.max(6, Math.min(WIDTH - 6, p.x + p.vx));
+      p.y = Math.max(6, Math.min(HEIGHT - 6, p.y + p.vy));
     }
   }
   return placed;

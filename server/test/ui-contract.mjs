@@ -203,5 +203,66 @@ function loadFn(file, name) {
   ok("and it is the last status that counts", /for \(let i = events\.length - 1/.test(chat));
 }
 
+// --- the memory graph's layout must not pin every node to the edge ---------
+// Measured before fixing: run against a synthetic 60-node graph, the shipped
+// constants left 60 of 60 nodes touching the boundary. Two compounding
+// causes — repulsion summed over every pair, so its total push on one node
+// grows with the graph's size while the pull back to centre stayed a fixed
+// constant; and a hard clamp at the boundary that stops a node without ever
+// pushing it back, so "reached the edge" and "stuck there" were the same
+// event. `layout` depends on module-level constants (`WIDTH`, `HEIGHT`), so
+// unlike `loadFn` above this keeps everything from the top of the file down
+// to the end of the function, not just the function's own body.
+{
+  const source = readFileSync(web("components/MemoryGraph.tsx"), "utf8");
+  const js = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.Preserve },
+  }).outputText;
+  const body = js
+    .split("\n")
+    .filter((line) => !/^\s*import\b/.test(line))
+    .filter((line) => !/^"use strict";?$/.test(line.trim()))
+    .filter((line) => !/^Object\.defineProperty\(exports/.test(line.trim()))
+    .filter((line) => !/^exports\.\w+\s*=/.test(line.trim()))
+    .filter((line) => !/^(const|var|let)\s+\w+\s*=\s*require\(/.test(line.trim()))
+    .join("\n");
+  const start = body.indexOf("function layout(");
+  let depth = 0, end = -1;
+  for (let i = body.indexOf("{", start); i < body.length; i++) {
+    if (body[i] === "{") depth++;
+    else if (body[i] === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  const layout = new Function(`${body.slice(0, end)}; return layout;`)();
+
+  const node = (id) => ({ id, type: "concept", name: id, summary: "", confidence: 0.5,
+    observations: 1, created_at: "", last_seen: "" });
+
+  const synthetic = (n) => {
+    const nodes = Array.from({ length: n }, (_, i) => node(`n${i}`));
+    const edges = [];
+    for (let i = 1; i < n; i++) edges.push({ source: `n${Math.floor(Math.random() * i)}`, target: `n${i}`, relation: "r", weight: 1 });
+    for (let i = 0; i < n / 3; i++) edges.push({ source: `n${Math.floor(Math.random() * n)}`, target: `n${Math.floor(Math.random() * n)}`, relation: "r", weight: 1 });
+    return { nodes, edges };
+  };
+
+  const stuckCount = (placed, w, h, margin = 30) =>
+    placed.filter((p) => p.x < margin || p.x > w - margin || p.y < margin || p.y > h - margin).length;
+
+  for (const n of [8, 20, 60]) {
+    const { nodes, edges } = synthetic(n);
+    const placed = layout(nodes, edges);
+    ok(`n=${n}: no node is stuck at the edge`, stuckCount(placed, 900, 560) === 0);
+  }
+
+  // A single node has nothing to be pulled apart from or pushed to the wall
+  // by — it should simply settle near the centre.
+  {
+    const placed = layout([node("only")], []);
+    const cx = 450, cy = 280;
+    ok("one node alone settles near the centre",
+       Math.hypot(placed[0].x - cx, placed[0].y - cy) < 60);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
