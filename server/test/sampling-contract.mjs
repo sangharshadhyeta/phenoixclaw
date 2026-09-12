@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { isLocalUrl, providerIsLocal, withSampling, withThinking, withMaxTokens, modelReasons, samplingDefaults, DEFAULT_SAMPLING } =
+const { isLocalUrl, providerIsLocal, withSampling, withThinking, withMaxTokens, modelReasons, reasoningOffMethod, samplingDefaults, DEFAULT_SAMPLING } =
   await import(
   path.join(here, "..", "dist", "pi", "sampling.js")
 );
@@ -247,6 +247,54 @@ const ok = (n, c) => { c ? (pass++, console.log("  PASS  " + n)) : (fail++, cons
   ok("other template kwargs are preserved",
      withThinking({ ...body, chat_template_kwargs: { foo: 1 } }, "off")?.chat_template_kwargs?.foo === 1);
   ok("something that is not a chat body is left alone", withThinking({ nope: 1 }, "off") === undefined);
+}
+
+// --- the suppression flag is not portable between backends -----------------
+// Swapping the local model from Gemma to Qwen3.8-Flash-Next and sending the
+// exact same `enable_thinking: false` flag hung that server's connection
+// outright — no response, no error, just a dead socket — on a backend that
+// behaves correctly with no suppression flag at all. `models.json` has to say
+// which method applies per model rather than the code assuming the flag that
+// fixed the last model fixes this one too.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "offmethod-"));
+  writeFileSync(
+    path.join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        "local-llama": {
+          baseUrl: "http://127.0.0.1:8099/v1",
+          api: "openai-completions",
+          models: [
+            { id: "gemma", reasoning: false },
+            { id: "qwen", reasoning: true, reasoningOffMethod: "none" },
+          ],
+        },
+      },
+    }),
+  );
+  ok("an unlisted model defaults to enable_thinking, the pre-existing behaviour",
+     reasoningOffMethod(dir, "local-llama", "gemma") === "enable_thinking");
+  ok("a model can declare a different method",
+     reasoningOffMethod(dir, "local-llama", "qwen") === "none");
+  ok("no provider at all defaults to enable_thinking",
+     reasoningOffMethod(dir, undefined, "gemma") === "enable_thinking");
+
+  const body = { messages: [{ role: "user", content: "hi" }] };
+  ok("method 'none' sends nothing, even when the level is off",
+     withThinking(body, "off", "none") === undefined);
+  ok("the default method still sends the flag",
+     withThinking(body, "off")?.chat_template_kwargs?.enable_thinking === false);
+
+  // The case that matters: if the global default is ever set to "off" while
+  // Qwen is the active model, the flag known to hang it must never be sent.
+  const calls = [];
+  const pi = { getAgentDir: () => dir, on: (_evt, fn) => calls.push(fn) };
+  samplingDefaults(dir, "local-llama", "off", "qwen")(pi);
+  const sent = await calls[0]({ payload: { messages: [{ role: "user", content: "hi" }] } });
+  ok("the portal's global 'off' level never reaches Qwen as enable_thinking",
+     !("chat_template_kwargs" in (sent ?? {})) || !("enable_thinking" in (sent.chat_template_kwargs ?? {})));
+  ok("the ceiling still applies regardless", sent?.max_tokens === 1024);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

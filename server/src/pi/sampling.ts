@@ -149,7 +149,11 @@ export function isLocalUrl(url: string | undefined): boolean {
 interface ModelsFile {
   providers?: Record<
     string,
-    { baseUrl?: string; api?: string; models?: { id?: string; reasoning?: boolean }[] }
+    {
+      baseUrl?: string;
+      api?: string;
+      models?: { id?: string; reasoning?: boolean; reasoningOffMethod?: string }[];
+    }
   >;
 }
 
@@ -196,6 +200,38 @@ export function modelReasons(
 }
 
 /**
+ * How to ask *this* model's server to stop reasoning — because the answer is
+ * not the same for every llama.cpp server.
+ *
+ * `enable_thinking: false` is the flag that fixed the sqrt(144) failure above,
+ * on the Gemma server this was all measured against. Swapping the model to
+ * Qwen3.8-Flash-Next and sending the exact same flag hung the connection
+ * outright — no response, no error, curl timeout — on a server that behaves
+ * well with no suppression flag at all (54 chars of reasoning, clean
+ * `finish: "stop"`, correct answers). A flag safe for one backend is not
+ * portable to another; `models.json` has to say which one applies, per model,
+ * rather than the code assuming the flag that fixed the last model fixes this
+ * one too.
+ *
+ * Defaults to `"enable_thinking"` for a model with no entry, which is the
+ * pre-existing behaviour and is exactly right for Gemma. `"none"` means: do
+ * not attempt to suppress reasoning on this server at all — rely on
+ * `withMaxTokens` alone to bound the damage if it reasons at length, since an
+ * unrecognised suppression attempt has already been observed to be worse than
+ * doing nothing.
+ */
+export function reasoningOffMethod(
+  agentDir: string,
+  provider: string | undefined,
+  modelId: string | undefined,
+): string {
+  if (!provider) return "enable_thinking";
+  const models = readModelsFile(agentDir)?.providers?.[provider]?.models;
+  const entry = models?.find((m) => m.id === modelId);
+  return entry?.reasoningOffMethod ?? "enable_thinking";
+}
+
+/**
  * Stop the model reasoning when nobody asked it to.
  *
  * This is a reasoning model, and its thinking comes out of the *same* token
@@ -216,7 +252,11 @@ export function modelReasons(
  * would be worse than either — this makes the configured level true, it does
  * not overrule it.
  */
-export function withThinking(payload: unknown, thinkingLevel: string | undefined): unknown {
+export function withThinking(
+  payload: unknown,
+  thinkingLevel: string | undefined,
+  method: string = "enable_thinking",
+): unknown {
   if (!isChatBody(payload)) return undefined;
   /**
    * `thinkingLevel` here was the wrong value: it is `session.thinking_level ||
@@ -233,6 +273,9 @@ export function withThinking(payload: unknown, thinkingLevel: string | undefined
    * reasoning to turn up in the first place. See samplingDefaults.
    */
   if (thinkingLevel && thinkingLevel !== "off") return undefined;
+  // A server this flag is known to hang on: leave it alone and let
+  // withMaxTokens be the only defence, rather than sending an untested flag.
+  if (method === "none") return undefined;
   const existing = (payload as { chat_template_kwargs?: Record<string, unknown> })
     .chat_template_kwargs;
   // An explicit value upstream wins, as everywhere else in this file.
@@ -310,9 +353,10 @@ export function samplingDefaults(
       thinkingLevel === "off" || !modelReasons(agentDir, provider, modelId)
         ? "off"
         : thinkingLevel;
+    const offMethod = reasoningOffMethod(agentDir, provider, modelId);
     pi.on("before_provider_request", async (event: any) => {
       const withDry = withSampling(event?.payload) ?? event?.payload;
-      const withThink = withThinking(withDry, effectiveLevel) ?? withDry;
+      const withThink = withThinking(withDry, effectiveLevel, offMethod) ?? withDry;
       return withMaxTokens(withThink) ?? withThink;
     });
   };
